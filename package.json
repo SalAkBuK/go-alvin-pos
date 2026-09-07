@@ -1,0 +1,48 @@
+{
+  "name": "go-phones-pos",
+  "version": "0.0.0-spike",
+  "description": "Go Phones POS. Currently a native-module packaging verification spike only - see docs/ for the full V1 specification.",
+  "private": true,
+  "main": "src/main/index.js",
+  "scripts": {
+    "start": "electron .",
+    "dist:win": "electron-builder --win"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SalAkBuK/go-alvin-pos.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/SalAkBuK/go-alvin-pos/issues"
+  },
+  "homepage": "https://github.com/SalAkBuK/go-alvin-pos#readme",
+  "dependencies": {
+    "better-sqlite3": "^13.0.3"
+  },
+  "devDependencies": {
+    "electron": "^44.2.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.gophonesalvin.pos.spike",
+    "productName": "GoPhonesPOS-Spike",
+    "npmRebuild": false,
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/node_modules/better-sqlite3/**"
+    ],
+    "win": {
+      "target": "dir"
+    },
+    "directories": {
+      "output": "release"
+    }
+  }
+}

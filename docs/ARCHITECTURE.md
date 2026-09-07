@@ -109,6 +109,17 @@ It stores:
 
 The database must persist locally and remain usable without internet connectivity.
 
+**Selected binding: `better-sqlite3`.** It runs synchronously, exposes the SQLite Online Backup API directly (`Database.prototype.backup()`, the mechanism `DATA_MODEL.md` Section 54 requires for backups), and must remain behind the Electron main-process boundary at all times — the renderer never requires it directly (`REQ-DB-006`).
+
+Because it is a native Node addon, its Electron packaging behavior was verified with a scaffolding spike before adopting it:
+
+- `better-sqlite3` v13+ uses Node-API (N-API, `NAPI_VERSION=10`), which is ABI-stable across Node.js and Electron versions. A single platform/arch prebuild (e.g. `win32-x64.node`) loaded correctly inside Electron 44's bundled runtime with **no rebuild step**, confirmed by requiring it directly under `ELECTRON_RUN_AS_NODE`.
+- `electron-builder`'s default automatic native-dependency rebuild (`npmRebuild: true`) still attempts to compile from source via `node-gyp` regardless, and fails on a machine without Visual Studio Build Tools installed. The build config must set **`"npmRebuild": false`** to use the already-correct prebuild instead of forcing an unnecessary source rebuild.
+- Electron packages the app into an `asar` archive by default, and a native `.node` file cannot be `dlopen`'d from inside one. The build config must include an **`asarUnpack`** pattern covering `better-sqlite3` (e.g. `"**/node_modules/better-sqlite3/**"`) so the native binary is extracted alongside the archive at build time.
+- With both settings in place, requiring `better-sqlite3` from inside the packaged `app.asar` was confirmed working end-to-end against the actual packaged Electron binary (`sqlite_version()` returned successfully; `typeof db.backup === 'function'`).
+
+These three settings (no forced native rebuild, `asarUnpack` for the native module, main-process-only access) are load-bearing for `better-sqlite3` specifically and should be treated as fixed packaging requirements, not implementation-time guesses, when the production build configuration is written.
+
 ---
 
 ## External Reporting

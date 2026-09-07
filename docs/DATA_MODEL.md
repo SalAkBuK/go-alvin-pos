@@ -3757,9 +3757,9 @@ PRAGMA busy_timeout = 5000
 
 Because V1 runs in WAL mode, the durable state of the database is split across the main `.sqlite` file and its `-wal`/`-shm` companion files, and a writer can begin a new transaction between a checkpoint and a naive file copy. Copying only the main `.sqlite` file — even immediately after a `wal_checkpoint` — is not guaranteed to be transactionally consistent and is prohibited as a backup mechanism for automatic, manual, and pre-migration backups, and for the pre-restore recovery copy (Section 52A).
 
-A valid mechanism is either of the following (the exact library/API is an implementation choice, not fixed here):
+A valid mechanism is either of the following:
 
-- **A SQLite backup API or equivalent safe snapshot mechanism** (e.g., the SQLite Online Backup API, or a library that wraps it) that produces a transactionally consistent copy while the database remains open and usable, including under concurrent read/write activity; or
+- **The SQLite Online Backup API**, exposed by the selected binding (`better-sqlite3`'s `Database.prototype.backup()`, confirmed present and callable in Section 3 of `ARCHITECTURE.md`) — the intended V1 mechanism, producing a transactionally consistent copy while the database remains open and usable, including under concurrent read/write activity. The actual backup workflow (scheduling, retries, verification) is not implemented until the backup feature itself is built; this section only fixes which mechanism it must use; or
 - **A raw file copy taken only after the database connection has been safely quiesced or closed** and any WAL content has been fully checkpointed back into the main file (`PRAGMA wal_checkpoint(TRUNCATE)` followed by verifying the WAL is empty, with no writer permitted to open a new transaction until the copy completes) — this is only safe for a maintenance-window operation (e.g., during exclusive backup/restore/migration coordination, `ARCHITECTURE.md` Section 42.3), never as a "copy the file while checkout might still be running" shortcut.
 
 This rule applies identically to:
