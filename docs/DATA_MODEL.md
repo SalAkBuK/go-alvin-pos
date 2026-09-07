@@ -3253,7 +3253,7 @@ FAILED
 
 Successful records require the file identity, source versions, size, checksum, `location_kind`, and completion timestamp. `target_app_version` is required for a pre-migration backup and may be null otherwise. Failed records require a stable, sanitized `error_code`; file metadata may be null when no valid backup was produced.
 
-A pre-migration backup must reach `COMPLETED` and its metadata must be durably recorded before its migration begins. Backup files live outside the active SQLite database so recovery remains possible if that database becomes unusable.
+For a schema migration that modifies an **existing initialized database**, a pre-migration backup (`backup_type = PRE_MIGRATION`) must reach `COMPLETED` and its `backup_records` row must be durably recorded before that migration's changes (DDL) begin; if it cannot, the migration must not begin. The first migration (`001_initial_schema`), which creates a brand-new empty database, is **bootstrap initialization**: it is not preceded by a pre-migration backup and records no `backup_records` row, because `backup_records` — like every other table — does not exist until `001_initial_schema` has run, and there is no prior authoritative state to recover. Backup files live outside the active SQLite database so recovery remains possible if that database becomes unusable.
 
 The backup record and matching `BACKUP_COMPLETED` or `BACKUP_FAILED` audit event must be committed together when SQLite is writable.
 

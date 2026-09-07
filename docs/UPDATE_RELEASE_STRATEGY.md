@@ -23,7 +23,7 @@ The V1 update system must follow these rules:
 5. Application binaries and business data must remain separate.
 6. Installing a new application version must not replace or delete the SQLite business database.
 7. Database schema changes must use versioned migrations.
-8. A verified database backup must be created before every schema migration, whether update-driven or otherwise.
+8. A verified SQLite-consistent backup must be created before every schema migration that modifies an existing initialized database, whether update-driven or otherwise. The one-time creation of a brand-new empty database (`001_initial_schema`) is bootstrap initialization and is exempt, since no prior database state exists to preserve.
 9. A failed migration must stop safely.
 10. A failed migration must not allow the POS to falsely appear healthy.
 11. Existing committed sales must remain intact across updates.
@@ -464,7 +464,7 @@ Applied migrations must not automatically rerun.
 
 # 20. Pre-Migration Backup
 
-Before applying any database migration:
+Before applying any schema migration **to an existing initialized database**:
 
 1. Determine whether schema migration is required.
 2. Create a SQLite-consistent database backup.
@@ -473,6 +473,8 @@ Before applying any database migration:
 5. Only then begin migration.
 
 Verification confirms at minimum that the backup file exists, is readable as SQLite, and represents the expected source schema. A mere file-copy success signal is insufficient.
+
+This flow applies only when an initialized database already exists. The first-run creation of a brand-new empty database (`001_initial_schema`) is bootstrap initialization: steps 2–4 are skipped, because there is no prior authoritative state to back up and the backup-evidence tables do not yet exist. Step 5 still runs (`001_initial_schema` is applied).
 
 If backup creation fails:
 

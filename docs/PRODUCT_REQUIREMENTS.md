@@ -1347,7 +1347,11 @@ The application must expose the time and result of the latest automatic backup, 
 
 **Priority:** MUST
 
-Before any schema migration, the application must create and verify a SQLite-consistent backup. If backup creation or verification fails, the migration must not begin.
+Before applying any schema migration to an **existing initialized database**, the application must create and verify a SQLite-consistent pre-migration backup, and durably record the required backup evidence, before any migration change (DDL) is applied. If backup creation, verification, or the durable recording of that evidence fails, the migration must not begin and startup must fail safely rather than expose an unsafe schema.
+
+Initial creation of a brand-new empty database through the first migration (`001_initial_schema`) is **bootstrap initialization, not an upgrade**: it does not require a pre-migration recovery backup, because no prior authoritative database state exists to preserve and the tables that hold backup evidence do not exist until that first migration has run.
+
+Once an initialized database exists, no schema migration may modify it without a verified pre-migration backup. This bootstrap exception is the only case in which a schema migration proceeds without one.
 
 ---
 
@@ -1815,7 +1819,7 @@ Application binaries and business data must be stored separately. Installing or 
 
 **Priority:** MUST
 
-Schema changes must use ordered, versioned migrations. A required migration may start only after its pre-migration backup is verified; migration failure must stop safely, preserve recovery evidence and the backup, and prevent normal checkout against an unsafe schema.
+Schema changes must use ordered, versioned migrations. A required migration of an existing initialized database may start only after its verified pre-migration backup and required durable evidence exist (`REQ-BACKUP-008`); migration failure must stop safely, preserve recovery evidence and the backup, and prevent normal checkout against an unsafe schema. (First-run creation of a brand-new empty database via `001_initial_schema` is bootstrap initialization and is exempt from the backup gate — see `REQ-BACKUP-008`.)
 
 ---
 

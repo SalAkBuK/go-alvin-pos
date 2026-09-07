@@ -1106,7 +1106,7 @@ Backup operations must respect SQLite consistency. Because the operational datab
 
 Restore procedures must also be tested.
 
-V1 provides manual and recurring automatic backups, bounded retention/cleanup, visible health and failure state, and verified restore. Backup work must not corrupt or replace the open authoritative database. Every migration, including a startup migration after an update, requires a newly created SQLite-consistent backup whose existence and readability are verified first. Backup failure stops the migration but does not otherwise block sales while the active database remains healthy.
+V1 provides manual and recurring automatic backups, bounded retention/cleanup, visible health and failure state, and verified restore. Backup work must not corrupt or replace the open authoritative database. Every migration that modifies an existing initialized database — including a startup migration after an update — requires a newly created SQLite-consistent backup whose existence and readability are verified first, and whose evidence is durably recorded, before any migration change is applied. The first-time creation of a brand-new empty database (`001_initial_schema`) is bootstrap initialization and is the sole exception: no prior authoritative state exists to preserve, and the tables that hold backup evidence do not exist until that migration runs. Once an initialized database exists, no schema migration may modify it without a verified pre-migration backup. Backup failure stops the migration but does not otherwise block sales while the active database remains healthy.
 
 Minimal `backup_records` metadata may record backup kind, location kind (same-disk vs. off-device), sanitized path/category, timestamps, source schema version, size, verification result, and failure code/message. The backup files remain the backup; these rows exist only for health, audit, retention, and migration evidence.
 
@@ -1139,7 +1139,7 @@ Open SQLite
        ↓
 Inspect schema and migration requirement
        ↓
-If required, enter maintenance mode and create/verify a pre-migration backup
+If upgrading an existing initialized database, enter maintenance mode and create/verify a pre-migration backup (skipped for first-run bootstrap of 001_initial_schema)
        ↓
 Run pending migrations; stop safely on backup, migration, or validation failure
        ↓
@@ -1607,7 +1607,7 @@ The primary architectural decisions for V1 are:
 25. External failures must not invalidate committed local sales.
 26. A void preserves the sale and payment, restores inventory through linked reversing movements, and is atomic.
 27. Durable audit events are separate from rotating diagnostic logs.
-28. Manual and automatic backups use retention, health reporting, and tested restore; every migration requires a verified backup.
+28. Manual and automatic backups use retention, health reporting, and tested restore; every migration that modifies an existing initialized database requires a verified pre-migration backup (first-run bootstrap of `001_initial_schema` is exempt, as no prior state exists to preserve).
 29. V1 updates use code-signed artifacts from an independent HTTPS feed and never require client GitHub credentials.
 30. Single-instance and maintenance-safety coordination protect database ownership and active checkout.
 31. Owner CSV export is read-only, and CSV import remains outside V1.

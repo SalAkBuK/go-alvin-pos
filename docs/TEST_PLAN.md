@@ -1950,6 +1950,8 @@ Expected:
 
 All migrations apply in order.
 
+This is first-run **bootstrap** of a brand-new empty database: `001_initial_schema` runs with no pre-migration backup and records no `backup_records` row, because no prior initialized database state exists to preserve and the backup-evidence tables do not exist yet. Backup-gated migration of an *already-initialized* database is covered by `TEST-BACKUP-012` / `TEST-BACKUP-013` and Section 25.
+
 ---
 
 ## TEST-DB-008 — Migration Idempotence
@@ -2057,6 +2059,8 @@ For each future migration:
 7. Verify old receipts.
 8. Verify inventory.
 9. Verify pending export jobs.
+
+Because the database is already an initialized database containing business data, each such migration is gated on a successfully created and verified pre-migration backup — with its evidence durably recorded — before its changes are applied (`REQ-BACKUP-008`, `TEST-BACKUP-012`); a failure of that backup, its verification, or the recording of its evidence must prevent the migration and fail startup safely (`TEST-BACKUP-013`).
 
 No release should rely only on testing a newly created database.
 

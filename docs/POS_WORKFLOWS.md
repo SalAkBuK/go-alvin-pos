@@ -118,7 +118,7 @@ Example:
 4. The primary instance locates the local application-data directory.
 5. SQLite is opened in startup/maintenance state and foreign-key enforcement is enabled.
 6. Database and schema health are inspected before checkout becomes available.
-7. If a migration is required, the application enters exclusive maintenance, creates and verifies a SQLite-consistent pre-migration backup, and applies ordered versioned migrations only after verification succeeds.
+7. If an existing initialized database has a pending migration, the application enters exclusive maintenance, creates and verifies a SQLite-consistent pre-migration backup (recording its evidence), and applies ordered versioned migrations only after verification succeeds. First-run creation of a brand-new empty database via `001_initial_schema` is bootstrap initialization and runs without a pre-migration backup, since there is no prior database state to preserve.
 8. A backup, migration, or post-migration health failure stops safely before checkout, preserves recovery evidence, and shows recovery guidance.
 9. Application services initialize after database/schema health is established.
 10. Google Sheets export worker initializes and processes `PENDING` jobs only when integration is enabled and configured.

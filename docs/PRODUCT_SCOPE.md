@@ -801,7 +801,7 @@ Google Sheets may not contain:
 * Internal synchronization metadata
 * Other local database information
 
-Therefore SQLite database backup remains a separate requirement. Backups require bounded retention or cleanup, visible health and failure reporting, and a restore procedure tested before production. Every schema migration requires a successfully created and verified pre-migration backup; if that backup or the migration fails, normal startup must stop safely rather than expose an unsafe database.
+Therefore SQLite database backup remains a separate requirement. Backups require bounded retention or cleanup, visible health and failure reporting, and a restore procedure tested before production. Every schema migration that modifies an existing initialized database requires a successfully created and verified pre-migration backup before any migration change is applied; if that backup or the migration fails, normal startup must stop safely rather than expose an unsafe database. The first-run creation of a brand-new empty database (`001_initial_schema`) is bootstrap initialization and does not require a pre-migration recovery backup, because there is no prior authoritative database state to preserve.
 
 A more advanced cloud backup system may be introduced in a future release.
 
