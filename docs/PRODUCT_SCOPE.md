@@ -30,27 +30,27 @@ The first production version must allow the store to:
 1. Add and manage phone inventory.
 2. Search or scan products during checkout.
 3. Create retail sales.
-4. Change or negotiate item prices during checkout.
-5. Apply discounts.
-6. Calculate sales tax.
-7. Record Cash and Card payments.
-8. Store optional customer information.
-9. Automatically reduce inventory when a sale is completed.
-10. Generate and print itemized receipts.
-11. Reprint previous receipts.
-12. View sales history.
-13. View daily sales totals and payment breakdowns.
-14. Continue completing sales while the internet is unavailable.
-15. Store business data locally on the POS computer.
-16. Support local backup without making internet connectivity a requirement for checkout.
-17. Export completed sales to a configured Google Sheet when internet connectivity is available.
-18. Queue Google Sheets exports while offline and automatically retry them later without creating duplicate records.
-19. Clear an unfinished checkout and void an accidentally completed sale without deleting its history.
-20. Maintain a durable audit trail for important business and system actions.
-21. Create manual and recurring automatic SQLite-safe backups with retention, health reporting, and tested restore.
-22. Export owner-controlled business data to CSV.
-23. Detect, download, and safely install approved application updates without making updates a checkout dependency.
-24. Provide built-in health, support, diagnostic, and sanitized support-bundle capabilities.
+4. Change or negotiate item prices during checkout, from which a discount amount is derived for display (Section 11) — V1 has no separate discount mechanism.
+5. Calculate sales tax.
+6. Record Cash and Card payments.
+7. Store optional customer information.
+8. Automatically reduce inventory when a sale is completed.
+9. Generate and print itemized receipts.
+10. Reprint previous receipts.
+11. View sales history.
+12. View daily sales totals and payment breakdowns.
+13. Continue completing sales while the internet is unavailable.
+14. Store business data locally on the POS computer.
+15. Support local backup without making internet connectivity a requirement for checkout.
+16. Export completed sales to a configured Google Sheet when internet connectivity is available.
+17. Queue Google Sheets exports while offline and automatically retry them later without creating duplicate records.
+18. Clear an unfinished checkout and void an accidentally completed sale without deleting its history.
+19. Maintain a durable audit trail for important business and system actions.
+20. Create manual and recurring automatic SQLite-safe backups with retention, health reporting, and tested restore.
+21. Export owner-controlled business data to CSV.
+22. Detect updates automatically and download them in the background once found while online, and safely install approved updates without making updates a checkout dependency.
+23. Provide built-in health, support, diagnostic, and sanitized support-bundle capabilities.
+24. Durably record and surface a Clover-approved card charge whose local sale failed to commit, so it can be reconciled.
 
 ---
 
@@ -203,8 +203,7 @@ The checkout interface must allow the cashier to:
 * Change quantities
 * Remove products
 * View listed price
-* Override selling price
-* Apply discounts
+* Override selling price (the resulting discount is derived and displayed automatically; there is no separate discount step)
 * Attach an optional customer
 * View subtotal
 * View discount amount
@@ -237,6 +236,8 @@ The system should preserve enough information to distinguish between:
 * Original/listed price
 * Actual sold price
 * Discount amount
+
+V1 has no separate discount mechanism (no percentage discount, fixed-amount discount, coupon, or order-level discount). "Discount" is a derived, display-only value computed as `listed price - sold price` (clamped at zero if the negotiated price is above listing); the only pricing tool is per-item price negotiation described above.
 
 Completed historical sales must retain the price charged at the time of sale even if the product price changes later.
 
@@ -293,6 +294,8 @@ Expected flow:
 5. Go Phones POS records the transaction as Card.
 
 Direct Clover API or terminal integration is not required in V1.
+
+If the cashier confirms Clover approval but the local sale then fails to save (a SQLite commit failure), the customer may have already been charged even though no local sale exists. V1 must never fabricate a completed local sale to hide this, and must never pretend the Clover charge did not happen. The application durably records the checkout attempt, payment method, intended total, and the cashier's Clover-approval confirmation *before* attempting the local save, so that evidence survives the failure; it then clearly warns the cashier that the Clover charge may need to be checked, voided, or refunded separately in Clover, and tracks the incident in a local reconciliation queue until a person resolves it. This never involves an automated Clover API call — see `POS_WORKFLOWS.md` Sections 35A–35B and `DATA_MODEL.md` Sections 31–31B.
 
 ---
 
@@ -780,13 +783,12 @@ Google Sheets is explicitly not intended to replace:
 
 The local POS database contains business-critical records and therefore must have a backup strategy.
 
-V1 must provide manual and recurring automatic SQLite-safe backups protecting against loss caused by:
+V1 distinguishes two different guarantees, and does not conflate them:
 
-* Computer failure
-* Disk failure
-* Accidental deletion
-* Application corruption
-* Device replacement
+1. **Local recovery backup** (the V1 default). Manual and recurring automatic SQLite-safe backups are written to the same computer/disk as the operational database. This protects against accidental deletion, application-level corruption, and a bad migration — recoverable failures where the machine and disk are still intact. It does **not** protect against loss of that machine or disk itself.
+2. **Device/disk-loss protection** (optional in V1). Protecting against computer failure, disk failure, theft, or fire requires a backup copy stored somewhere other than the same disk — an external/USB drive or a configured network location. V1 supports configuring an additional off-device backup destination, but it is optional and not enabled by default; a backup is only device/disk-loss protection when the owner has actually configured and verified an off-device location for it.
+
+V1 must provide manual and recurring automatic SQLite-safe backups. Documentation and in-app messaging must never describe a same-disk (default) backup as protecting against physical disk failure, device loss, or theft — only a verified off-device backup provides that protection.
 
 Google Sheets export provides a secondary copy of sales information but must not be considered a complete database backup.
 
@@ -1022,6 +1024,8 @@ V1 is considered ready for production only when the following can be demonstrate
 43. Support & Diagnostics reports required health state, produces redacted rotating logs and support bundles, and retains crash evidence.
 44. A second launch focuses/restores the existing application instance.
 45. Sleep/resume, abrupt termination, Windows restart, clock anomalies, low storage, and offline recovery behave safely.
+46. A Clover-approved card charge followed by a local commit failure is durably recorded with payment method, intended total, and approval confirmation, clearly warns the cashier to check Clover separately, and never appears as a completed local sale.
+47. A whole-database restore preserves a pre-restore recovery copy, warns and requires explicit confirmation before overwriting business data newer than the selected backup, and never silently discards those newer records.
 
 ---
 
@@ -1031,7 +1035,7 @@ V1 includes clear/cancel for an unfinished checkout and a one-time void for an a
 
 Full returns, partial returns, exchanges, and refund processing remain outside V1.
 
-The durable audit trail covers sale completion and void, price override, inventory adjustment, tax and business setting changes, Google Sheets configuration changes, backup success/failure, migration execution, and application update installation. Rotating diagnostic logs are separate from this audit history.
+The durable audit trail covers sale completion and void, price override, inventory adjustment, tax and business setting changes, Google Sheets configuration changes, backup success/failure, migration execution, application update installation, shared-credential changes, and a Clover-approved card charge whose local commit failed. Rotating diagnostic logs are separate from this audit history.
 
 Owner-controlled CSV export is required for products/inventory, customers, sales, and inventory movements. It is export only; V1 does not include CSV import or migration tooling.
 

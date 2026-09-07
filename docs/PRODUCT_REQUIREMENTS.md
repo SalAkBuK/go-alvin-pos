@@ -133,6 +133,22 @@ The system must be able to locate a product using the stored barcode.
 
 ---
 
+## REQ-PROD-007 — Low Stock Indication
+
+**Priority:** MUST
+
+When a product's `quantity_on_hand` is at or below its configured `low_stock_threshold`, the application must visually indicate the low-stock condition. This is a required V1 capability, not an optional enhancement, consistent with `PRODUCT_SCOPE.md` Section 7 listing low/zero stock detection under included product/inventory functionality.
+
+---
+
+## REQ-PROD-008 — SKU and Barcode Uniqueness and Normalization
+
+**Priority:** MUST
+
+SKU and barcode are each optional but, when present, unique. Both are trimmed of leading/trailing whitespace before storage and before the uniqueness check; a value that is empty after trimming is stored as absent rather than an empty string, so multiple products may each have no SKU/barcode without colliding. Comparison for uniqueness is case-sensitive on the trimmed value.
+
+---
+
 # 4. Inventory Requirements
 
 ## REQ-INV-001 — Quantity Tracking
@@ -424,6 +440,30 @@ No inventory must be affected.
 
 ---
 
+## REQ-SALE-012 — Duplicate Line Aggregation
+
+**Priority:** MUST
+
+Before validating stock, the trusted application layer must aggregate cart lines that reference the same product ID and validate their combined quantity against available stock as a single total, so stock validation cannot be bypassed by splitting one product's quantity across multiple lines.
+
+---
+
+## REQ-SALE-013 — Quantity and Monetary Bounds
+
+**Priority:** MUST
+
+Quantity must be a positive integer; fractional or non-numeric quantity is rejected. Per-line and aggregated-per-product quantity is bounded (1–999 in V1's documented default). Per-unit prices and the sale total must be non-negative integers within V1's documented monetary ceilings (`DATA_MODEL.md` Section 41A). Malformed numeric input is rejected at the trusted application boundary regardless of what the renderer already validated. A negotiated selling price may be set above the listed price; the derived discount is clamped at zero rather than becoming negative.
+
+---
+
+## REQ-SALE-014 — Checkout Drift Detection
+
+**Priority:** MUST
+
+The trusted application layer must recompute every value the cashier reviewed (cart contents, quantities, selling prices, tax rate, product active/archived state, stock availability, and resulting totals) from current authoritative state immediately before commit, using the deterministic checkout fingerprint defined in `DATA_MODEL.md` Section 41B. If any recomputed value differs from what was reviewed, the checkout must be rejected for re-review rather than silently committed with different financial values. For Card payments, the amount the cashier processed on Clover must exactly equal the authoritative committed total or the sale is rejected.
+
+---
+
 # 7. Receipt Number Requirements
 
 ## REQ-RECNO-001 — Unique Receipt Number
@@ -508,6 +548,14 @@ The system must consistently produce correct cent-level values.
 
 ---
 
+## REQ-TAX-005 — Deterministic Rounding Rule
+
+**Priority:** MUST
+
+Tax is calculated once at the transaction level against the summed post-negotiation (sold-price) taxable amount, never per line, using integer arithmetic and round-half-up to the nearest cent: `tax_cents = floor((taxable_amount_cents × tax_rate_bps + 5000) / 10000)`. This is the single rounding rule used everywhere tax is displayed or persisted — checkout preview, the committed sale, sales history, receipts, reports, and the Google Sheets export. The exact formula and worked fractional-cent examples are defined in `DATA_MODEL.md` Section 42.
+
+---
+
 # 9. Payment Requirements
 
 ## REQ-PAY-001 — Cash Payment
@@ -575,18 +623,76 @@ If amount tendered is implemented, the POS may calculate change due.
 
 ---
 
+# 9A. Card-Approved / Local-Commit-Failure Reconciliation Requirements
+
+## REQ-RECONCILE-001 — Durable Pre-Commit Checkout Evidence
+
+**Priority:** MUST
+
+Before the authoritative sale transaction is attempted, the trusted application layer must durably record, in its own independently committed write, the checkout request identifier, request fingerprint, payment method, and intended total. This record must survive a subsequent failure of the sale transaction.
+
+---
+
+## REQ-RECONCILE-002 — Card Approval Confirmation Persisted Before Commit Attempt
+
+**Priority:** MUST
+
+For a Card checkout, the cashier's confirmation that Clover approved the charge must be captured in the durable pre-commit record (`REQ-RECONCILE-001`) before the sale transaction is attempted, so that confirmation is not lost if the sale transaction subsequently fails.
+
+---
+
+## REQ-RECONCILE-003 — Local Commit Failure Must Not Be Hidden
+
+**Priority:** MUST
+
+If the authoritative sale transaction fails after a Card payment was confirmed approved on Clover, the application must not report the sale as completed and must not fabricate a completed local sale. It must clearly warn the cashier that the Clover charge may still be valid and that any required void or refund must be performed separately and manually in Clover; Go Phones POS performs no automated Clover reversal.
+
+---
+
+## REQ-RECONCILE-004 — Reconciliation Queue
+
+**Priority:** MUST
+
+A Card checkout attempt whose local commit failed after Clover approval was confirmed must appear in a local reconciliation queue until a person marks it resolved with a required note, or until a retry of the same checkout attempt completes the sale successfully.
+
+---
+
+## REQ-RECONCILE-005 — No Automated Clover Reversal
+
+**Priority:** MUST
+
+Go Phones POS must not call any Clover API to reverse, refund, or verify a charge as part of commit-failure handling. Direct Clover integration remains out of scope for V1 (`PRODUCT_SCOPE.md` Section 29).
+
+---
+
+## REQ-RECONCILE-006 — Safe Retry Without Re-Charging
+
+**Priority:** MUST
+
+After a Card commit failure, the cashier must be able to retry completing the same cart once the underlying local issue is resolved without being prompted to process the card through Clover again. A successful retry links to and resolves the original reconciliation entry.
+
+---
+
 # 10. Customer Requirements
 
 ## REQ-CUST-001 — Create Customer
 
 **Priority:** MUST
 
-The system must allow creating a customer record.
+The system must allow creating a customer record. Name is required (non-blank after trimming); phone number is optional so a customer can be recorded by name alone.
 
 Supported information:
 
-- Name
-- Phone number
+- Name (required)
+- Phone number (optional)
+
+---
+
+## REQ-CUST-007 — Customer Field Normalization
+
+**Priority:** MUST
+
+Name and phone are trimmed of leading/trailing whitespace before storage; a phone value that is empty after trimming is stored as absent rather than an empty string. A digits-only normalized form of the phone number is derived and used for search so differently formatted entries of the same number match. Two customers may share the same phone number; V1 does not enforce phone uniqueness. Editing a customer's name or phone updates only the live record and never rewrites any historical sale's stored customer snapshot (`REQ-SALE-009`).
 
 ---
 
@@ -866,6 +972,22 @@ Google Sheets must not be required.
 
 ---
 
+## REQ-REPORT-008 — Deterministic Business-Day Attribution
+
+**Priority:** MUST
+
+A sale's reporting date must be derived, at query time, from its authoritative `completed_at` (UTC) converted into the currently configured business timezone using standard IANA rules, including standard DST handling. Business date is never persisted as a separate stored column. The exact conversion rule and its behavior when the configured timezone changes are defined in `DATA_MODEL.md` Section 4.
+
+---
+
+## REQ-REPORT-009 — Late Void Attribution
+
+**Priority:** MUST
+
+Voiding a sale must never alter its original `completed_at`. Reports for the sale's original business date must exclude its revenue, discount, tax, and payment-method totals once voided, regardless of when the void itself occurs. The void action's own date-based visibility (for audit/void-activity views, not revenue) uses `voided_at`'s business date, which may differ from the original sale's business date.
+
+---
+
 # 15. Offline Requirements
 
 ## REQ-OFF-001 — Offline Checkout
@@ -1066,6 +1188,22 @@ Credentials must never be committed to Git.
 
 ---
 
+## REQ-GSHEET-014 — Formula Injection Neutralization
+
+**Priority:** MUST
+
+Any exported text field value beginning with `=`, `+`, `-`, or `@` must be neutralized before being written to Google Sheets, so that opening the sheet in a spreadsheet application cannot execute it as a formula.
+
+---
+
+## REQ-GSHEET-015 — Stale-Write Ordering Guarantee
+
+**Priority:** MUST
+
+An in-flight export request for an older sale revision must never be able to overwrite a Google Sheets row with an older state than what a newer request has already written, regardless of network response ordering. This is implemented through the `sync_version`/`target_sync_version`/`exported_sync_version` design in `DATA_MODEL.md` Sections 22–25: a worker may mark a job `EXPORTED` only if the version it just wrote still equals the current target version.
+
+---
+
 # 17. Local Database Requirements
 
 ## REQ-DB-001 — SQLite Primary Database
@@ -1120,6 +1258,30 @@ The application must not depend on manually editing an installed database.
 React renderer code must not directly open or manipulate the SQLite database.
 
 Database access must occur through the Electron main process/application service boundary.
+
+---
+
+## REQ-DB-007 — SQLite Durability Configuration
+
+**Priority:** MUST
+
+SQLite must be configured with `journal_mode = WAL`, `synchronous = FULL`, `foreign_keys = ON`, and a `busy_timeout` (5000 ms default), and checkout transactions must use `BEGIN IMMEDIATE`. This configuration, and the reasoning behind it, is fixed in `DATA_MODEL.md` Section 54 rather than left to be decided during implementation, and is verified by the crash/abrupt-termination tests in `TEST_PLAN.md`.
+
+---
+
+## REQ-DB-008 — Supported Filesystem Assumption
+
+**Priority:** MUST
+
+The durability guarantees of `REQ-DB-007` apply only when the database file resides on a local, directly attached filesystem. The application must not claim equivalent crash-safety or locking guarantees for a database file located on a network drive/UNC path or inside a cloud-sync folder (OneDrive, Dropbox, Google Drive Desktop, etc.).
+
+---
+
+## REQ-DB-009 — Explicit Foreign-Key Actions
+
+**Priority:** MUST
+
+Every declared foreign key must specify an explicit `ON DELETE` action as defined in `DATA_MODEL.md` Section 35, so that deleting a product, customer, or any other referenced row can never cause historical sale, payment, or inventory-movement data to disappear.
 
 ---
 
@@ -1197,6 +1359,22 @@ The system must retain enough local metadata to identify backup type, creation t
 
 ---
 
+## REQ-BACKUP-010 — Local Recovery vs. Device/Disk-Loss Protection
+
+**Priority:** MUST
+
+The application and its documentation must not describe a same-disk (default) backup as protecting against physical disk failure, computer loss, theft, or fire. V1 supports an optional, separately configurable off-device backup destination; the backup metadata (`REQ-BACKUP-009`) records whether a given backup is same-disk or off-device, and health/status displays state exactly what protection the currently configured backups provide.
+
+---
+
+## REQ-BACKUP-011 — Safe Restore Workflow
+
+**Priority:** MUST
+
+Before replacing the active database with a backup, the application must: preserve a timestamped copy of the current (pre-restore) database; inspect the candidate backup's metadata (schema version, source app version, creation time); detect and clearly warn when the current database contains completed sales newer than the backup; require explicit confirmation before proceeding when data would be lost; and validate the restored database before reopening checkout, falling back to the preserved pre-restore copy if validation fails. V1 restore is a whole-database replace-or-abort operation; it does not implement record-level merge between the current database and the restored backup.
+
+---
+
 # 19. Authentication Requirements
 
 ## REQ-AUTH-001 — Shared Login
@@ -1219,7 +1397,47 @@ The shared login must not require an internet authentication service every time 
 
 **Priority:** MUST
 
-Authentication secrets must not be stored as plaintext passwords.
+Authentication secrets must not be stored as plaintext passwords. The shared password must be hashed using an industry-standard salted, memory-hard algorithm (e.g., bcrypt, scrypt, or Argon2); a fast unsalted hash (e.g., raw SHA-256/MD5) must not be used.
+
+---
+
+## REQ-AUTH-004 — First-Run Credential Setup
+
+**Priority:** MUST
+
+On first launch, when no shared credential exists yet, the application must present a setup screen requiring the shared password (with confirmation) to be created before the POS home screen is reachable. This does not require internet access. Credential creation records a durable `AUTH_CREDENTIAL_CHANGED` audit event.
+
+---
+
+## REQ-AUTH-005 — Password Change
+
+**Priority:** MUST
+
+The application must allow the shared password to be changed from Settings by entering the current password and a new password (with confirmation). This does not require internet access and records a durable `AUTH_CREDENTIAL_CHANGED` audit event.
+
+---
+
+## REQ-AUTH-006 — Local, Non-Online Recovery
+
+**Priority:** MUST
+
+V1 must define a documented local recovery procedure for a forgotten shared password that requires direct physical/administrative access to the installed application and does not introduce online account recovery (no email, SMS, or cloud identity service). Recovery resets the shared credential without deleting or altering business data.
+
+---
+
+## REQ-AUTH-007 — Reinstall and Restore Independence
+
+**Priority:** MUST
+
+Reinstalling the application while the existing application-data directory is preserved must continue to require the existing shared password. Restoring a SQLite database backup must not itself change the currently configured shared login credential, since the credential is stored independently of the SQLite settings table.
+
+---
+
+## REQ-AUTH-008 — Brute-Force Backoff
+
+**Priority:** MUST
+
+After repeated consecutive failed login attempts, the application must impose an increasing delay before the next attempt is accepted, without ever permanently locking out the shared login, since V1 has no alternate account or online reset path.
 
 ---
 
@@ -1463,6 +1681,8 @@ The audit trail must record, where applicable:
 - Backup success and failure
 - Migration execution and outcome
 - Application update installation
+- Shared-credential creation/change
+- A Clover-approved card charge whose local commit failed (`REQ-RECONCILE-001` through `REQ-RECONCILE-006`)
 
 ---
 
@@ -1479,6 +1699,16 @@ Each audit event must preserve a stable event ID, event type, timestamp, relevan
 **Priority:** MUST
 
 Audit events for transactional business changes must commit with the corresponding SQLite operation. Historical audit events must not be silently rewritten or deleted.
+
+For a lifecycle-marker event describing the start of a multi-step process (`MIGRATION_STARTED`), `outcome` describes only whether that start action was itself durably recorded (`SUCCESS`); it makes no claim about the eventual result of the process, which is recorded separately and unambiguously by its terminal event (`MIGRATION_COMPLETED` or `MIGRATION_FAILED`). No third `outcome` value is introduced for this case.
+
+---
+
+## REQ-AUDIT-005 — Monotonic Local Ordering
+
+**Priority:** MUST
+
+In addition to its wall-clock `occurred_at` timestamp, each audit event must carry a locally monotonically increasing sequence value that is never affected by system clock changes, so the true order of events remains determinable even across a significant clock anomaly (`REQ-HEALTH-002`). No distributed/multi-device ordering scheme is required in V1.
 
 ---
 
@@ -1513,6 +1743,14 @@ Creating or writing an owner export must be a read-only operation against author
 
 ---
 
+## REQ-EXPORT-004 — Formula Injection Neutralization
+
+**Priority:** MUST
+
+Any exported text field value beginning with `=`, `+`, `-`, or `@` must be neutralized (e.g., prefixed with a leading apostrophe) before being written to CSV, so that a spreadsheet application opening the export cannot execute it as a formula. This applies to every owner CSV export.
+
+---
+
 # 27. Application Update Requirements
 
 ## REQ-UPDATE-001 — Production Distribution Path
@@ -1537,7 +1775,7 @@ Production releases must use semantic versioning, pass release-blocking tests, a
 
 **Priority:** MUST
 
-When internet access is available, the installed application must be able to check for approved updates and may download them in the background without blocking or materially degrading checkout.
+When internet access is available, the installed application must be able to check for approved updates. Once an approved update is discovered while online, the application must automatically begin downloading it in the background without blocking or materially degrading checkout. Whether and how often the application checks (at startup, periodically, or on manual request) is implementation-configurable; whether a discovered update downloads automatically is not — download begins automatically once an approved update is found.
 
 ---
 
@@ -1892,6 +2130,29 @@ Sale is rejected before commit.
 Expected:
 
 Historical sale still shows original transaction values.
+
+---
+
+## ACCEPT-011 — Clover Approved, Local Commit Fails
+
+1. Cashier selects Card and confirms Clover approval inside the POS.
+2. The local sale transaction is forced to fail (e.g., simulated disk-write failure).
+
+Expected:
+
+No completed sale exists; the checkout attempt (payment method, intended total, Clover-approval confirmation) is durably recorded; the cashier is warned that the Clover charge may require separate review/void/refund in Clover; the attempt appears in the reconciliation queue.
+
+---
+
+## ACCEPT-012 — Restore Does Not Silently Discard Newer Data
+
+1. Take a backup at time T.
+2. Complete additional sales after T.
+3. Attempt to restore the backup from T.
+
+Expected:
+
+The application detects that current data is newer than the backup, warns how many transactions would be lost, and requires explicit confirmation before proceeding; a pre-restore recovery copy is preserved regardless of the outcome.
 
 ---
 

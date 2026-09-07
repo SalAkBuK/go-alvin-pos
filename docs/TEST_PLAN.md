@@ -190,13 +190,22 @@ Old sale still contains tax rate A and original tax amount.
 
 ---
 
-## TEST-TAX-003 — Tax Rounding
+## TEST-TAX-003 — Tax Rounding (Concrete Expected Values)
 
-Test values that create fractional cents.
+Using the fixed formula `tax_cents = floor((taxable_amount_cents × tax_rate_bps + 5000) / 10000)` (`DATA_MODEL.md` Section 42):
+
+| `taxable_amount_cents` | `tax_rate_bps` | Expected `tax_cents` |
+|---|---|---|
+| 55000 | 825 | 4538 |
+| 33 | 825 | 3 |
+| 30 | 825 | 2 |
+| 10 | 500 | 1 |
+| 100 | 825 | 8 |
+| 0 | 825 | 0 |
 
 Expected:
 
-The defined rounding rule is applied consistently.
+Every row produces exactly the listed integer-cent value — no floating-point drift, and no alternate rounding (truncation or round-half-even) is applied.
 
 The same rounding rule must be used in:
 
@@ -205,6 +214,16 @@ The same rounding rule must be used in:
 - Receipt
 - Reports
 - Google Sheets export
+
+---
+
+## TEST-TAX-005 — Tax Basis Uses Sold Price, Not Listed Price
+
+Negotiate a price below listing, then verify the taxable amount.
+
+Expected:
+
+`taxable_amount_cents` is computed from `sold_price_cents × quantity`, never from `listed_price_cents`.
 
 ---
 
@@ -290,6 +309,16 @@ Rejected.
 
 ---
 
+## TEST-DISC-005 — Sold Price Above Listed Price
+
+Sold price greater than listed price, sale completed.
+
+Expected:
+
+Sale commits; `sale_items.discount_cents = 0` for that line (clamped, never negative).
+
+---
+
 # 9. Product Tests
 
 ## TEST-PROD-001 — Create Product
@@ -333,7 +362,7 @@ Second product is rejected.
 
 ## TEST-PROD-004 — Duplicate SKU
 
-If SKU uniqueness is enabled:
+SKU uniqueness is always enforced in V1 when a SKU is present (not a configurable toggle).
 
 Create product A with SKU X.
 
@@ -342,6 +371,14 @@ Attempt product B with SKU X.
 Expected:
 
 Second product is rejected.
+
+## TEST-PROD-004A — Multiple Products Without SKU/Barcode
+
+Create two products, neither with a SKU or barcode.
+
+Expected:
+
+Both are accepted; a blank SKU/barcode is stored as absent, not as an empty string, so it never collides against the uniqueness constraint.
 
 ---
 
@@ -367,6 +404,36 @@ Expected:
 Expected:
 
 Historical sale shows original values.
+
+---
+
+## TEST-PROD-007 — Product Condition Allowed Values
+
+Attempt to create/edit products with `condition = NEW`, `USED`, and `REFURBISHED`, then attempt an unsupported value (e.g., `LIKE_NEW`).
+
+Expected:
+
+The three documented values succeed; the unsupported value is rejected at both the application layer and the database constraint.
+
+---
+
+## TEST-PROD-009 — Low Stock Indication
+
+Set a product's `quantity_on_hand` at, above, and below its `low_stock_threshold`.
+
+Expected:
+
+The UI shows a `Low Stock` indicator only at or below the threshold; this is required behavior, not an optional visual enhancement.
+
+---
+
+## TEST-PROD-008 — Complete Product Edit Persistence
+
+Edit every editable field in one operation: name, brand, model, condition, selling price, cost price, SKU, barcode, and low-stock threshold.
+
+Expected:
+
+All fields persist correctly, `updated_at` changes, and the product remains searchable with the new values after an application restart.
 
 ---
 
@@ -528,6 +595,100 @@ Rejected.
 
 ---
 
+# 10A. Cart Interaction Tests
+
+These validate `REQ-SALE-001` through `REQ-SALE-005`, `REQ-SALE-012`, and `REQ-SALE-013`, distinct from post-commit inventory tests (Section 10) since the cart is not yet a sale.
+
+## TEST-CART-002 — Start New Sale
+
+Select `New Sale`.
+
+Expected:
+
+An empty cart with no customer or payment selected is created; no `sales` row exists yet.
+
+---
+
+## TEST-CART-003 — Manually Add Cart Item
+
+Search for a product and add it to the cart.
+
+Expected:
+
+The line appears with default unit price equal to the current listed price, quantity 1, and correct cart totals; no inventory change occurs yet.
+
+---
+
+## TEST-CART-004 — Remove Cart Item
+
+Add two products to the cart, then remove one.
+
+Expected:
+
+Only the remaining item is present; totals recalculate; no inventory movement is created.
+
+---
+
+## TEST-CART-005 — Change Quantity
+
+Add a product with stock of 5, then change its cart quantity to 3, then attempt to change it to 6.
+
+Expected:
+
+Quantity 3 is accepted and totals update; quantity 6 is rejected with a clear "only N available" message and the cart is not corrupted.
+
+---
+
+## TEST-CART-006 — Duplicate Product Line Aggregation
+
+Add the same product to the cart twice as separate lines (e.g., once at listed price, once at a negotiated price), for a combined quantity that exceeds available stock only when summed.
+
+Expected:
+
+Stock validation aggregates both lines by product ID and rejects the checkout; splitting the quantity across two lines does not bypass the stock check.
+
+---
+
+## TEST-CART-007 — Quantity Bounds
+
+Attempt cart quantities of `0`, a negative number, a fractional value (e.g., `1.5`), and `1000`.
+
+Expected:
+
+All are rejected; only positive integers from `1` to `999` are accepted per line.
+
+---
+
+## TEST-CART-008 — Monetary Bounds
+
+Attempt a negotiated price and a full-sale total exceeding the documented ceilings (`DATA_MODEL.md` Section 41A).
+
+Expected:
+
+Both are rejected with a clear validation error before commit.
+
+---
+
+## TEST-CART-009 — Malformed Numeric Input
+
+Submit a checkout payload with a non-numeric, `NaN`, or `Infinity` value in a quantity or price field.
+
+Expected:
+
+Rejected at the trusted application boundary regardless of what the renderer already validated.
+
+---
+
+## TEST-CART-010 — Negotiated Price Above Listed Price
+
+Set a negotiated selling price higher than the listed price.
+
+Expected:
+
+The override is accepted; `discount_cents` for that line is `0` (clamped), not negative.
+
+---
+
 # 11. Sale Atomicity Tests
 
 These are critical.
@@ -662,6 +823,39 @@ No duplicate transaction.
 
 ---
 
+## TEST-IDEMP-005 — Reused Checkout Request ID With Different Fingerprint
+
+1. Submit `request_id = ABC123` for cart A.
+2. Before or after it completes, submit `request_id = ABC123` again for a materially different cart B (different items/prices).
+
+Expected:
+
+The second submission is rejected as an idempotency-key conflict; it does not silently apply cart B's content to cart A's sale, and does not create a second sale under the same request ID.
+
+---
+
+## TEST-IDEMP-006 — Checkout Drift Rejected at Commit
+
+1. Cashier reviews a cart (fingerprint computed).
+2. Before Complete Sale is pressed, change the configured tax rate (or archive one of the cart's products, or reduce its stock below the cart quantity).
+3. Press Complete Sale using the original review.
+
+Expected:
+
+The commit is rejected with a re-review error rather than silently completing using the new tax rate/availability/stock; no sale, payment, or inventory change occurs.
+
+---
+
+## TEST-IDEMP-007 — Card Total Must Match Clover-Processed Amount
+
+Force the authoritative recalculated total to differ from `checkout_requests.intended_total_cents` for a Card checkout (e.g., a price changed between review and commit).
+
+Expected:
+
+Commit is rejected rather than recording a Card sale for a different amount than the cashier processed on Clover.
+
+---
+
 # 13. Receipt Number Tests
 
 ## TEST-RECNO-001 — Unique Numbers
@@ -768,6 +962,36 @@ Historical receipt uses the required transaction-time customer snapshot.
 
 ---
 
+## TEST-CUST-007 — Customer Purchase-History Lookup
+
+Complete three sales for the same customer, plus one sale for a different customer.
+
+Expected:
+
+Viewing the first customer's purchase history returns exactly their three sales, correctly ordered, and excludes the other customer's sale.
+
+---
+
+## TEST-CUST-008 — Customer Without Phone
+
+Create a customer with only a name, no phone number.
+
+Expected:
+
+Creation succeeds; the customer can still be attached to a sale and found by name search.
+
+---
+
+## TEST-CUST-009 — Phone Normalization Search
+
+Create a customer with phone `(281) 824-0001`, then search using `281-824-0001` and `2818240001`.
+
+Expected:
+
+All three forms match the same customer via the normalized phone value.
+
+---
+
 # 15. Cash Payment Tests
 
 ## TEST-CASH-001 — Basic Cash Sale
@@ -863,6 +1087,41 @@ Disconnect Clover or do not provide any Clover API access.
 Expected:
 
 POS application itself remains operational because V1 card handling is manual.
+
+---
+
+## TEST-CARD-005 — Clover Approved, Local Commit Fails (Priority 0)
+
+1. Select Card and confirm Clover approval inside the POS.
+2. Force the authoritative sale transaction to fail (e.g., simulated write failure) immediately after Phase 1 durably commits.
+
+Expected:
+
+- No `sales`, `payments`, `inventory_movements`, or export-job row is created.
+- The `checkout_requests` row from Phase 1 survives with `payment_method_snapshot = CARD`, the recorded `intended_total_cents`, and `clover_approved_confirmed_at`, and is updated to `status = COMMIT_FAILED`.
+- The cashier is shown the specific Clover-review warning (`POS_WORKFLOWS.md` Section 35A), not a generic failure message.
+- A `CARD_LOCAL_COMMIT_FAILURE` audit event exists (or, if SQLite is entirely unreachable, the diagnostic fallback captures it).
+- The attempt appears in the Reconciliation Queue as unresolved.
+
+---
+
+## TEST-CARD-006 — Retry After Commit Failure Completes Without Re-Charging
+
+Following `TEST-CARD-005`, resolve the underlying local issue and retry the same cart/request.
+
+Expected:
+
+The sale completes successfully, links to the original `checkout_requests` row (`status = COMPLETED`), and the reconciliation entry is automatically resolved with `"Completed on retry"`; the cashier is never prompted to process the card through Clover again.
+
+---
+
+## TEST-CARD-007 — Reconciliation Queue Manual Resolution
+
+Following `TEST-CARD-005`, do not retry; instead mark the entry resolved with a note.
+
+Expected:
+
+The entry becomes `resolution_status = RESOLVED` with the required note; no sale is created or backdated as a result.
 
 ---
 
@@ -1306,6 +1565,69 @@ Represented sale states become eligible and export idempotently by immutable Sal
 
 ---
 
+## TEST-GSHEET-020 — Reversed Export-Response Ordering (Stale-Write Race)
+
+1. Complete a sale; the export worker begins sending its `COMPLETED` state (`sync_version = 1`, job `EXPORTING`).
+2. While that request is still in flight, void the sale — `sync_version` becomes `2`, the job is requeued `PENDING` with `target_sync_version = 2`.
+3. Let the `sync_version = 2` (`VOIDED`) request complete and be acknowledged first.
+4. Then let the original, now-stale `sync_version = 1` (`COMPLETED`) request finally complete and return its response.
+
+Expected:
+
+The Google Sheets row shows `VOIDED` and is never regressed back to `COMPLETED` by the stale response — the worker only marks a job `EXPORTED` when the version it wrote still equals the current `target_sync_version`, so the stale acknowledgment for version 1 is discarded rather than applied.
+
+---
+
+## TEST-GSHEET-021 — Void While Export Is Actively In Flight
+
+Force a sale's export job into `EXPORTING` (mid-request) and, at that exact moment, void the sale.
+
+Expected:
+
+The void transaction still succeeds locally (it never waits on network export); the job is requeued to the new `target_sync_version` as `PENDING`; when the in-flight request eventually resolves, it is treated as stale per `TEST-GSHEET-020` and does not mark the job `EXPORTED` for the old version.
+
+---
+
+## TEST-GSHEET-022 — Manual Google Sheet Row Modification or Deletion
+
+After a sale exports successfully, manually edit or delete its row directly in the Google Sheet, then trigger a subsequent export-relevant action (e.g., voiding the sale, or a manual retry).
+
+Expected:
+
+The next export attempt re-upserts the row by immutable Sale ID (recreating it if deleted, or overwriting the manual edit) so the sheet converges to the authoritative SQLite state; SQLite itself is never read from, altered by, or made dependent on the manual edit — proving Sheets cannot alter authoritative local state (`REQ-GSHEET-008`).
+
+---
+
+## TEST-GSHEET-023 — Duplicate Sale IDs in the Sheet
+
+Manually duplicate a Sale ID's row in the Sheet (simulating operator error or a sync anomaly), then trigger a subsequent export for that Sale ID.
+
+Expected:
+
+The export layer's use of Sale ID as the upsert key does not crash or corrupt local state; at minimum the local sale and SQLite state remain fully correct regardless of what the external sheet contains, since Sheets is never a read source (`REQ-GSHEET-008`, `DATA_MODEL.md` Section 50).
+
+---
+
+## TEST-GSHEET-024 — Complete Required Worksheet Columns
+
+Export a multi-item sale and inspect both worksheets.
+
+Expected:
+
+Every column listed in `DATA_MODEL.md` Section 26 is present with correct values for both the Sales and Sale Items worksheets — no required column is missing or mislabeled.
+
+---
+
+## TEST-GSHEET-025 — Formula Injection Neutralization (Sheets)
+
+Create a customer name and a product name each beginning with `=`, `+`, `-`, and `@` (e.g., `=1+1`, `+SUM(A1)`), then export a sale referencing them.
+
+Expected:
+
+Every such value is written to the Sheet neutralized (e.g., leading apostrophe) so it renders as literal text and is never interpreted as a formula by a spreadsheet application.
+
+---
+
 # 21. Printing Tests
 
 ## TEST-PRINT-001 — Basic Print
@@ -1378,6 +1700,16 @@ Receipt reprinted.
 Expected:
 
 Correct historical data.
+
+---
+
+## TEST-PRINT-007 — Full Receipt Field Verification
+
+Complete a multi-item sale with a customer, a price override, and a non-zero discount, then generate its receipt.
+
+Expected:
+
+Every field required by `REQ-REC-002` is present and correct: business name/address/phone, receipt number, date/time, customer name and phone, each item with quantity/price/discount, subtotal, tax, total, payment method, disclaimer/policy text, and thank-you message.
 
 ---
 
@@ -1491,6 +1823,16 @@ Correct Pending / Failed / Exported display.
 
 ---
 
+## TEST-HIST-006 — Sales History Date Search
+
+Complete sales on three different business dates, then search/filter Sales History for one specific date.
+
+Expected:
+
+Only sales whose derived business date (`DATA_MODEL.md` Section 4) matches the selected date are returned, using the configured business timezone rather than UTC calendar date.
+
+---
+
 # 24. Database Persistence Tests
 
 ## TEST-DB-001 — Application Restart
@@ -1560,6 +1902,86 @@ Restart application.
 Expected:
 
 Applied migrations are not rerun.
+
+---
+
+## TEST-DB-009 — Enum Constraint Enforcement
+
+Attempt to insert/update rows with out-of-range values for `products.condition`, `sales.status`, `inventory_movements.movement_type`, `payments.method`, and `google_sheet_export_jobs.status`.
+
+Expected:
+
+Each is rejected by database constraint, not merely by application-layer convention.
+
+---
+
+## TEST-DB-010 — Foreign Key ON DELETE Behavior
+
+For each relationship in `DATA_MODEL.md` Section 35, attempt to delete the referenced row (e.g., a product referenced by a sale item) directly against the database.
+
+Expected:
+
+Each relationship enforces its documented action (`RESTRICT`, `SET NULL`, or `CASCADE`) exactly; a product/customer referenced by historical data is never silently orphaned or cascade-deleted in a way that removes sale, payment, or movement history.
+
+---
+
+## TEST-DB-011 — One Payment Per Sale
+
+Attempt to insert a second `payments` row for a sale that already has one.
+
+Expected:
+
+Rejected by the `payments.sale_id UNIQUE` constraint.
+
+---
+
+## TEST-DB-012 — Payment/Total Equality
+
+Complete several sales, then verify `SUM(payments.amount_cents WHERE status = COMPLETED) = sales.total_cents` for each.
+
+Expected:
+
+Always equal; any artificial mismatch is rejected before commit.
+
+---
+
+## TEST-DB-013 — Line Arithmetic Constraints
+
+For several completed sale items, verify `line_subtotal_cents = listed_price_cents × quantity` and `line_total_cents = sold_price_cents × quantity`.
+
+Expected:
+
+Always holds; an artificially inconsistent value is rejected before commit.
+
+---
+
+## TEST-DB-014 — Reversal Movement Uniqueness
+
+Attempt to insert a second `VOID_REVERSAL` movement with the same `reverses_movement_id` as an existing one.
+
+Expected:
+
+Rejected by the `reverses_movement_id UNIQUE when present` constraint — a single `SALE` movement can be reversed at most once.
+
+---
+
+## TEST-DB-016 — Network/Cloud-Sync Database Path Warning
+
+Configure (or simulate) the database directory as a known cloud-sync folder or a UNC network path.
+
+Expected:
+
+Support & Diagnostics surfaces a clear warning that crash-safety/locking guarantees are not assured on this filesystem (`DATA_MODEL.md` Section 54); this is a documented warning, not a runtime block, since detection cannot be exhaustive.
+
+---
+
+## TEST-DB-015 — Void Field Consistency
+
+Attempt to persist a sale with `status = VOIDED` but a null `voided_at` or null `void_reason`, and separately a sale with `status = COMPLETED` but a non-null `voided_at`.
+
+Expected:
+
+Both are rejected; `voided_at`/`void_reason` are required together with, and only with, `status = VOIDED`.
 
 ---
 
@@ -1635,6 +2057,40 @@ Expected:
 Sale safe.
 
 Receipt reprintable.
+
+---
+
+# 26A. Concurrency Tests
+
+V1 runs on one machine with a shared login, but Section 55 of `DATA_MODEL.md` requires database-level correctness that does not rely solely on "only one UI action happens at a time." These tests exercise that.
+
+## TEST-CONC-001 — Concurrent Distinct Checkouts
+
+Submit two different, valid checkout requests for different products at effectively the same time (e.g., from two rapid IPC calls).
+
+Expected:
+
+Both sales complete independently with distinct Sale IDs and receipt numbers; neither corrupts the other's inventory or totals.
+
+---
+
+## TEST-CONC-002 — Concurrent Stock Adjustment and Checkout
+
+Simultaneously submit a manual inventory adjustment and a checkout for the same product, where the adjustment would make the checkout invalid (or vice versa) depending on ordering.
+
+Expected:
+
+SQLite's write-transaction serialization (`BEGIN IMMEDIATE`) resolves the two operations one at a time in some order; whichever runs second sees the other's committed effect, and `quantity_on_hand` never goes negative regardless of ordering.
+
+---
+
+## TEST-CONC-003 — Concurrent Receipt-Number Allocation
+
+Submit multiple valid checkout requests concurrently.
+
+Expected:
+
+Every completed sale receives a unique, sequential receipt number with no duplicates and no gaps caused by a race condition (a gap caused by a genuinely rolled-back attempt remains acceptable per Section 29 of `DATA_MODEL.md`).
 
 ---
 
@@ -1765,8 +2221,8 @@ Force backup creation or verification to fail.
 Expected:
 
 - Migration does not begin.
-- Existing business data remains available under the prior compatible application state.
-- Recovery guidance and a stable error code are shown.
+- The verified pre-migration backup and the original (unmigrated) database file remain intact and available; the application does not assume or perform an automatic binary/version rollback to reach this state.
+- Recovery guidance and a stable error code are shown, directing the user toward a corrective release or the documented restore procedure (`UPDATE_RELEASE_STRATEGY.md` Section 30).
 
 ---
 
@@ -1799,6 +2255,46 @@ Export all eligible sales to Google Sheets, then evaluate restore capability usi
 Expected:
 
 The system and recovery documentation do not present Sheets as sufficient to restore products, customers, inventory, movements, settings, audits, receipt sequence, or queued work; a SQLite backup remains required.
+
+---
+
+## TEST-BACKUP-020 — Off-Device vs. Local-Disk Backup Distinction
+
+Create a same-disk automatic backup and a manually configured off-device backup.
+
+Expected:
+
+`backup_records.location_kind` correctly distinguishes the two; backup-health display never describes the same-disk backup as protecting against disk/device loss, and describes the off-device backup as the one that does.
+
+---
+
+## TEST-BACKUP-017 — Full Table-Set Restore Verification
+
+Populate every table listed in `DATA_MODEL.md` Section 52 (`products`, `customers`, `sales`, `sale_items`, `payments`, `inventory_movements`, `settings`, `google_sheet_export_jobs`, `checkout_requests`, `counters`, `audit_events`, `backup_records`, `schema_migrations`) with representative rows, back up, then restore into a test environment.
+
+Expected:
+
+Every table's row count and representative content match the source exactly after restore, including the receipt-number counter and durable audit history — not just the subset already covered by `TEST-BACKUP-004` through `TEST-BACKUP-006`.
+
+---
+
+## TEST-BACKUP-018 — Restore Safety: Newer Local Data Detected
+
+Take a backup, then complete additional sales, then attempt to restore the earlier backup.
+
+Expected:
+
+The application detects that the current database is newer, warns with the specific transaction count/date range that would be lost, and does not proceed without explicit confirmation; a pre-restore recovery copy of the current database is preserved regardless of the outcome (`DATA_MODEL.md` Section 52A).
+
+---
+
+## TEST-BACKUP-019 — Restore Validation Failure Falls Back to Pre-Restore Copy
+
+Force the restored database to fail validation after replacement (e.g., simulate a truncated/corrupted backup file).
+
+Expected:
+
+The application restores the preserved pre-restore copy and reports a stable error code rather than leaving the database in the failed-validation state.
 
 ---
 
@@ -1836,7 +2332,67 @@ Inspect persisted credential representation.
 
 Expected:
 
-No plaintext password.
+No plaintext password; a salted, memory-hard hash is used, not a fast unsalted hash.
+
+---
+
+## TEST-AUTH-005 — First-Run Credential Setup
+
+Launch the application with no shared credential ever created.
+
+Expected:
+
+A setup (not login) screen is shown; the POS home screen is unreachable until a password is created and confirmed; an `AUTH_CREDENTIAL_CHANGED` audit event is recorded.
+
+---
+
+## TEST-AUTH-006 — Password Change
+
+Change the shared password from Settings using the correct current password, then log out and back in with the new password.
+
+Expected:
+
+Change succeeds, the old password no longer works, the new one does, and an `AUTH_CREDENTIAL_CHANGED` audit event is recorded.
+
+---
+
+## TEST-AUTH-007 — Password Change Rejected With Wrong Current Password
+
+Attempt to change the password while entering an incorrect current password.
+
+Expected:
+
+Rejected; the existing password remains unchanged.
+
+---
+
+## TEST-AUTH-008 — Local Recovery Does Not Require Internet or Online Identity
+
+Exercise the documented local recovery procedure for a forgotten password.
+
+Expected:
+
+Recovery succeeds without any email/SMS/cloud-identity step and without internet access; business data is untouched; the application re-enters first-run setup afterward.
+
+---
+
+## TEST-AUTH-009 — Brute-Force Backoff Without Lockout
+
+Submit repeated incorrect passwords in quick succession, then eventually submit the correct password.
+
+Expected:
+
+Each additional failure increases the delay before the next attempt is accepted; the correct password is always eventually accepted once its delay elapses — the shared login is never permanently locked.
+
+---
+
+## TEST-AUTH-010 — Restore Does Not Change Current Credential
+
+Restore a SQLite backup created under a different shared password than the one currently configured.
+
+Expected:
+
+The restore does not change the currently configured login credential, because it is stored independently of the SQLite `settings` table.
 
 ---
 
@@ -2017,6 +2573,24 @@ The final application must be tested with:
 - Client's current printer
 - Thermal printer when acquired
 - Clover terminal operational workflow
+
+## HW-WIN-001 — Windows 10 Validation
+
+Install and exercise the full acceptance matrix (Section 37) on a representative Windows 10 machine.
+
+Expected:
+
+Install, launch, checkout, printing, scanning, backup, and update behave identically to the documented requirements.
+
+---
+
+## HW-WIN-002 — Windows 11 Validation
+
+Install and exercise the full acceptance matrix (Section 37) on a representative Windows 11 machine.
+
+Expected:
+
+Install, launch, checkout, printing, scanning, backup, and update behave identically to the documented requirements.
 
 ---
 
@@ -2229,6 +2803,17 @@ The following scenarios are mandatory release blockers.
 | Clean Windows update | PASS |
 | Actual scanner test | PASS |
 | Actual printer test | PASS |
+| Clover-approved / local-commit-failure evidence and warning | PASS |
+| Reconciliation queue resolution and safe retry | PASS |
+| Checkout drift detection and rejection | PASS |
+| Restore safety: newer-data detection, confirmation, pre-restore copy | PASS |
+| SQLite durability configuration (WAL/FULL/busy-timeout) verified under crash | PASS |
+| Windows 10 explicit validation | PASS |
+| Windows 11 explicit validation | PASS |
+| Update feed/package/publisher tamper rejection | PASS |
+| Formula injection neutralized in CSV and Google Sheets exports | PASS |
+| Google Sheets stale-write/reversed-ordering race resolved | PASS |
+| Shared-credential lifecycle (setup, change, recovery, backoff) | PASS |
 
 Any failed MUST requirement blocks V1 production release.
 
@@ -2542,6 +3127,12 @@ The test plan is considered satisfied for V1 only when:
 - All four owner CSV exports and failure isolation have been tested.
 - Installer has been tested on a clean Windows environment.
 - Client hardware has been tested.
+- A Clover-approved card charge followed by a local commit failure is durably recorded, clearly warned, safely retryable, and tracked to resolution without ever appearing as a completed sale.
+- Checkout drift between review and commit is detected and rejected rather than silently committed.
+- Restore safety (pre-restore copy, newer-data detection, required confirmation) has been demonstrated, not merely assumed.
+- SQLite durability configuration has been verified under simulated crash/abrupt-termination conditions.
+- The Google Sheets stale-write/reversed-response-ordering race has been demonstrated to never regress a `VOIDED` row back to `COMPLETED`.
+- Every MUST requirement in `PRODUCT_REQUIREMENTS.md` has at least one entry in the full traceability matrix (Section 57).
 
 ---
 
@@ -2836,6 +3427,57 @@ Expected:
 - Application-file replacement does not replace the database.
 - Migration evidence and backup remain available.
 - Newer committed business records are not silently discarded.
+- No automatic binary/schema rollback is assumed or performed; recovery uses a corrective release or the documented restore procedure.
+
+---
+
+## TEST-UPDATE-014 — Tampered Update Feed Rejected
+
+Serve a feed response with an invalid signature or tampered metadata.
+
+Expected:
+
+The client rejects it and does not install anything; the currently installed version continues operating normally.
+
+---
+
+## TEST-UPDATE-015 — Wrong Signing Publisher Rejected
+
+Offer a package signed by a certificate that does not match the expected publisher identity.
+
+Expected:
+
+Installation is refused before any files are replaced.
+
+---
+
+## TEST-UPDATE-016 — Corrupted/Partial Package Rejected
+
+Offer a truncated or checksum-mismatched package.
+
+Expected:
+
+Verification fails before installation begins; the currently installed version remains in use.
+
+---
+
+## TEST-UPDATE-017 — Certificate Rotation
+
+Sign a release with a newly rotated, legitimate publisher certificate.
+
+Expected:
+
+The client trusts it through normal chain-of-trust verification without requiring a client-side code change, while a certificate that does not chain to the trusted publisher identity is still rejected.
+
+---
+
+## TEST-UPDATE-018 — Unsupported Signed-Version Downgrade Rejected
+
+Offer a validly signed but older package whose schema is incompatible with the currently migrated database.
+
+Expected:
+
+The downgrade is refused outside of the documented recovery procedure (`UPDATE_RELEASE_STRATEGY.md` Section 31); the application does not silently apply an incompatible older version.
 
 ---
 
@@ -3037,6 +3679,16 @@ Only one maintenance action runs, new checkout is unavailable until safe complet
 
 ---
 
+## TEST-REL-011 — Graceful Close During Active Sale, Backup, Restore, or Migration
+
+Request application close while, in separate runs: (a) a checkout transaction is in flight, (b) an automatic backup is writing, (c) a restore is in progress, and (d) a migration is applying.
+
+Expected:
+
+In each case the in-progress SQLite operation is allowed to reach a safe commit/rollback boundary (or the close is deferred until it does) before the process exits; no partial sale, partial backup file, half-restored database, or half-applied migration is left behind, and the next launch finds a fully consistent, recoverable state.
+
+---
+
 # 55. Owner CSV Export Tests
 
 These tests validate `REQ-EXPORT-*`.
@@ -3101,6 +3753,16 @@ No CSV import, legacy migration, or bidirectional file-synchronization operation
 
 ---
 
+## TEST-EXPORT-007 — Formula Injection Neutralization (CSV)
+
+Create a customer and a product each with a name beginning with `=`, `+`, `-`, and `@`, then export Customers and Products CSV.
+
+Expected:
+
+Every such value is written neutralized (e.g., leading apostrophe) so opening the CSV in a spreadsheet application never executes it as a formula.
+
+---
+
 # 56. Durable Audit Tests
 
 These tests validate `REQ-AUDIT-*`.
@@ -3146,41 +3808,207 @@ Expected:
 
 ---
 
-# 57. New V1 Traceability Matrix
+## TEST-AUDIT-005 — Durable Migration-Failure Audit
+
+Force a schema migration to fail after its pre-migration backup has already been verified.
+
+Expected:
+
+A `MIGRATION_STARTED` event (`outcome = SUCCESS`, describing only that the start was recorded) and a subsequent `MIGRATION_FAILED` event (`outcome = FAILURE`) both exist and survive restart; if the database becomes briefly unwritable during the failure, the diagnostic log preserves the same evidence until the durable audit write can be confirmed, and the application never claims a successful audit write that did not happen.
+
+---
+
+## TEST-AUDIT-006 — Monotonic Sequence Survives Clock Anomaly
+
+Record several audit events, then move the system clock backward, then record more events.
+
+Expected:
+
+Each event's `sequence` value strictly increases in true chronological order of creation regardless of what `occurred_at` reports; ordering by `sequence` never contradicts the real order of events.
+
+---
+
+# 56A. Operational Defaults Tests
+
+These verify the concrete V1 defaults fixed in `ARCHITECTURE.md` Section 49A, so tests remain deterministic rather than depending on an unstated value.
+
+## TEST-DEFAULT-001 — Automatic Backup Cadence Default
+
+With no cadence explicitly configured, advance the clock across a day boundary.
+
+Expected:
+
+An automatic backup runs at the documented default (03:00 local business time).
+
+---
+
+## TEST-DEFAULT-002 — Stale EXPORTING Timeout Default
+
+Force a job into `EXPORTING` and hold it there past the documented 5-minute default without an update, then run a worker cycle/restart.
+
+Expected:
+
+The job is recovered to `PENDING` once the default timeout has elapsed, and not before.
+
+---
+
+## TEST-DEFAULT-003 — Export Retry Backoff Default
+
+Force repeated export failures and record the delay between attempts.
+
+Expected:
+
+Backoff starts at 30 seconds and doubles up to the documented 30-minute cap.
+
+---
+
+## TEST-DEFAULT-004 — Retry-Exhausted Terminal Behavior Default
+
+Force 10 consecutive export failures for the same job.
+
+Expected:
+
+The job becomes `FAILED` (still manually retryable) rather than continuing to retry indefinitely or being silently abandoned.
+
+---
+
+## TEST-DEFAULT-005 — Low-Disk Threshold Defaults
+
+Simulate free disk space just above and just below the documented 2 GB warning and 500 MB critical thresholds.
+
+Expected:
+
+Health status transitions to `WARNING`/`CRITICAL` at exactly the documented defaults.
+
+---
+
+## TEST-DEFAULT-006 — Clock-Jump Threshold Default
+
+Move the system clock by an amount just below and just above the documented 5-minute significant-change threshold.
+
+Expected:
+
+Only the change exceeding the threshold is logged/warned as significant.
+
+---
+
+# 57. Full V1 Traceability Matrix
+
+This matrix supersedes the prior partial matrix (which covered only Void/Audit/Export/Update/Diagnostics/Backup/Health/App-lifecycle requirements against 52 of the 155 MUST requirements that existed at the time of the pre-implementation audit). It maps every MUST requirement in the current `PRODUCT_REQUIREMENTS.md` — 184 as of this remediation — to at least one primary verification path. A test listed as "primary" for a requirement may also validate others; this table records the strongest single link, not an exhaustive cross-reference.
 
 | Requirement | Primary verification |
 |---|---|
-| `REQ-VOID-001` | `TEST-VOID-001`, `TEST-VOID-002` |
-| `REQ-VOID-002` | `TEST-VOID-001`, `TEST-VOID-005` |
-| `REQ-VOID-003` | `TEST-VOID-003`, `TEST-VOID-010` |
-| `REQ-VOID-004` | `TEST-VOID-006` |
-| `REQ-VOID-005` | `TEST-VOID-004` |
-| `REQ-VOID-006` | `TEST-VOID-001`, `TEST-VOID-010` |
-| `REQ-VOID-007` | `TEST-VOID-007` |
-| `REQ-VOID-008` | `TEST-VOID-008`, `TEST-VOID-009` |
-| `REQ-AUDIT-001` | `TEST-AUDIT-002` |
-| `REQ-AUDIT-002` | `TEST-AUDIT-001` |
-| `REQ-AUDIT-003` | `TEST-AUDIT-003` |
-| `REQ-AUDIT-004` | `TEST-AUDIT-004`, `TEST-VOID-010` |
-| `REQ-EXPORT-001` | `TEST-EXPORT-001` through `TEST-EXPORT-004` |
-| `REQ-EXPORT-002` | `TEST-EXPORT-006` |
-| `REQ-EXPORT-003` | `TEST-EXPORT-005` |
-| `REQ-UPDATE-001` | `TEST-UPDATE-010` |
-| `REQ-UPDATE-002` | `TEST-UPDATE-012` |
-| `REQ-UPDATE-003` | `TEST-UPDATE-003` |
-| `REQ-UPDATE-004` | `TEST-UPDATE-004`, `TEST-UPDATE-005` |
-| `REQ-UPDATE-005` | `TEST-UPDATE-004`, `TEST-REL-009` |
-| `REQ-UPDATE-006` | `TEST-UPDATE-001`, `TEST-UPDATE-002` |
-| `REQ-UPDATE-007` | `TEST-UPDATE-006`, `TEST-UPDATE-009` |
-| `REQ-UPDATE-008` | `TEST-BACKUP-012`, `TEST-BACKUP-013`, `TEST-UPDATE-007`, `TEST-UPDATE-008` |
-| `REQ-UPDATE-009` | `TEST-UPDATE-013` |
-| `REQ-UPDATE-010` | `TEST-UPDATE-010` |
-| `REQ-DIAG-001` | `TEST-DIAG-007` |
-| `REQ-DIAG-002` | `TEST-DIAG-009` |
-| `REQ-DIAG-003` | `TEST-DIAG-001`, `TEST-DIAG-002`, `TEST-DIAG-006` |
-| `REQ-DIAG-004` | `TEST-DIAG-004`, `TEST-DIAG-008` |
-| `REQ-DIAG-005` | `TEST-DIAG-003`, `TEST-DIAG-005` |
-| `REQ-DIAG-006` | `TEST-DIAG-007`, `TEST-UPDATE-002`, `TEST-REL-007` |
+| `REQ-PROD-001` | `TEST-PROD-001` |
+| `REQ-PROD-002` | `TEST-PROD-007` |
+| `REQ-PROD-003` | `TEST-PROD-008`, `TEST-PROD-006` |
+| `REQ-PROD-004` | `TEST-PROD-005` |
+| `REQ-PROD-005` | `TEST-OFF-003`, `TEST-PERF-001` |
+| `REQ-PROD-006` | `TEST-SCAN-001` |
+| `REQ-PROD-007` | `TEST-PROD-009` |
+| `REQ-PROD-008` | `TEST-PROD-003`, `TEST-PROD-004`, `TEST-PROD-004A` |
+| `REQ-INV-001` | `TEST-INV-001` |
+| `REQ-INV-002` | `TEST-INV-001`, `TEST-INV-002` |
+| `REQ-INV-003` | `TEST-ATOMIC-001`, `TEST-ATOMIC-004` |
+| `REQ-INV-004` | `TEST-INV-003`, `ACCEPT-009` |
+| `REQ-INV-005` | `TEST-PROD-002`, `TEST-INV-005` |
+| `REQ-SCAN-001` | `HW-SCAN-001` |
+| `REQ-SCAN-002` | `TEST-SCAN-001` |
+| `REQ-SCAN-003` | `TEST-SCAN-002` |
+| `REQ-SCAN-004` | `TEST-SCAN-005`, `TEST-OFF-004` |
+| `REQ-SALE-001` | `TEST-CART-002` |
+| `REQ-SALE-002` | `TEST-CART-003` |
+| `REQ-SALE-003` | `TEST-CART-004` |
+| `REQ-SALE-004` | `TEST-CART-005` |
+| `REQ-SALE-005` | `TEST-CART-010`, `ACCEPT-002` |
+| `REQ-SALE-006` | `TEST-DISC-001`, `TEST-DISC-002` |
+| `REQ-SALE-007` | `ACCEPT-001`, `ACCEPT-002` |
+| `REQ-SALE-008` | `TEST-ATOMIC-001`, `ACCEPT-001` |
+| `REQ-SALE-009` | `TEST-PROD-006`, `ACCEPT-010` |
+| `REQ-SALE-010` | `TEST-IDEMP-001` through `TEST-IDEMP-004` |
+| `REQ-SALE-011` | `TEST-CART-001` |
+| `REQ-SALE-012` | `TEST-CART-006` |
+| `REQ-SALE-013` | `TEST-CART-007`, `TEST-CART-008`, `TEST-CART-009` |
+| `REQ-SALE-014` | `TEST-IDEMP-006`, `TEST-IDEMP-007` |
+| `REQ-RECNO-001` | `TEST-RECNO-001` |
+| `REQ-RECNO-002` | `TEST-RECNO-002` |
+| `REQ-RECNO-003` | `TEST-RECNO-004` |
+| `REQ-RECNO-004` | `TEST-RECNO-001` |
+| `REQ-TAX-001` | `TEST-TAX-002` |
+| `REQ-TAX-002` | `TEST-TAX-001` |
+| `REQ-TAX-003` | `TEST-TAX-002` |
+| `REQ-TAX-004` | `TEST-MONEY-001` |
+| `REQ-TAX-005` | `TEST-TAX-003`, `TEST-TAX-005` |
+| `REQ-PAY-001` | `TEST-CASH-001` |
+| `REQ-PAY-002` | `TEST-CARD-001` |
+| `REQ-PAY-003` | `TEST-CARD-004` |
+| `REQ-PAY-004` | `TEST-CARD-003` |
+| `REQ-PAY-005` | `TEST-DB-012` |
+| `REQ-RECONCILE-001` | `TEST-CARD-005` |
+| `REQ-RECONCILE-002` | `TEST-CARD-005` |
+| `REQ-RECONCILE-003` | `TEST-CARD-005` |
+| `REQ-RECONCILE-004` | `TEST-CARD-007` |
+| `REQ-RECONCILE-005` | `TEST-CARD-005` |
+| `REQ-RECONCILE-006` | `TEST-CARD-006` |
+| `REQ-CUST-001` | `TEST-CUST-001`, `TEST-CUST-008` |
+| `REQ-CUST-007` | `TEST-CUST-009` |
+| `REQ-CUST-002` | `TEST-CUST-004` |
+| `REQ-CUST-003` | `TEST-CUST-002`, `TEST-CUST-003` |
+| `REQ-CUST-004` | `TEST-CUST-005` |
+| `REQ-CUST-005` | `TEST-CUST-007` |
+| `REQ-CUST-006` | `TEST-OFF-004`, `TEST-OFF-005` |
+| `REQ-REC-001` | `TEST-PRINT-001` |
+| `REQ-REC-002` | `TEST-PRINT-007` |
+| `REQ-REC-003` | `TEST-PRINT-005` |
+| `REQ-REC-004` | `TEST-PRINT-003` |
+| `REQ-REC-005` | `TEST-PRINT-002`, `ACCEPT-007` |
+| `REQ-PRINT-001` | `TEST-PRINT-001`, `HW-PRINT-001` |
+| `REQ-PRINT-002` | `HW-PRINT-001` |
+| `REQ-PRINT-005` | `TEST-PRINT-004`, `ACCEPT-007` |
+| `REQ-HIST-001` | `TEST-HIST-001` |
+| `REQ-HIST-002` | `TEST-HIST-001` |
+| `REQ-HIST-003` | `TEST-HIST-002`, `TEST-HIST-003`, `TEST-HIST-006` |
+| `REQ-HIST-004` | `TEST-HIST-005` |
+| `REQ-REPORT-001` | `TEST-REPORT-001` |
+| `REQ-REPORT-002` | `TEST-REPORT-002` |
+| `REQ-REPORT-003` | `TEST-REPORT-003` |
+| `REQ-REPORT-004` | `TEST-REPORT-004` |
+| `REQ-REPORT-005` | `TEST-REPORT-005` |
+| `REQ-REPORT-006` | `TEST-REPORT-006` |
+| `REQ-REPORT-007` | `TEST-REPORT-007`, `TEST-OFF-011` |
+| `REQ-REPORT-008` | `TEST-HIST-006` |
+| `REQ-REPORT-009` | `TEST-VOID-004` |
+| `REQ-OFF-001` | `TEST-OFF-006`, `ACCEPT-003` |
+| `REQ-OFF-002` | `TEST-OFF-001` |
+| `REQ-OFF-003` | `TEST-OFF-003` |
+| `REQ-OFF-004` | `TEST-OFF-004` |
+| `REQ-OFF-005` | `TEST-OFF-005` |
+| `REQ-OFF-006` | `TEST-OFF-010`, `TEST-OFF-011` |
+| `REQ-OFF-007` | `TEST-OFF-009` |
+| `REQ-OFF-008` | `TEST-OFF-012`, `ACCEPT-004` |
+| `REQ-OFF-009` | `TEST-OFF-013` |
+| `REQ-GSHEET-001` | `TEST-GSHEET-001`, `TEST-ATOMIC-005` |
+| `REQ-GSHEET-002` | `TEST-GSHEET-018` |
+| `REQ-GSHEET-003` | `TEST-GSHEET-009` through `TEST-GSHEET-013` |
+| `REQ-GSHEET-004` | `TEST-GSHEET-005` |
+| `REQ-GSHEET-005` | `TEST-GSHEET-006`, `TEST-GSHEET-007` |
+| `REQ-GSHEET-006` | `TEST-GSHEET-008` |
+| `REQ-GSHEET-007` | `TEST-GSHEET-014`, `TEST-GSHEET-015` |
+| `REQ-GSHEET-008` | `TEST-GSHEET-022`, `TEST-GSHEET-023` |
+| `REQ-GSHEET-009` | `TEST-GSHEET-002` |
+| `REQ-GSHEET-010` | `TEST-GSHEET-003` |
+| `REQ-GSHEET-011` | `TEST-HIST-005` |
+| `REQ-GSHEET-013` | `TEST-SEC-005` |
+| `REQ-GSHEET-014` | `TEST-GSHEET-025` |
+| `REQ-GSHEET-015` | `TEST-GSHEET-020`, `TEST-GSHEET-021` |
+| `REQ-DB-001` | `TEST-DB-001` |
+| `REQ-DB-002` | `TEST-DB-001`, `TEST-DB-002` |
+| `REQ-DB-003` | `TEST-ATOMIC-001` |
+| `REQ-DB-004` | `TEST-DB-003`, `TEST-DB-010` |
+| `REQ-DB-005` | `TEST-DB-007`, `TEST-DB-008` |
+| `REQ-DB-006` | `TEST-SEC-001`, `TEST-SEC-002` |
+| `REQ-DB-007` | `TEST-CRASH-002`, `TEST-REL-003` |
+| `REQ-DB-008` | `TEST-DB-016` |
+| `REQ-DB-009` | `TEST-DB-010` |
 | `REQ-BACKUP-001` | `TEST-BACKUP-001` through `TEST-BACKUP-003` |
 | `REQ-BACKUP-002` | `TEST-BACKUP-002`, `TEST-BACKUP-003` |
 | `REQ-BACKUP-003` | `TEST-BACKUP-016` |
@@ -3190,15 +4018,72 @@ Expected:
 | `REQ-BACKUP-007` | `TEST-BACKUP-009`, `TEST-BACKUP-011` |
 | `REQ-BACKUP-008` | `TEST-BACKUP-012`, `TEST-BACKUP-013` |
 | `REQ-BACKUP-009` | `TEST-BACKUP-015` |
+| `REQ-BACKUP-010` | `TEST-BACKUP-020` |
+| `REQ-BACKUP-011` | `TEST-BACKUP-017` through `TEST-BACKUP-019` |
+| `REQ-AUTH-001` | `TEST-AUTH-001` |
+| `REQ-AUTH-002` | `TEST-AUTH-003` |
+| `REQ-AUTH-003` | `TEST-AUTH-004` |
+| `REQ-AUTH-004` | `TEST-AUTH-005` |
+| `REQ-AUTH-005` | `TEST-AUTH-006`, `TEST-AUTH-007` |
+| `REQ-AUTH-006` | `TEST-AUTH-008` |
+| `REQ-AUTH-007` | `TEST-AUTH-010` |
+| `REQ-AUTH-008` | `TEST-AUTH-009` |
+| `REQ-SEC-001` | `TEST-SEC-001` |
+| `REQ-SEC-002` | `TEST-SEC-002` |
+| `REQ-SEC-003` | `TEST-SEC-004`, `TEST-CART-009` |
+| `REQ-SEC-004` | `TEST-SEC-006` |
+| `REQ-SEC-005` | `TEST-SEC-003` |
+| `REQ-REL-001` | `TEST-DB-001`, `ACCEPT-004` |
+| `REQ-REL-002` | `TEST-CRASH-001` |
+| `REQ-REL-003` | `TEST-IDEMP-001` |
+| `REQ-REL-004` | `TEST-GSHEET-017`, `TEST-PRINT-002` |
+| `REQ-REL-005` | `TEST-ATOMIC-002` |
+| `REQ-PERF-003` | `TEST-PERF-003` |
+| `REQ-PKG-001` | `TEST-INSTALL-001` |
+| `REQ-PKG-002` | `TEST-INSTALL-002`, `TEST-INSTALL-003`, `TEST-INSTALL-004` |
+| `REQ-PKG-003` | `TEST-INSTALL-005` |
+| `REQ-VOID-001` | `TEST-VOID-001`, `TEST-VOID-002` |
+| `REQ-VOID-002` | `TEST-VOID-001`, `TEST-VOID-005` |
+| `REQ-VOID-003` | `TEST-VOID-003`, `TEST-VOID-010` |
+| `REQ-VOID-004` | `TEST-VOID-006` |
+| `REQ-VOID-005` | `TEST-VOID-004` |
+| `REQ-VOID-006` | `TEST-VOID-001`, `TEST-VOID-010` |
+| `REQ-VOID-007` | `TEST-VOID-007`, `TEST-GSHEET-020`, `TEST-GSHEET-021` |
+| `REQ-VOID-008` | `TEST-VOID-008`, `TEST-VOID-009` |
+| `REQ-AUDIT-001` | `TEST-AUDIT-002` |
+| `REQ-AUDIT-002` | `TEST-AUDIT-001` |
+| `REQ-AUDIT-003` | `TEST-AUDIT-003` |
+| `REQ-AUDIT-004` | `TEST-AUDIT-004`, `TEST-AUDIT-005`, `TEST-VOID-010` |
+| `REQ-AUDIT-005` | `TEST-AUDIT-006` |
+| `REQ-EXPORT-001` | `TEST-EXPORT-001` through `TEST-EXPORT-004` |
+| `REQ-EXPORT-002` | `TEST-EXPORT-006` |
+| `REQ-EXPORT-003` | `TEST-EXPORT-005` |
+| `REQ-EXPORT-004` | `TEST-EXPORT-007` |
+| `REQ-UPDATE-001` | `TEST-UPDATE-010` |
+| `REQ-UPDATE-002` | `TEST-UPDATE-012` |
+| `REQ-UPDATE-003` | `TEST-UPDATE-003` |
+| `REQ-UPDATE-004` | `TEST-UPDATE-004`, `TEST-UPDATE-005` |
+| `REQ-UPDATE-005` | `TEST-UPDATE-004`, `TEST-REL-009` |
+| `REQ-UPDATE-006` | `TEST-UPDATE-001`, `TEST-UPDATE-002` |
+| `REQ-UPDATE-007` | `TEST-UPDATE-006`, `TEST-UPDATE-009` |
+| `REQ-UPDATE-008` | `TEST-BACKUP-012`, `TEST-BACKUP-013`, `TEST-UPDATE-007`, `TEST-UPDATE-008` |
+| `REQ-UPDATE-009` | `TEST-UPDATE-013` |
+| `REQ-UPDATE-010` | `TEST-UPDATE-010`, `TEST-UPDATE-014` through `TEST-UPDATE-018` |
+| `REQ-DIAG-001` | `TEST-DIAG-007` |
+| `REQ-DIAG-002` | `TEST-DIAG-009` |
+| `REQ-DIAG-003` | `TEST-DIAG-001`, `TEST-DIAG-002`, `TEST-DIAG-006` |
+| `REQ-DIAG-004` | `TEST-DIAG-004`, `TEST-DIAG-008` |
+| `REQ-DIAG-005` | `TEST-DIAG-003`, `TEST-DIAG-005` |
+| `REQ-DIAG-006` | `TEST-DIAG-007`, `TEST-UPDATE-002`, `TEST-REL-007` |
 | `REQ-HEALTH-001` | `TEST-DIAG-007`, `TEST-BACKUP-011`, `TEST-REL-006`, `TEST-REL-007` |
-| `REQ-HEALTH-002` | `TEST-REL-008` |
+| `REQ-HEALTH-002` | `TEST-REL-008`, `TEST-DEFAULT-006` |
 | `REQ-HEALTH-003` | `TEST-REL-002` |
 | `REQ-HEALTH-004` | `TEST-CRASH-001` through `TEST-CRASH-005`, `TEST-REL-003`, `TEST-REL-004` |
 | `REQ-HEALTH-005` | `TEST-OFF-001` through `TEST-OFF-013`, `TEST-NET-003`, `TEST-REL-005` |
 | `REQ-APP-001` | `TEST-REL-001` |
-| `REQ-APP-002` | `TEST-BACKUP-014`, `TEST-UPDATE-004`, `TEST-REL-009`, `TEST-REL-010` |
+| `REQ-APP-002` | `TEST-BACKUP-014`, `TEST-UPDATE-004`, `TEST-REL-009`, `TEST-REL-010`, `TEST-REL-011` |
 
-Unrelated existing test IDs remain unchanged.
+Every MUST requirement above maps to at least one test. Where a requirement is already exercised end-to-end by a `Production Acceptance` (`ACCEPT-*`) or hardware (`HW-*`) scenario, that scenario is cited alongside or instead of a narrower unit/integration test.
 
 ---
 

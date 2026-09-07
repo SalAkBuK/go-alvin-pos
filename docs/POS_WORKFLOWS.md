@@ -211,7 +211,65 @@ Application reaches login screen.
 
 ## Security Rule
 
-Raw password must not be stored in plaintext.
+Raw password must not be stored in plaintext; it is hashed with a salted, memory-hard algorithm (`ARCHITECTURE.md` Section 28).
+
+---
+
+# 7A. First-Run Credential Setup Workflow
+
+## Trigger
+
+Application reaches login and no shared credential has ever been created.
+
+## Flow
+
+1. Application shows a setup screen instead of a login prompt.
+2. User enters and confirms a new shared password.
+3. Password is hashed and stored; the POS home screen becomes reachable.
+4. An `AUTH_CREDENTIAL_CHANGED` audit event is recorded.
+
+No internet is required.
+
+---
+
+# 7B. Password Change Workflow
+
+## Trigger
+
+User selects `Settings → Change Password`.
+
+## Flow
+
+1. User enters the current password and a new password (with confirmation).
+2. Application verifies the current password locally.
+3. On success, the stored hash is replaced and an `AUTH_CREDENTIAL_CHANGED` audit event is recorded.
+4. On failure, the existing password remains unchanged.
+
+No internet is required.
+
+---
+
+# 7C. Forgotten Password Recovery Workflow
+
+## Scenario
+
+The shared password is forgotten and no one can log in.
+
+## Expected Behavior
+
+V1 has no online password reset (no email/SMS/cloud identity). Recovery follows a documented local procedure requiring direct physical/administrative access to the installed application (for example, a support-assisted local reset step) that clears the stored credential without touching business data, after which the application re-enters the first-run setup workflow (Section 7A) to establish a new shared password.
+
+---
+
+# 7D. Brute-Force Backoff Workflow
+
+## Scenario
+
+Repeated consecutive failed login attempts occur.
+
+## Expected Behavior
+
+After a small number of consecutive failures, the application imposes an increasing delay before the next attempt is accepted. The shared login is never permanently locked, since there is no alternate account or online reset path; a correct password is always eventually accepted once the current delay elapses.
 
 ---
 
@@ -526,6 +584,8 @@ $480 each
 
 The application must calculate transaction totals across all line items.
 
+If the same product appears in more than one line (for example, added twice with different negotiated prices), stock validation aggregates their quantities by product ID and checks the combined total against available stock, so a cashier cannot bypass the stock check by splitting one product's quantity across lines (`DATA_MODEL.md` Section 41A).
+
 ---
 
 # 19. Cart Quantity Change Workflow
@@ -595,10 +655,10 @@ Negotiated:
 
 1. Cashier edits selling price.
 2. Application validates price is allowed.
-3. Price must not be negative.
+3. Price must be a non-negative integer-cent value within the documented monetary bounds (`DATA_MODEL.md` Section 41A); it may be set below, equal to, or above the listed price.
 4. Listed price remains visible.
 5. Sold price becomes `$550`.
-6. Discount is calculated from the difference.
+6. Discount is calculated from the difference and clamped at zero (never negative) if the sold price is above listing.
 7. Cart totals update.
 
 The historical sale must preserve both values after completion.
@@ -701,6 +761,8 @@ Payment method
 ```
 
 Cashier should have a clear opportunity to verify the transaction before completion.
+
+What the cashier reviews here is exactly what the trusted application layer fingerprints and later re-validates at commit (`DATA_MODEL.md` Section 41B). If anything material changes between this review and Complete Sale — a price, the tax rate, product availability, or stock — the commit step rejects the attempt for re-review rather than silently completing with different values (Section 33).
 
 ---
 
@@ -870,28 +932,40 @@ Cashier confirms payment and selects Complete Sale.
 
 ## Trusted Application Flow
 
-The application begins a SQLite transaction.
+Completion is two phases (`DATA_MODEL.md` Sections 31–31B; `ARCHITECTURE.md` Section 15A).
 
-Conceptually:
+### Phase 1 — Durable pre-commit record (independent, always committed)
 
 ```text
 BEGIN IMMEDIATE
 ```
 
-Then:
+1. Compute the checkout fingerprint over the reviewed cart, customer, tax rate, and totals (`DATA_MODEL.md` Section 41B).
+2. Check checkout request ID; if it already exists with a different fingerprint, reject as a conflict.
+3. Insert (or reuse) the `checkout_requests` row with `status = SUBMITTED`, the payment method, intended total, and — for Card — the Clover-approval confirmation timestamp.
 
-1. Check checkout request ID.
-2. Determine whether request already completed.
-3. Load products from SQLite.
-4. Verify products are active.
-5. Verify sufficient stock.
-6. Recalculate listed totals.
-7. Recalculate sold totals.
-8. Recalculate discounts.
-9. Load configured tax rate.
-10. Calculate tax.
-11. Calculate final total.
-12. Validate payment information.
+```text
+COMMIT
+```
+
+### Phase 2 — Authoritative sale transaction (may fail without losing Phase 1 evidence)
+
+```text
+BEGIN IMMEDIATE
+```
+
+1. Determine whether the request already reached `COMPLETED`; if so, return the existing sale.
+2. Load products from SQLite.
+3. Verify products are active.
+4. Aggregate duplicate product-ID cart lines and verify sufficient stock against the combined quantity.
+5. Recalculate listed totals.
+6. Recalculate sold totals.
+7. Recalculate discounts (clamped at zero; Section 22).
+8. Load the currently configured tax rate.
+9. Calculate tax using the fixed rounding rule (`DATA_MODEL.md` Section 42).
+10. Calculate final total.
+11. Compare every recalculated value against the reviewed fingerprint (step 1 of Phase 1); if anything drifted — price, tax rate, availability, stock, or totals — reject with a re-review error instead of committing different values.
+12. Validate payment information; for Card, the recalculated total must exactly equal the amount already recorded as `intended_total_cents`.
 13. Generate Sale ID.
 14. Generate receipt number.
 15. Snapshot customer information.
@@ -904,20 +978,19 @@ Then:
 22. Insert inventory movements.
 23. Insert required `SALE_COMPLETED` and price-override audit events.
 24. Insert the sale's durable Google Sheets export job as `PENDING`; when integration is disabled, configuration gates the worker from processing it.
-25. Record completed checkout request.
-26. Commit.
-
-If successful:
+25. Update the existing checkout-request row to `status = COMPLETED` with the Sale ID.
 
 ```text
 COMMIT
 ```
 
-If any required operation fails:
+If any required operation in Phase 2 fails:
 
 ```text
 ROLLBACK
 ```
+
+followed immediately by a separate best-effort update marking the same checkout-request row `COMMIT_FAILED` with a failure code (Section 35A). Phase 1's record is never lost, even though Phase 2 rolled back completely.
 
 ---
 
@@ -961,6 +1034,62 @@ It must not:
 - Report success
 - Create partial inventory changes
 - Queue Google export for a nonexistent sale
+
+If the payment method was Card and the cashier had already confirmed Clover approval, follow Section 35A instead of a generic failure message — the cashier must be warned specifically about the possible Clover charge.
+
+---
+
+# 35A. Card Payment Local-Commit-Failure Workflow
+
+## Scenario
+
+The cashier confirms Clover approved the card charge, but the authoritative local sale transaction (Section 33) then fails.
+
+## Expected Behavior
+
+1. The trusted application layer has already durably recorded, before attempting the sale transaction, the checkout request, payment method (`CARD`), intended total, and the timestamp the cashier confirmed Clover approval (`DATA_MODEL.md` Sections 31–31A). This record does not disappear when the sale transaction rolls back.
+2. The application does not report the sale as completed and does not create any sale, payment, inventory, or export record.
+3. The application updates the same checkout-request record to `COMMIT_FAILED` with a stable failure code.
+4. The UI clearly and immediately warns the cashier, for example:
+
+```text
+Local sale could not be saved.
+
+If you already saw "Approved" on Clover, that charge may still exist.
+Do NOT run the card again.
+
+Check this transaction in Clover directly. If it was charged and you
+cannot complete the local sale, void or refund it in Clover.
+
+This attempt has been recorded for reconciliation as CHK-83ac...
+```
+
+5. The application makes a best-effort durable `CARD_LOCAL_COMMIT_FAILURE` audit event; if SQLite cannot accept it, diagnostics preserve the failure evidence instead.
+6. The cart remains available so the cashier can retry the same checkout once the underlying issue is resolved (e.g., disk space freed), without being asked to process the card through Clover again. A successful retry links to and closes the reconciliation entry automatically.
+7. If the cashier instead completes the sale a different way (e.g., Cash) or abandons it, the reconciliation entry is left for manual resolution (Section 35B).
+
+Go Phones POS never calls a Clover API as part of this workflow; any reversal or refund is a manual, separate action the cashier performs directly in Clover.
+
+---
+
+# 35B. Reconciliation Queue Workflow
+
+## Trigger
+
+The shared user opens `Support & Diagnostics → Reconciliation Queue` (or an equivalent location).
+
+## Display
+
+Each unresolved entry shows the checkout attempt's timestamp, intended total, and Clover-approval confirmation time.
+
+## Flow
+
+1. The user checks the corresponding transaction directly in Clover.
+2. The user takes whatever action Clover requires (nothing further, a void, or a refund) outside of Go Phones POS.
+3. The user marks the entry resolved in Go Phones POS with a required note (e.g., `"Verified in Clover, sale re-entered as GP-000131"` or `"Voided in Clover, no local sale created"`).
+4. Marking an entry resolved never creates, edits, or backdates a sale — it only records that a person reconciled the discrepancy.
+
+An entry that is closed automatically by a successful retry (Section 35A) shows `"Completed on retry"` and the resulting sale.
 
 ---
 
@@ -1377,6 +1506,8 @@ Application recalculates report from local sales records.
 
 Google Sheets is not queried.
 
+A sale's date is derived, at query time, from its authoritative `completed_at` (UTC) converted into the currently configured business timezone (`DATA_MODEL.md` Section 4). A sale voided after its original day has closed reduces that **original** day's reported revenue when the report is re-viewed — there is no separate revenue-adjustment line on the void date — while the void itself is dated by `voided_at` for audit/void-activity visibility, so "revenue for day X" and "voids that happened on day X" are independently correct.
+
 ---
 
 # 55. Daily Closing Workflow
@@ -1622,6 +1753,28 @@ A production restore is an exclusive maintenance operation. It must not start du
 
 ---
 
+# 67A. Restore Database Workflow (Production Restore Safety)
+
+## Trigger
+
+The shared user selects `Restore Database` and chooses a backup to restore from.
+
+## Expected Flow
+
+1. Confirm no checkout is active or in flight; if one is, defer until idle (Section 102).
+2. Preserve a timestamped copy of the **current** database before touching anything.
+3. Read the selected backup's metadata: schema version, source app version, creation time, and its latest contained sale timestamp.
+4. Compare the backup's latest sale timestamp against the current database's latest sale timestamp.
+5. If the current database is newer, warn clearly, naming how many transactions and what date range would be lost, and require an explicit, unambiguous confirmation before proceeding. There is no default-confirmed or silent path when data would be lost.
+6. Replace the active database with the backup only after any required confirmation.
+7. Validate the restored database (schema version, foreign keys enabled, critical tables readable) before reopening checkout.
+8. If validation fails, restore the pre-restore copy from step 2 and report a stable error code and recovery guidance.
+9. On success, record the restore outcome in diagnostics and reopen checkout.
+
+V1 restore is whole-database replace-or-abort; it does not attempt to merge records between the current database and the restored backup.
+
+---
+
 # 68. Change Tax Rate Workflow
 
 ## Trigger
@@ -1741,9 +1894,11 @@ The status must not control whether local checkout is allowed.
 
 If quantity reaches configured low-stock threshold:
 
-Application may visually indicate:
+Application must visually indicate:
 
 `Low Stock`
+
+This is a required V1 capability (`REQ-PROD-007`), consistent with `PRODUCT_SCOPE.md` Section 7 listing low/zero-stock detection as included functionality.
 
 If quantity reaches zero:
 
@@ -2018,6 +2173,10 @@ The workflow specification is considered implemented correctly when the system c
 36. Owner CSV export.
 37. Durable audit events.
 38. Maintenance exclusion during active checkout.
+39. Card-approved / local-commit-failure evidence, warning, and reconciliation queue.
+40. Restore safety: pre-restore recovery copy, newer-data detection, and required confirmation.
+41. Checkout drift detection and rejection on material change between review and commit.
+42. Shared-credential lifecycle: first-run setup, change, local recovery, brute-force backoff.
 
 ---
 
@@ -2102,7 +2261,7 @@ If a user tries to void a sale already in `VOIDED` state, the application reject
 When internet is available, the application may check the configured generic HTTPS release feed in the background.
 
 1. If no approved update exists, normal operation continues.
-2. If an approved update exists, the application may download it in the background while the POS remains usable.
+2. If an approved update exists, the application automatically begins downloading it in the background while the POS remains usable. Whether/when the application checks is flexible (startup, periodic, or manual); once found while online, download is automatic and not merely optional.
 3. A failed check or download produces a non-blocking status and diagnostic event; local sales continue.
 4. When verification and download finish, the UI displays `Update Ready` with `Restart & Update` and `Later` actions.
 
@@ -2249,7 +2408,7 @@ The user selects the dataset and destination. The application reads a consistent
 
 # 104. Durable Audit Workflow
 
-Important business and system actions create durable local audit events separate from rotating diagnostic logs. This includes sale completion, sale void, price override, inventory adjustment, tax and business-setting changes, Google Sheets configuration changes, backup success/failure, migration execution, and update installation. Audit records remain available after diagnostic log rotation and must avoid secrets and unnecessary customer/payment data.
+Important business and system actions create durable local audit events separate from rotating diagnostic logs. This includes sale completion, sale void, price override, inventory adjustment, tax and business-setting changes, Google Sheets configuration changes, backup success/failure, migration execution, update installation, shared-credential changes, and a Clover-approved card charge whose local commit failed (Section 35A). Audit records remain available after diagnostic log rotation and must avoid secrets and unnecessary customer/payment data.
 
 ---
 

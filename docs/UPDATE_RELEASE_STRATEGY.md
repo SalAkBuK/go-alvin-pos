@@ -325,7 +325,7 @@ An outdated application must not automatically lock the POS.
 
 # 13. Background Download
 
-When a newer approved version is available, the update may download in the background.
+When a newer approved version is discovered while online, the update automatically begins downloading in the background — download is not merely optional once an approved update is found; only whether/when the application *checks* for one (startup, periodic, manual) is flexible.
 
 Checkout must remain responsive.
 
@@ -906,6 +906,15 @@ Requirements include:
 - Protected CI/release credentials
 - No arbitrary update URL controlled through unsafe renderer input
 - No execution of unverified arbitrary files
+
+The client must actively reject, rather than merely fail to prefer, the following before installing anything:
+
+- A feed response that is tampered with or fails integrity/signature verification.
+- A package signed by a certificate that does not match the expected publisher identity.
+- A corrupted or partially downloaded package (verified via checksum/signature before installation begins).
+- A signed package whose version would downgrade the installed schema-incompatible application without following the documented recovery procedure (Section 31).
+
+A rotated signing certificate is expected over the product's lifetime; the update client must be able to trust a newly rotated, still-legitimate publisher certificate through its normal chain-of-trust verification without requiring a client-side code change for every rotation, while still rejecting a certificate that does not chain to a trusted publisher identity.
 
 ---
 

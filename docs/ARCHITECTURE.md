@@ -439,6 +439,9 @@ The database must not live:
 - Inside temporary folders
 - Inside the application installation directory
 - In a location likely to be overwritten during updates
+- Inside a cloud-sync folder (OneDrive, Dropbox, Google Drive Desktop, etc.) or on a network drive/UNC path — SQLite's WAL locking and durability guarantees (`DATA_MODEL.md` Section 54) are not assumed to hold on such filesystems
+
+SQLite is configured with `journal_mode = WAL`, `synchronous = FULL`, `foreign_keys = ON`, and a busy timeout, with checkout using `BEGIN IMMEDIATE`; the concrete rationale and pragma values are fixed in `DATA_MODEL.md` Section 54 rather than decided during implementation.
 
 ---
 
@@ -496,6 +499,34 @@ ROLLBACK
 ```
 
 No partial transaction may remain.
+
+---
+
+# 15A. Card-Approved / Local-Commit-Failure Handling
+
+The transaction above is the second of two phases. Before it begins, the trusted application layer independently and durably commits a small `checkout_requests` record capturing the checkout intent, payment method, intended total, and — for Card — the cashier's confirmation that Clover approved the charge (`DATA_MODEL.md` Sections 31–31A).
+
+This ordering exists specifically for the case where a cashier has already been told by Clover that a card charge was approved, but the subsequent authoritative sale transaction then fails:
+
+```text
+Clover approves charge
+      ↓
+Cashier confirms approval in POS
+      ↓
+Durable pre-commit record written (independent of the sale transaction)
+      ↓
+Sale transaction attempted
+      ↓
+   Fails
+      ↓
+Sale never existed — but the pre-commit record survives
+      ↓
+Cashier is warned: check/void/refund separately in Clover
+      ↓
+Incident tracked in the Reconciliation Queue until resolved
+```
+
+The application never fabricates a completed sale to hide this failure, and never calls a Clover API to reverse or verify the charge — V1 has no direct Clover integration. Full workflow detail is in `POS_WORKFLOWS.md` Sections 35A–35B.
 
 ---
 
@@ -800,7 +831,7 @@ V1 uses one shared store login.
 
 Authentication must work offline.
 
-The application should store only a secure representation of credentials.
+The application should store only a secure representation of credentials, using a salted, memory-hard hashing algorithm (bcrypt, scrypt, or Argon2) rather than a fast unsalted hash. The credential store is independent of the SQLite `settings` table (Section 21 of `DATA_MODEL.md`) so restoring a SQLite backup never implicitly changes or removes the currently configured shared password.
 
 Conceptual design:
 
@@ -813,6 +844,23 @@ Stored password hash
 ```
 
 The raw password must not be stored.
+
+## Credential Lifecycle
+
+```text
+First launch, no credential exists
+      ↓
+Setup screen: create shared password (+ confirmation)
+      ↓
+AUTH_CREDENTIAL_CHANGED audit event
+      ↓
+Normal login (offline-capable) for every subsequent launch
+```
+
+- **Password change** (Settings): requires the current password plus a new password (with confirmation); records `AUTH_CREDENTIAL_CHANGED`.
+- **Forgotten password / recovery**: V1 has no online identity service, so recovery is a documented local procedure requiring direct physical/administrative access to the installed application (not a self-service email/SMS reset). It resets the shared credential without touching business data.
+- **Reinstall**: reinstalling the application while the existing application-data directory (and its separate credential store) is preserved requires the existing password; no credential is silently reset.
+- **Brute-force backoff**: repeated consecutive failed attempts trigger an increasing delay before the next attempt is accepted. The shared login is never permanently locked, since V1 has no alternate account or online reset path to fall back on.
 
 Future multi-user authentication can be introduced without changing the checkout transaction model.
 
@@ -855,6 +903,8 @@ Database constraints
 ```
 
 UI validation alone is not sufficient.
+
+Checkout-specific validation additionally aggregates duplicate cart lines by product ID before stock validation, rejects non-integer or out-of-bounds quantities and monetary values, and rejects malformed numeric input outright rather than coercing it (`DATA_MODEL.md` Section 41A).
 
 ---
 
@@ -1009,6 +1059,8 @@ card_total
 
 Normal revenue, transaction-count, and payment totals exclude `VOIDED` sales while reports and history retain separate void visibility.
 
+A sale's reporting date is derived at query time from its authoritative `completed_at` (UTC) converted into the currently configured business timezone; it is never stored as a separate column. A late void reduces the original sale's business-date revenue retroactively (reports are always computed live and simply omit `VOIDED` sales) while the void action itself is dated by `voided_at` for audit/void-activity visibility. Full rules, including timezone-change and DST behavior, are defined in `DATA_MODEL.md` Section 4.
+
 Google Sheets must not be queried to generate primary POS reports.
 
 ---
@@ -1035,7 +1087,15 @@ Restore procedures must also be tested.
 
 V1 provides manual and recurring automatic backups, bounded retention/cleanup, visible health and failure state, and verified restore. Backup work must not corrupt or replace the open authoritative database. Every migration, including a startup migration after an update, requires a newly created SQLite-consistent backup whose existence and readability are verified first. Backup failure stops the migration but does not otherwise block sales while the active database remains healthy.
 
-Minimal `backup_records` metadata may record backup kind, sanitized path/category, timestamps, source schema version, size, verification result, and failure code/message. The backup files remain the backup; these rows exist only for health, audit, retention, and migration evidence.
+Minimal `backup_records` metadata may record backup kind, location kind (same-disk vs. off-device), sanitized path/category, timestamps, source schema version, size, verification result, and failure code/message. The backup files remain the backup; these rows exist only for health, audit, retention, and migration evidence.
+
+## Local Recovery vs. Device/Disk-Loss Protection
+
+Every V1 automatic and pre-migration backup defaults to the same disk as the operational database (`location_kind = LOCAL_DISK`). This protects against accidental deletion, application-level corruption, and a bad migration — it does **not** protect against loss of the machine or disk itself. An optional, separately configured off-device destination (`location_kind = OFF_DEVICE`) is required for that protection. Backup health displays and documentation must state this distinction explicitly rather than implying a same-disk backup survives hardware loss.
+
+## Restore Safety
+
+A whole-database restore never silently replaces the active database. Before restoring, the trusted layer preserves a timestamped copy of the current database, compares the candidate backup's metadata and latest sale timestamp against the current database's latest sale timestamp, warns and requires explicit confirmation if the current database is newer, and validates the restored database before reopening checkout — falling back to the preserved pre-restore copy if validation fails. V1 restore is a whole-database replace-or-abort operation with no record-level merge (`DATA_MODEL.md` Section 52A).
 
 ---
 
@@ -1185,6 +1245,8 @@ Any failure rolls the entire void back. A uniqueness constraint on each reversin
 
 `audit_events` is the durable, append-only local record of important business and system actions. It is distinct from bounded diagnostic logs. Business events that are part of a database mutation, including sale completion/void, price override, inventory adjustment, and audited setting changes, are inserted in the same SQLite transaction as that mutation.
 
+Each event carries both a wall-clock `occurred_at` and a locally monotonically increasing `sequence` value; ordering questions use `sequence`, never `occurred_at` alone, since a significant system clock change (Section 42.4) must not be able to misorder the audit history.
+
 Backup, migration, and update lifecycle events are written as soon as the authoritative database is safely available. When a database-open or migration failure prevents an audit write, structured diagnostic evidence is the required fallback; the application must never claim that an unavailable audit write succeeded.
 
 ---
@@ -1216,6 +1278,8 @@ Go Phones POS is single-instance. A second launch focuses/restores the existing 
 ## 42.5 Owner CSV Export
 
 An owner export service reads consistent SQLite snapshots and writes CSV for products/inventory, customers, sales, and inventory movements through a controlled file-save boundary. Export is read-only: failure or cancellation never changes authoritative data. V1 has no CSV import or migration path.
+
+Any exported field value beginning with `=`, `+`, `-`, or `@` is neutralized (e.g., a leading apostrophe is prefixed) before being written, so a spreadsheet application opening the CSV cannot execute it as a formula. The same neutralization rule applies to the Google Sheets exporter (Section 25) for every text field it writes.
 
 ---
 
@@ -1466,6 +1530,31 @@ For one local store with approximately 50 phone products, this complexity is unn
 
 ---
 
+# 49A. V1 Operational Defaults
+
+Several operational policies must have a concrete, documented V1 default (configurable later) so behavior remains deterministic and testable rather than implementation-defined:
+
+| Policy | V1 Default |
+|---|---|
+| Automatic backup cadence | Daily at 03:00 local business time |
+| Automatic backup retention | Most recent 14 days |
+| Manual backup retention | 90 days |
+| Log rotation | 10 MB per file, last 10 files retained, 30-day retention |
+| Stale `EXPORTING` job timeout | 5 minutes of no update, then reset to `PENDING` on next worker cycle/startup |
+| Google export retry backoff | Exponential, starting at 30 seconds, capped at 30 minutes between attempts |
+| Export retry-exhausted behavior | After 10 consecutive failed attempts, mark `FAILED` (still manually retryable); never silently abandoned |
+| Low-disk warning threshold | Below 2 GB free |
+| Low-disk critical threshold | Below 500 MB free |
+| Significant clock-jump threshold | A system clock change exceeding 5 minutes relative to expected elapsed time |
+| Product search response target | Under 300 ms for the expected V1 catalog size |
+| Barcode-to-cart-add response target | Under 200 ms |
+| Checkout commit feedback target | Under 1 second under normal local conditions |
+| Checkout quantity/monetary bounds | See `DATA_MODEL.md` Section 41A |
+
+These are conservative, simple defaults chosen to avoid unnecessary enterprise complexity for a single store with roughly 50 products; each may be made owner-configurable, but the values above are what tests and behavior assume when nothing else is configured.
+
+---
+
 # 50. Architecture Decision Summary
 
 The primary architectural decisions for V1 are:
@@ -1502,6 +1591,12 @@ The primary architectural decisions for V1 are:
 30. Single-instance and maintenance-safety coordination protect database ownership and active checkout.
 31. Owner CSV export is read-only, and CSV import remains outside V1.
 32. Health and diagnostics cover restart, sleep/resume, low storage, clock anomalies, external backlogs, and crash evidence without exposing sensitive data.
+33. A Card checkout's payment method, intended total, and Clover-approval confirmation are durably recorded before the sale transaction is attempted, so a local commit failure after Clover approval is never silently lost or fabricated as a completed sale.
+34. SQLite durability is fixed (WAL, synchronous=FULL, foreign_keys=ON, busy timeout), and its guarantees are documented as applying only to a local, directly attached filesystem.
+35. Checkout re-validates every reviewed value against current authoritative state immediately before commit and rejects rather than silently commits on drift.
+36. Local (same-disk) backups and optional off-device backups protect against different failure classes, and documentation states the difference explicitly; restore preserves a pre-restore recovery copy and requires confirmation before overwriting newer data.
+37. Business date is derived at query time from UTC `completed_at` and the currently configured timezone, never stored separately; a void corrects the original sale-date's revenue and is itself dated by `voided_at`.
+38. The shared credential lifecycle (first-run setup, change, local recovery, brute-force backoff) is fully defined without introducing online authentication.
 
 ---
 

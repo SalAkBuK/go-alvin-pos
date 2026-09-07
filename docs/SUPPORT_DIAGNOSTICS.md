@@ -44,6 +44,7 @@ Examples:
 - Internet unavailable.
 - Update server unavailable.
 - Routine backup attempt failed while the operational database remains healthy and no migration is required.
+- A Card checkout's local commit failed after Clover approval was confirmed (`DATA_MODEL.md` Section 31A) — the local database itself may still be perfectly healthy; the failed *attempt* did not corrupt or invalidate anything, but the incident must remain visible until reconciled.
 
 These must not invalidate an already committed sale.
 
@@ -70,14 +71,18 @@ Printer:               Unavailable
 Google Sheets:         Connected
 Pending Exports:       3
 Failed Exports:        0
-Last Backup:           Today 2:00 AM
+Last Backup:           Today 2:00 AM (Local Disk)
 Disk Space:            148 GB available
+Unresolved Card Charges: 0
 
 [Report a Problem]
 [Run Diagnostics]
 [Export Support Bundle]
 [View Activity Log]
+[View Reconciliation Queue]
 ```
+
+"Unresolved Card Charges" counts `checkout_requests` rows with `status = COMMIT_FAILED` and `payment_method_snapshot = CARD` that have not yet been marked resolved (`DATA_MODEL.md` Sections 31A–31B). A non-zero count is a visible warning, not a critical failure, since the local database itself is healthy — but it must never be hidden among ordinary diagnostics, since it represents a possible customer charge with no matching local sale.
 
 ---
 
@@ -103,6 +108,7 @@ The diagnostics system must report appropriate information such as:
 - Migration state
 - Update state
 - Installation identifier
+- Count of unresolved Card local-commit-failure reconciliation entries
 
 ---
 
@@ -455,7 +461,7 @@ Possible strategies:
 - Retain last N files
 - Retain last N days
 
-Exact limits may be determined during implementation.
+V1 default: size-based rotation at 10 MB per file, retaining the last 10 rotated files, with a 30-day retention ceiling (`ARCHITECTURE.md` Section 49A). This default is configurable but must not be left unspecified, since indefinite log growth is itself a low-disk risk.
 
 The design must ensure logs cannot consume the entire disk over time.
 
@@ -673,7 +679,7 @@ Only 1.4 GB remains.
 Backups or future database writes may fail.
 ```
 
-Exact thresholds may be configurable or defined during implementation.
+V1 default thresholds (`ARCHITECTURE.md` Section 49A): `WARNING` below 2 GB free, `CRITICAL` below 500 MB free. These are configurable but must not be left undefined, since low-disk behavior is otherwise nondeterministic.
 
 ---
 
@@ -683,7 +689,7 @@ Diagnostics must expose:
 
 - Last successful backup time
 - Last backup failure
-- Backup location state where practical
+- Whether the last successful backup was local-disk or off-device (`DATA_MODEL.md` Section 36B) — never implying disk/device-loss protection unless an off-device backup is actually current
 - Whether backup is overdue
 
 Example:
@@ -694,6 +700,8 @@ Warning
 
 No successful backup has occurred in 7 days.
 ```
+
+V1 default cadence/retention (`ARCHITECTURE.md` Section 49A): automatic backups run daily at 03:00 local business time; automatic backups are retained 14 days and manual backups 90 days.
 
 ---
 
@@ -764,6 +772,8 @@ difference=...
 ```
 
 User-facing warning may be appropriate for extreme changes.
+
+V1 default: a clock change exceeding 5 minutes relative to expected elapsed time between checks is treated as significant (`ARCHITECTURE.md` Section 49A). Ordering of audit events does not depend on the wall clock regardless — each event also carries a monotonically increasing local `sequence` value (`DATA_MODEL.md` Section 36A) unaffected by clock changes.
 
 The app must not automatically block sales solely because the clock changed unless future requirements define such behavior.
 
@@ -922,6 +932,8 @@ MIGRATION_COMPLETED
 MIGRATION_STARTED
 MIGRATION_FAILED
 UPDATE_INSTALLED
+CARD_LOCAL_COMMIT_FAILURE
+AUTH_CREDENTIAL_CHANGED
 ```
 
 Exact persistence is defined in `DATA_MODEL.md`.
@@ -939,13 +951,17 @@ Examples:
 ```text
 DB_OPEN_FAILED
 SALE_COMMIT_FAILED
+CARD_LOCAL_COMMIT_FAILURE
 PRINTER_UNAVAILABLE
 GOOGLE_AUTH_FAILED
 GOOGLE_EXPORT_FAILED
 BACKUP_FAILED
 MIGRATION_FAILED
 UPDATE_DOWNLOAD_FAILED
+UPDATE_VERIFICATION_FAILED
 DISK_SPACE_LOW
+RESTORE_VALIDATION_FAILED
+DB_PATH_UNSUPPORTED_FILESYSTEM
 ```
 
 These help support identify categories without reading raw stack traces.
@@ -1375,6 +1391,9 @@ Required tests include:
 - Migration diagnostics recorded
 - Backup diagnostics recorded
 - Update diagnostics recorded
+- Card local-commit-failure incident visible as an unresolved reconciliation count and durable audit event
+- Backup health correctly distinguishes local-disk from off-device backups
+- Audit event ordering survives a significant clock change via monotonic `sequence`
 
 ---
 
