@@ -1,0 +1,9 @@
+out/
+release/
+coverage/
+node_modules/
+dist/
+docs/
+AGENTS.md
+package-lock.json
+*.log
