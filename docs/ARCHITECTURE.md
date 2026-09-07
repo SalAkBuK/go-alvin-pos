@@ -504,29 +504,39 @@ No partial transaction may remain.
 
 # 15A. Card-Approved / Local-Commit-Failure Handling
 
-The transaction above is the second of two phases. Before it begins, the trusted application layer independently and durably commits a small `checkout_requests` record capturing the checkout intent, payment method, intended total, and — for Card — the cashier's confirmation that Clover approved the charge (`DATA_MODEL.md` Sections 31–31A).
-
-This ordering exists specifically for the case where a cashier has already been told by Clover that a card charge was approved, but the subsequent authoritative sale transaction then fails:
+The transaction above (Phase 2) is preceded by a Phase 1 that is itself ordered into two independently committed steps, specifically so a durable local record exists **before Clover is ever invoked**, not merely before the sale transaction (`DATA_MODEL.md` Sections 31–31A):
 
 ```text
+Cashier finalizes checkout review
+      ↓
+Phase 1, Step A: durable checkout_requests record committed
+(request ID, fingerprint, payment method, intended total, status = PENDING_PAYMENT)
+      ↓
+Cashier is instructed to process that exact amount on Clover
+      ↓
 Clover approves charge
       ↓
 Cashier confirms approval in POS
       ↓
-Durable pre-commit record written (independent of the sale transaction)
+Phase 1, Step B: durable update committed
+(clover_approved_confirmed_at set, status = SUBMITTED)
       ↓
-Sale transaction attempted
+Phase 2: authoritative sale transaction attempted
       ↓
    Fails
       ↓
-Sale never existed — but the pre-commit record survives
+Sale never existed — but the Step A and Step B records survive
       ↓
 Cashier is warned: check/void/refund separately in Clover
       ↓
 Incident tracked in the Reconciliation Queue until resolved
 ```
 
-The application never fabricates a completed sale to hide this failure, and never calls a Clover API to reverse or verify the charge — V1 has no direct Clover integration. Full workflow detail is in `POS_WORKFLOWS.md` Sections 35A–35B.
+This ordering closes a narrower gap than "record before the sale transaction": if the durable record were only written after Clover approval (as opposed to before Clover is invoked), a total loss of SQLite availability at the instant right after approval could leave a real charge with no local trace at all. Writing Step A first means the worst case is a `PENDING_PAYMENT` row with no confirmation yet — which is itself made visible once stale, rather than being indistinguishable from "no attempt happened."
+
+For Cash, there is no external charge to protect against, so Phase 1 remains the single step it always was, written directly as `status = SUBMITTED`.
+
+The application never fabricates a completed sale to hide this failure, never claims to know Clover's outcome except from the cashier's explicit confirmation, and never calls a Clover API to reverse or verify the charge — V1 has no direct Clover integration. Full workflow detail is in `POS_WORKFLOWS.md` Sections 30 and 35A–35B.
 
 ---
 
@@ -1081,7 +1091,7 @@ Safe backup procedure
 Backup copy
 ```
 
-Backup operations must respect SQLite consistency.
+Backup operations must respect SQLite consistency. Because the operational database runs in WAL mode (`DATA_MODEL.md` Section 54), a backup or pre-restore recovery copy must be produced through a SQLite-consistent snapshot/backup mechanism — either a SQLite backup API/equivalent safe snapshot taken while the database remains open, or a raw file copy taken only after the database has been safely quiesced/closed with WAL fully checkpointed. Copying only the live main `.sqlite` file while connections or WAL activity may exist is prohibited; see `DATA_MODEL.md` Section 54, "Backup and Recovery-Copy Safety Under WAL," for the full rule and why it applies identically to automatic, manual, and pre-migration backups and to the pre-restore recovery copy.
 
 Restore procedures must also be tested.
 
@@ -1095,7 +1105,7 @@ Every V1 automatic and pre-migration backup defaults to the same disk as the ope
 
 ## Restore Safety
 
-A whole-database restore never silently replaces the active database. Before restoring, the trusted layer preserves a timestamped copy of the current database, compares the candidate backup's metadata and latest sale timestamp against the current database's latest sale timestamp, warns and requires explicit confirmation if the current database is newer, and validates the restored database before reopening checkout — falling back to the preserved pre-restore copy if validation fails. V1 restore is a whole-database replace-or-abort operation with no record-level merge (`DATA_MODEL.md` Section 52A).
+A whole-database restore never silently replaces the active database. Before restoring, the trusted layer preserves a SQLite-consistent snapshot of the current database (not a raw file copy — see above), compares the candidate backup's metadata and latest sale timestamp against the current database's latest sale timestamp, warns and requires explicit confirmation if the current database is newer, and validates the restored database before reopening checkout — falling back to the preserved pre-restore copy if validation fails. V1 restore is a whole-database replace-or-abort operation with no record-level merge (`DATA_MODEL.md` Section 52A).
 
 ---
 

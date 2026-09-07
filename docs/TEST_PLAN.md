@@ -856,6 +856,23 @@ Commit is rejected rather than recording a Card sale for a different amount than
 
 ---
 
+## TEST-IDEMP-008 — Deterministic Fingerprint Ordering With Duplicate Product Lines
+
+Compute `request_fingerprint` (`DATA_MODEL.md` Section 41B) for the following cart variants:
+
+1. **Same product on multiple lines, different negotiated prices:** a cart with two lines for the same `product_id` — one at listed price, one at a negotiated price — plus one line for a different product.
+2. **Same logical lines, different input order:** the identical set of line tuples from (1), but constructed/submitted with the lines added to the cart in the reverse order.
+3. **A genuinely different cart:** the same lines as (1), but with one line's `quantity` (or `sold_price_cents`) changed.
+4. **Exact duplicate lines:** two lines for the same `product_id` with identical `listed_price_cents`, `sold_price_cents`, and `quantity`, submitted in both possible input orders.
+
+Expected:
+
+- (1) and (2) produce the **identical** `request_fingerprint` — canonical ordering by `(product_id, listed_price_cents, sold_price_cents, quantity)` makes the fingerprint independent of incidental insertion order.
+- (3) produces a **different** `request_fingerprint` from (1)/(2) — a genuine content difference is never masked by canonicalization.
+- Both input orders in (4) produce the identical fingerprint, and the resulting sale still contains two distinct `sale_items` rows (canonicalization never merges or deduplicates lines), while stock validation still aggregates their combined quantity by `product_id` per `TEST-CART-006`.
+
+---
+
 # 13. Receipt Number Tests
 
 ## TEST-RECNO-001 — Unique Numbers
@@ -1046,19 +1063,19 @@ Checkout cannot complete as fully paid.
 
 ## TEST-CARD-001 — Clover Approved
 
-1. Select Card.
-2. Confirm Clover payment approved.
+1. Select Card. Verify `checkout_requests.status = PENDING_PAYMENT` commits before any Clover instruction is shown.
+2. Confirm Clover payment approved. Verify `clover_approved_confirmed_at` is set and `status = SUBMITTED` before the sale transaction is attempted.
 3. Complete sale.
 
 Expected:
 
-Payment method = CARD.
+Payment method = CARD; the row reaches `status = COMPLETED`.
 
 ---
 
 ## TEST-CARD-002 — Clover Declined
 
-Select:
+Select Card, allow Phase 1 Step A to durably commit (`status = PENDING_PAYMENT`), then select:
 
 `Payment Declined / Cancel`
 
@@ -1067,6 +1084,8 @@ Expected:
 - No sale
 - No inventory change
 - Cart remains
+- The existing `checkout_requests` row is updated to `status = COMMIT_FAILED`, `failure_code = CLOVER_DECLINED`
+- The row does **not** appear in the Reconciliation Queue (a decline is not an incident)
 
 ---
 
@@ -1090,10 +1109,11 @@ POS application itself remains operational because V1 card handling is manual.
 
 ---
 
-## TEST-CARD-005 — Clover Approved, Local Commit Fails (Priority 0)
+## TEST-CARD-005 — Clover Approved, Local Commit Fails (Priority 0, Case 1)
 
-1. Select Card and confirm Clover approval inside the POS.
-2. Force the authoritative sale transaction to fail (e.g., simulated write failure) immediately after Phase 1 durably commits.
+1. Select Card; verify Phase 1 Step A durably commits (`status = PENDING_PAYMENT`) before any Clover instruction is shown.
+2. Confirm Clover approval inside the POS; verify Phase 1 Step B durably commits (`clover_approved_confirmed_at` set, `status = SUBMITTED`).
+3. Force the authoritative Phase 2 sale transaction to fail (e.g., simulated write failure).
 
 Expected:
 
@@ -1102,6 +1122,43 @@ Expected:
 - The cashier is shown the specific Clover-review warning (`POS_WORKFLOWS.md` Section 35A), not a generic failure message.
 - A `CARD_LOCAL_COMMIT_FAILURE` audit event exists (or, if SQLite is entirely unreachable, the diagnostic fallback captures it).
 - The attempt appears in the Reconciliation Queue as unresolved.
+
+---
+
+## TEST-CARD-005A — Pre-Payment Record Committed Before Clover Is Invoked
+
+Select Card and force SQLite to be unavailable exactly at Phase 1 Step A, before the cashier is shown any Clover instruction.
+
+Expected:
+
+- Checkout stops immediately with a local-failure message.
+- The cashier is never instructed to process anything on Clover for this attempt — no charge is put at risk.
+- No `checkout_requests` row exists for this attempt (Step A never committed), and none is expected, since nothing durable needed to survive an attempt that never reached Clover.
+
+---
+
+## TEST-CARD-005B — Approval Confirmation Write Fails (Priority 0, Case 2)
+
+1. Select Card; allow Phase 1 Step A to commit (`status = PENDING_PAYMENT`).
+2. Cashier processes the amount on Clover; Clover approves.
+3. Cashier selects `Payment Approved`, but force the Phase 1 Step B durable write to fail before it commits.
+
+Expected:
+
+- The `checkout_requests` row remains at `status = PENDING_PAYMENT` with `clover_approved_confirmed_at` still `NULL`.
+- No `sales`, `payments`, or export-job row is created; Phase 2 is never attempted.
+- The cashier sees the same Clover-review warning as Case 1.
+- The row does not yet appear in the Reconciliation Queue if still within the staleness window; once the staleness window elapses without further progress, it does appear (`TEST-CARD-005C`).
+
+---
+
+## TEST-CARD-005C — Stale PENDING_PAYMENT Surfaces in Reconciliation Queue
+
+Following `TEST-CARD-005B`, advance time past the documented staleness window (`ARCHITECTURE.md` Section 49A) without further action.
+
+Expected:
+
+The row appears in the Reconciliation Queue exactly as a `COMMIT_FAILED` row would, even though it never reached `COMMIT_FAILED`.
 
 ---
 
@@ -2113,6 +2170,20 @@ Expected:
 Consistent backup.
 
 No corruption.
+
+---
+
+## TEST-BACKUP-002A — Backup Consistency Under Concurrent Writes (WAL Safety)
+
+Start a backup (automatic, manual, or pre-migration) and, while it is in progress, complete a checkout transaction on the live database.
+
+Expected:
+
+- The resulting backup file is a transactionally consistent snapshot: it reflects either the state entirely before or entirely after the concurrent checkout, never a partial/torn mix of the two.
+- The backup mechanism does not perform a raw copy of the live main `.sqlite` file while a connection/WAL activity could still be active (`DATA_MODEL.md` Section 54); a mere `wal_checkpoint` immediately followed by a file copy, with no protection against a writer opening a new transaction during the copy, is not sufficient and must not be the implemented mechanism.
+- The live/operational database itself is completely unaffected by the backup process.
+
+This test applies identically to automatic backups, manual backups, pre-migration backups, and the pre-restore recovery copy (`TEST-BACKUP-018`).
 
 ---
 
@@ -3828,6 +3899,28 @@ Each event's `sequence` value strictly increases in true chronological order of 
 
 ---
 
+## TEST-AUDIT-007 — `id` and `sequence` Are Independent Fields
+
+Insert several audit events and inspect the schema and resulting rows.
+
+Expected:
+
+- `id` (TEXT) remains the sole `PRIMARY KEY` and is a stable UUID-style identity, independent of insertion order.
+- `sequence` (INTEGER) is `NOT NULL` and `UNIQUE`, but is not itself a primary key — the schema does not declare two primary keys.
+- Every `sequence` value traces back to an increment of `counters.audit_sequence` performed in the same transaction as the audit-event insert (Sections 29–30, 36A).
+
+---
+
+## TEST-AUDIT-008 — Sequence Allocation Rolls Back With Its Transaction
+
+Force a transactional business change (e.g., a price override) to fail after its `audit_sequence` counter increment but before the transaction commits.
+
+Expected:
+
+The counter increment rolls back with the rest of the transaction — the next successfully committed audit event receives the next `sequence` value in order, with no permanently consumed/skipped value and no duplicate, mirroring the existing `receipt_number` rollback behavior (Section 29).
+
+---
+
 # 56A. Operational Defaults Tests
 
 These verify the concrete V1 defaults fixed in `ARCHITECTURE.md` Section 49A, so tests remain deterministic rather than depending on an unstated value.
@@ -3926,9 +4019,9 @@ This matrix supersedes the prior partial matrix (which covered only Void/Audit/E
 | `REQ-SALE-009` | `TEST-PROD-006`, `ACCEPT-010` |
 | `REQ-SALE-010` | `TEST-IDEMP-001` through `TEST-IDEMP-004` |
 | `REQ-SALE-011` | `TEST-CART-001` |
-| `REQ-SALE-012` | `TEST-CART-006` |
+| `REQ-SALE-012` | `TEST-CART-006`, `TEST-IDEMP-008` |
 | `REQ-SALE-013` | `TEST-CART-007`, `TEST-CART-008`, `TEST-CART-009` |
-| `REQ-SALE-014` | `TEST-IDEMP-006`, `TEST-IDEMP-007` |
+| `REQ-SALE-014` | `TEST-IDEMP-006`, `TEST-IDEMP-007`, `TEST-IDEMP-008` |
 | `REQ-RECNO-001` | `TEST-RECNO-001` |
 | `REQ-RECNO-002` | `TEST-RECNO-002` |
 | `REQ-RECNO-003` | `TEST-RECNO-004` |
@@ -3943,10 +4036,10 @@ This matrix supersedes the prior partial matrix (which covered only Void/Audit/E
 | `REQ-PAY-003` | `TEST-CARD-004` |
 | `REQ-PAY-004` | `TEST-CARD-003` |
 | `REQ-PAY-005` | `TEST-DB-012` |
-| `REQ-RECONCILE-001` | `TEST-CARD-005` |
-| `REQ-RECONCILE-002` | `TEST-CARD-005` |
+| `REQ-RECONCILE-001` | `TEST-CARD-005A`, `TEST-CARD-005` |
+| `REQ-RECONCILE-002` | `TEST-CARD-005`, `TEST-CARD-005B` |
 | `REQ-RECONCILE-003` | `TEST-CARD-005` |
-| `REQ-RECONCILE-004` | `TEST-CARD-007` |
+| `REQ-RECONCILE-004` | `TEST-CARD-007`, `TEST-CARD-005C` |
 | `REQ-RECONCILE-005` | `TEST-CARD-005` |
 | `REQ-RECONCILE-006` | `TEST-CARD-006` |
 | `REQ-CUST-001` | `TEST-CUST-001`, `TEST-CUST-008` |
@@ -4010,7 +4103,7 @@ This matrix supersedes the prior partial matrix (which covered only Void/Audit/E
 | `REQ-DB-008` | `TEST-DB-016` |
 | `REQ-DB-009` | `TEST-DB-010` |
 | `REQ-BACKUP-001` | `TEST-BACKUP-001` through `TEST-BACKUP-003` |
-| `REQ-BACKUP-002` | `TEST-BACKUP-002`, `TEST-BACKUP-003` |
+| `REQ-BACKUP-002` | `TEST-BACKUP-002`, `TEST-BACKUP-002A`, `TEST-BACKUP-003` |
 | `REQ-BACKUP-003` | `TEST-BACKUP-016` |
 | `REQ-BACKUP-004` | `TEST-BACKUP-003` through `TEST-BACKUP-006` |
 | `REQ-BACKUP-005` | `TEST-BACKUP-008`, `TEST-BACKUP-009` |
@@ -4054,7 +4147,7 @@ This matrix supersedes the prior partial matrix (which covered only Void/Audit/E
 | `REQ-AUDIT-002` | `TEST-AUDIT-001` |
 | `REQ-AUDIT-003` | `TEST-AUDIT-003` |
 | `REQ-AUDIT-004` | `TEST-AUDIT-004`, `TEST-AUDIT-005`, `TEST-VOID-010` |
-| `REQ-AUDIT-005` | `TEST-AUDIT-006` |
+| `REQ-AUDIT-005` | `TEST-AUDIT-006`, `TEST-AUDIT-007`, `TEST-AUDIT-008` |
 | `REQ-EXPORT-001` | `TEST-EXPORT-001` through `TEST-EXPORT-004` |
 | `REQ-EXPORT-002` | `TEST-EXPORT-006` |
 | `REQ-EXPORT-003` | `TEST-EXPORT-005` |

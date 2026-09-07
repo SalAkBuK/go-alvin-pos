@@ -625,11 +625,11 @@ If amount tendered is implemented, the POS may calculate change due.
 
 # 9A. Card-Approved / Local-Commit-Failure Reconciliation Requirements
 
-## REQ-RECONCILE-001 — Durable Pre-Commit Checkout Evidence
+## REQ-RECONCILE-001 — Durable Pre-Payment Checkout Evidence
 
 **Priority:** MUST
 
-Before the authoritative sale transaction is attempted, the trusted application layer must durably record, in its own independently committed write, the checkout request identifier, request fingerprint, payment method, and intended total. This record must survive a subsequent failure of the sale transaction.
+For a Card checkout, the trusted application layer must durably record, in its own independently committed write, the checkout request identifier, request fingerprint, payment method, and intended total **before the cashier is instructed to process any amount through Clover** — not merely before the sale transaction. This record must survive a subsequent failure at any later step, including a failure to durably record the Clover approval confirmation itself. For Cash, this record is written directly before the sale transaction, since there is no external payment step to protect.
 
 ---
 
@@ -637,7 +637,7 @@ Before the authoritative sale transaction is attempted, the trusted application 
 
 **Priority:** MUST
 
-For a Card checkout, the cashier's confirmation that Clover approved the charge must be captured in the durable pre-commit record (`REQ-RECONCILE-001`) before the sale transaction is attempted, so that confirmation is not lost if the sale transaction subsequently fails.
+For a Card checkout, the cashier's confirmation that Clover approved the charge must be captured in its own independently committed write to the existing pre-payment record (`REQ-RECONCILE-001`) after Clover responds and before the sale transaction is attempted, so that confirmation is not lost if the sale transaction subsequently fails. If this write itself fails, the checkout must not silently proceed to the sale transaction, and the unconfirmed attempt must remain discoverable for reconciliation (`REQ-RECONCILE-004`) rather than being lost.
 
 ---
 
@@ -653,7 +653,7 @@ If the authoritative sale transaction fails after a Card payment was confirmed a
 
 **Priority:** MUST
 
-A Card checkout attempt whose local commit failed after Clover approval was confirmed must appear in a local reconciliation queue until a person marks it resolved with a required note, or until a retry of the same checkout attempt completes the sale successfully.
+A Card checkout attempt must appear in a local reconciliation queue until a person marks it resolved with a required note, or until a retry of the same checkout attempt completes the sale successfully, when either: (a) its local commit failed after Clover approval was confirmed, or (b) its Clover-approval confirmation itself could not be durably recorded and the attempt remains unconfirmed past a short staleness window. An attempt explicitly recorded as declined/cancelled is not an incident and must not appear in the queue.
 
 ---
 

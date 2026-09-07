@@ -846,12 +846,14 @@ Cashier selects:
 
 ## Flow
 
-1. POS displays final amount.
-2. Cashier enters/processes that amount on the Clover terminal.
-3. Customer pays through Clover.
-4. Clover independently approves or declines.
-5. Cashier returns to Go Phones POS.
-6. POS asks for explicit confirmation.
+1. POS finalizes the checkout review and displays the final amount.
+2. Before the cashier is shown any instruction to use Clover, the trusted application layer generates the checkout request ID and fingerprint and durably commits Phase 1, Step A (`DATA_MODEL.md` Section 31): a `checkout_requests` row with the payment method (`CARD`), the reviewed total, and `status = PENDING_PAYMENT`. If this durable write fails, checkout stops here with a local-failure message and the cashier is **not** sent to Clover — no charge has been risked.
+3. Only now does the POS instruct the cashier to process that exact amount on the Clover terminal.
+4. Cashier enters/processes that amount on the Clover terminal.
+5. Customer pays through Clover.
+6. Clover independently approves or declines.
+7. Cashier returns to Go Phones POS.
+8. POS asks for explicit confirmation.
 
 Example:
 
@@ -864,9 +866,10 @@ Was payment approved?
 [Payment Declined / Cancel]
 ```
 
-7. Cashier selects `Payment Approved`.
-8. Go Phones POS completes the local sale.
-9. Payment record is stored as `CARD`.
+9. Cashier selects `Payment Approved`.
+10. The trusted application layer durably commits Phase 1, Step B (`DATA_MODEL.md` Section 31): the same `checkout_requests` row is updated with `clover_approved_confirmed_at` and `status = SUBMITTED`. If this update fails, follow Section 35A, Case 2 — the charge may have occurred but its confirmation could not be durably recorded, so the attempt surfaces in the Reconciliation Queue once stale.
+11. Go Phones POS proceeds to Phase 2 (Section 33) and completes the local sale.
+12. Payment record is stored as `CARD`.
 
 ---
 
@@ -890,10 +893,12 @@ The POS must:
 - Not create inventory movements
 - Keep the cart available
 
+Because Phase 1, Step A (`DATA_MODEL.md` Section 31) already durably recorded this attempt as `PENDING_PAYMENT` before Clover was invoked, a decline/cancel must be recorded on that same row rather than left dangling: the trusted application layer performs a best-effort update to `status = COMMIT_FAILED` with `failure_code = CLOVER_DECLINED`. This is excluded from the Reconciliation Queue (`DATA_MODEL.md` Section 31B) — a decline is an expected outcome, not an incident, since no charge occurred.
+
 Cashier may:
 
-- Try another card
-- Select Cash
+- Try another card (a new checkout request ID/fingerprint and a new Phase 1 Step A record are used for the new attempt)
+- Select Cash (same — a new request under Cash's single-step Phase 1)
 - Cancel the checkout
 
 ---
@@ -919,22 +924,21 @@ This is the most critical workflow.
 
 ## Trigger
 
-Cashier confirms payment and selects Complete Sale.
+- **Cash:** Cashier confirms payment and selects Complete Sale.
+- **Card:** Cashier selects `Payment Approved` (Section 30, step 9). Phase 1, Step A has already run earlier in Section 30, step 2, before Clover was ever invoked — this trigger begins with Phase 1, Step B.
 
 ## Renderer Behavior
 
-1. Generate checkout request ID.
-2. Disable Complete Sale button.
-3. Display processing state.
-4. Send checkout request to trusted application layer.
+- **Cash:** Generate checkout request ID and fingerprint here; disable Complete Sale; display processing state; send the checkout request to the trusted application layer for Phase 1 Step A + Phase 2.
+- **Card:** The checkout request ID and fingerprint were already generated in Section 30, step 2. Selecting `Payment Approved` disables further input, displays processing state, and sends the existing request ID (with the Clover-approval confirmation) to the trusted application layer for Phase 1 Step B + Phase 2.
 
 ---
 
 ## Trusted Application Flow
 
-Completion is two phases (`DATA_MODEL.md` Sections 31–31B; `ARCHITECTURE.md` Section 15A).
+Completion is two phases, and for Card, Phase 1 is itself two independently committed steps (`DATA_MODEL.md` Sections 31–31B; `ARCHITECTURE.md` Section 15A). This section covers whichever of these the trigger above requires:
 
-### Phase 1 — Durable pre-commit record (independent, always committed)
+### Phase 1, Step A — Pre-payment durable record (Card: already run in Section 30, step 2; Cash: runs here)
 
 ```text
 BEGIN IMMEDIATE
@@ -942,11 +946,28 @@ BEGIN IMMEDIATE
 
 1. Compute the checkout fingerprint over the reviewed cart, customer, tax rate, and totals (`DATA_MODEL.md` Section 41B).
 2. Check checkout request ID; if it already exists with a different fingerprint, reject as a conflict.
-3. Insert (or reuse) the `checkout_requests` row with `status = SUBMITTED`, the payment method, intended total, and — for Card — the Clover-approval confirmation timestamp.
+3. Insert (or reuse) the `checkout_requests` row with the payment method and intended total, and `status = SUBMITTED` (Cash) or `status = PENDING_PAYMENT` (Card, before Clover is invoked).
 
 ```text
 COMMIT
 ```
+
+For Card, this step must complete before the cashier is ever instructed to process Clover (Section 30) — it does not happen here.
+
+### Phase 1, Step B — Payment confirmation record (Card only; runs here, immediately after Payment Approved)
+
+```text
+BEGIN IMMEDIATE
+```
+
+1. Re-read the existing `checkout_requests` row (`status = PENDING_PAYMENT`).
+2. Update it with the Clover-approval confirmation timestamp and `status = SUBMITTED`.
+
+```text
+COMMIT
+```
+
+If this update fails, follow Section 35A, Case 2, rather than proceeding to Phase 2.
 
 ### Phase 2 — Authoritative sale transaction (may fail without losing Phase 1 evidence)
 
@@ -964,7 +985,7 @@ BEGIN IMMEDIATE
 8. Load the currently configured tax rate.
 9. Calculate tax using the fixed rounding rule (`DATA_MODEL.md` Section 42).
 10. Calculate final total.
-11. Compare every recalculated value against the reviewed fingerprint (step 1 of Phase 1); if anything drifted — price, tax rate, availability, stock, or totals — reject with a re-review error instead of committing different values.
+11. Compare every recalculated value against the reviewed fingerprint (step 1 of Phase 1, Step A); if anything drifted — price, tax rate, availability, stock, or totals — reject with a re-review error instead of committing different values.
 12. Validate payment information; for Card, the recalculated total must exactly equal the amount already recorded as `intended_total_cents`.
 13. Generate Sale ID.
 14. Generate receipt number.
@@ -1041,13 +1062,13 @@ If the payment method was Card and the cashier had already confirmed Clover appr
 
 # 35A. Card Payment Local-Commit-Failure Workflow
 
-## Scenario
+## Scenario — Case 1: sale transaction fails after approval is confirmed
 
-The cashier confirms Clover approved the card charge, but the authoritative local sale transaction (Section 33) then fails.
+The cashier confirms Clover approved the card charge (Phase 1, Step B durably recorded that confirmation), but the authoritative local sale transaction (Section 33, Phase 2) then fails.
 
-## Expected Behavior
+## Expected Behavior — Case 1
 
-1. The trusted application layer has already durably recorded, before attempting the sale transaction, the checkout request, payment method (`CARD`), intended total, and the timestamp the cashier confirmed Clover approval (`DATA_MODEL.md` Sections 31–31A). This record does not disappear when the sale transaction rolls back.
+1. The trusted application layer has already durably recorded, before attempting the sale transaction, the checkout request, payment method (`CARD`), intended total (Phase 1, Step A — before Clover was ever invoked, Section 30), and the timestamp the cashier confirmed Clover approval (Phase 1, Step B). This record does not disappear when the sale transaction rolls back.
 2. The application does not report the sale as completed and does not create any sale, payment, inventory, or export record.
 3. The application updates the same checkout-request record to `COMMIT_FAILED` with a stable failure code.
 4. The UI clearly and immediately warns the cashier, for example:
@@ -1068,7 +1089,18 @@ This attempt has been recorded for reconciliation as CHK-83ac...
 6. The cart remains available so the cashier can retry the same checkout once the underlying issue is resolved (e.g., disk space freed), without being asked to process the card through Clover again. A successful retry links to and closes the reconciliation entry automatically.
 7. If the cashier instead completes the sale a different way (e.g., Cash) or abandons it, the reconciliation entry is left for manual resolution (Section 35B).
 
-Go Phones POS never calls a Clover API as part of this workflow; any reversal or refund is a manual, separate action the cashier performs directly in Clover.
+## Scenario — Case 2: the approval-confirmation write itself fails
+
+The cashier confirms Clover approved the card charge, but the Phase 1, Step B durable write recording that confirmation fails — the `checkout_requests` row remains at `PENDING_PAYMENT` with no record that approval was ever confirmed, and Phase 2 is never reached.
+
+## Expected Behavior — Case 2
+
+1. The application shows the same cashier warning as Case 1 (step 4 above) — from the cashier's perspective, the outcome is identical: a possible Clover charge with no durable local confirmation.
+2. Because Step B could not commit, there may be no reliable way to durably transition the row to `COMMIT_FAILED` at that moment either. The row is left at `PENDING_PAYMENT`.
+3. A `PENDING_PAYMENT` row that has not advanced within the staleness window (`DATA_MODEL.md` Section 31, Phase 1 Step B) automatically appears in the Reconciliation Queue, exactly as a `COMMIT_FAILED` row would.
+4. The cashier may retry once the underlying issue is resolved; a successful retry re-attempts Step B and then Phase 2 against the same row, closing the reconciliation entry automatically on success.
+
+In both cases, Go Phones POS never calls a Clover API as part of this workflow; any reversal or refund is a manual, separate action the cashier performs directly in Clover.
 
 ---
 
@@ -1705,7 +1737,7 @@ User initiates a manual backup, or the recurring automatic-backup schedule becom
 
 ## Expected Flow
 
-1. Application performs a SQLite-safe backup procedure.
+1. Application performs a SQLite-consistent snapshot/backup procedure (`DATA_MODEL.md` Section 54, "Backup and Recovery-Copy Safety Under WAL") — never a raw copy of the live main database file while connections/WAL activity may exist.
 2. Backup copy is written to approved location.
 3. Backup integrity is verified sufficiently to treat the copy as usable.
 4. Local backup metadata records type, creation time, outcome, verification state, and sanitized failure details where applicable.
@@ -1762,7 +1794,7 @@ The shared user selects `Restore Database` and chooses a backup to restore from.
 ## Expected Flow
 
 1. Confirm no checkout is active or in flight; if one is, defer until idle (Section 102).
-2. Preserve a timestamped copy of the **current** database before touching anything.
+2. Preserve a SQLite-consistent snapshot/backup copy (`DATA_MODEL.md` Section 54, "Backup and Recovery-Copy Safety Under WAL" — not a raw file copy) of the **current** database before touching anything.
 3. Read the selected backup's metadata: schema version, source app version, creation time, and its latest contained sale timestamp.
 4. Compare the backup's latest sale timestamp against the current database's latest sale timestamp.
 5. If the current database is newer, warn clearly, naming how many transactions and what date range would be lost, and require an explicit, unambiguous confirmation before proceeding. There is no default-confirmed or silent path when data would be lost.

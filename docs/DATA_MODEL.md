@@ -2569,34 +2569,58 @@ value
 updated_at
 ```
 
-Required entry:
+Required entries:
 
 ```text
 receipt_number
+audit_sequence
 ```
 
-V1 does not use generic business counters beyond the receipt number.
+`audit_sequence` allocates the monotonic `sequence` value for `audit_events` (Section 36A) using the same read-increment-within-transaction pattern as `receipt_number`. V1 does not use generic business counters beyond these two.
 
 ---
 
 # 31. Sale Completion Transaction
 
-Completion is a two-phase durability design. Phase 1 durably records the checkout attempt — including, for a Card sale, the cashier's confirmation that Clover approved the charge — in its own short-lived committed transaction, **before** the authoritative sale transaction is attempted. This guarantees that a subsequent failure inside the sale transaction cannot erase the only local evidence that a Clover charge may have occurred. See Section 31A for the reasoning.
+Completion is a two-phase durability design. Phase 1 durably records the checkout attempt in its own short-lived committed transaction(s) **before** the authoritative sale transaction (Phase 2) is attempted. For Card, Phase 1 is itself ordered into two independently committed steps so that a durable local record exists **before the cashier is ever instructed to process the card through Clover** — not merely before the authoritative sale transaction. This guarantees that even a total loss of SQLite availability at the worst possible moment (immediately after Clover approves) cannot leave a real Clover charge with zero durable local trace. See Section 31A for the reasoning.
 
-## Phase 1 — Record the checkout attempt (independent, always durable)
+## Phase 1, Step A — Pre-Payment Durable Record (independent, always durable, always first)
 
 ```text
 BEGIN IMMEDIATE
 ```
 
 1. Look up `request_id`. If a row already exists, verify its `request_fingerprint` matches; if it does not match, reject as an idempotency-key conflict and stop (see Section 34).
-2. If no row exists, insert a new `checkout_requests` row with `status = SUBMITTED`, the normalized `request_fingerprint`, `payment_method_snapshot`, `intended_total_cents`, and — for Card only — `clover_approved_confirmed_at` set to the timestamp the cashier confirmed Clover approval.
+2. If no row exists, insert a new `checkout_requests` row with the normalized `request_fingerprint`, `payment_method_snapshot`, and `intended_total_cents`, and:
+   - For **Cash**, `status = SUBMITTED` immediately — there is no external payment step to await.
+   - For **Card**, `status = PENDING_PAYMENT` — `clover_approved_confirmed_at` is left `NULL`; the POS does not yet know, and must not imply, whether Clover will approve anything.
 
 ```text
 COMMIT
 ```
 
-This phase 1 commit happens whether or not the sale ultimately succeeds. It is intentionally small and unlikely to fail for the same reasons the larger sale transaction might fail (e.g., it does not touch product/inventory rows), but if phase 1 itself cannot commit, checkout must stop immediately and the cashier is warned before any Clover processing is assumed complete for that attempt.
+**This step must complete and commit before the cashier is instructed to process any amount through Clover.** It is intentionally small and unlikely to fail for the same reasons the larger sale transaction might fail (e.g., it does not touch product/inventory rows). If this step cannot commit, checkout must stop immediately: the cashier is warned and is **not** sent to Clover for this attempt, so no charge is put at risk without a durable local trace already existing.
+
+## Phase 1, Step B — Payment Confirmation Record (Card only; skipped for Cash)
+
+Only reached after the cashier has processed the reviewed total on Clover and Clover has responded.
+
+```text
+BEGIN IMMEDIATE
+```
+
+1. Re-read the existing `checkout_requests` row for `request_id` (already `PENDING_PAYMENT` from Step A).
+2. Update it: set `clover_approved_confirmed_at` to the timestamp of the cashier's explicit confirmation that Clover approved the charge, and advance `status = SUBMITTED`.
+
+```text
+COMMIT
+```
+
+The application must never set `clover_approved_confirmed_at` or advance past `PENDING_PAYMENT` except in direct response to the cashier's explicit confirmation — the POS does not independently know whether Clover captured funds.
+
+If this update cannot commit — Clover has already approved, the cashier has confirmed it, but the durable write recording that confirmation fails — the situation is handled exactly like a Phase 2 commit failure (Section 31A): the application treats the row as needing reconciliation rather than silently retrying the write and hoping. A `checkout_requests` row that remains `PENDING_PAYMENT` past a short staleness window (5 minutes, matching the stale-job default in `ARCHITECTURE.md` Section 49A) without advancing is therefore also surfaced in the Reconciliation Queue (Section 31B), because a stalled `PENDING_PAYMENT` row cannot be distinguished from "cashier hasn't gone to Clover yet" without giving it time to resolve naturally first.
+
+For Cash, Step B does not exist — Step A already wrote `status = SUBMITTED` directly, since there is no external charge whose confirmation could be lost.
 
 ## Phase 2 — Attempt the authoritative sale (may fail; must not erase phase 1 evidence)
 
@@ -2604,7 +2628,7 @@ This phase 1 commit happens whether or not the sale ultimately succeeds. It is i
 BEGIN IMMEDIATE
 ```
 
-1. Re-read the `checkout_requests` row for `request_id`. If its `status` is already `COMPLETED`, return the existing sale rather than proceeding (idempotent replay).
+1. Re-read the `checkout_requests` row for `request_id`. If its `status` is already `COMPLETED`, return the existing sale rather than proceeding (idempotent replay). Phase 2 only proceeds from `status = SUBMITTED`; a row still at `PENDING_PAYMENT` has not yet had its Card approval confirmed (Step B) and is not eligible for Phase 2.
 2. Read required products.
 3. Verify all products are active.
 4. Verify quantities are sufficient, aggregating duplicate product IDs across cart lines first (Section 41A).
@@ -2628,27 +2652,40 @@ If any required step in Phase 2 fails, that transaction rolls back in full — n
 
 ## Phase 2 failure — record the outcome
 
-If Phase 2 rolls back, the application immediately performs one additional best-effort write, independent of the failed transaction: update the existing `checkout_requests` row to `status = COMMIT_FAILED` with `failure_code` and `failed_at`. If SQLite is reachable enough to have rolled back cleanly, this update is expected to succeed. If SQLite is not reachable at all (the underlying failure), the Phase 1 row still exists from before the failure and remains durable evidence even though its `status` could not advance past `SUBMITTED`; diagnostics additionally record the failure per Section 31A.
+If Phase 2 rolls back, the application immediately performs one additional best-effort write, independent of the failed transaction: update the existing `checkout_requests` row to `status = COMMIT_FAILED` with `failure_code` and `failed_at`. If SQLite is reachable enough to have rolled back cleanly, this update is expected to succeed. If SQLite is not reachable at all (the underlying failure), the row from Phase 1 Step A (and, for Card, Step B) still exists from before the failure and remains durable evidence even though its `status` could not advance past `SUBMITTED`; diagnostics additionally record the failure per Section 31A.
 
-This design means the four pieces of durable local evidence Priority 0 requires — checkout request, intended total, payment method, and cashier-confirmed Clover approval — are captured in Phase 1 and therefore survive any Phase 2 failure.
+This design means the four pieces of durable local evidence Priority 0 requires — checkout request, intended total, payment method, and cashier-confirmed Clover approval — are captured across Phase 1's two steps, each committed independently and in order *before* the corresponding external or internal action it protects (Step A before Clover is invoked; Step B before Phase 2 is attempted), and therefore survive any later failure.
 
 ---
 
 # 31A. Card-Approved / Local-Commit-Failure Handling (Critical Reconciliation Case)
 
-## The failure case
+## The failure cases
 
-1. Cashier processes a Card payment manually through Clover.
-2. Clover approves and captures the charge.
-3. Cashier confirms the Clover approval inside Go Phones POS.
-4. The authoritative Phase 2 sale transaction (Section 31) fails to commit (disk full, unexpected constraint failure, abrupt storage failure, etc.).
-5. The customer may have been charged by Clover, but no completed local sale exists.
+**Case 1 — Phase 2 fails after approval is durably confirmed:**
+
+1. Phase 1 Step A durably records the pending Card attempt (`PENDING_PAYMENT`) before Clover is invoked.
+2. Cashier processes the reviewed total manually through Clover.
+3. Clover approves and captures the charge.
+4. Cashier confirms the Clover approval inside Go Phones POS; Phase 1 Step B durably records that confirmation (`SUBMITTED`).
+5. The authoritative Phase 2 sale transaction (Section 31) fails to commit (disk full, unexpected constraint failure, abrupt storage failure, etc.).
+6. The customer may have been charged by Clover, but no completed local sale exists.
+
+**Case 2 — Step B itself cannot commit:**
+
+1. Phase 1 Step A durably records the pending Card attempt (`PENDING_PAYMENT`) before Clover is invoked.
+2. Cashier processes the reviewed total manually through Clover.
+3. Clover approves and captures the charge.
+4. Cashier confirms the Clover approval inside Go Phones POS, but the Step B durable write recording that confirmation fails.
+5. The row is left at `PENDING_PAYMENT` with no record of the approval; the customer may have been charged, but the POS has no durable record that approval was ever confirmed.
+
+Both cases converge on the same required behavior below; Case 2 is additionally surfaced by staleness (Section 31 Phase 1 Step B) rather than only by an explicit `COMMIT_FAILED` transition, since the failure occurs before a `COMMIT_FAILED` write can even be attempted with confidence.
 
 Go Phones POS must never pretend the Clover charge did not happen, and must never fabricate a completed local sale to paper over the failure. It also does not call any Clover API — V1 has no direct Clover integration — so it cannot programmatically confirm or reverse the charge itself.
 
 ## Required behavior
 
-- The `checkout_requests` row created in Phase 1 (Section 31) is the durable local record of this incident. For a Card attempt it carries `payment_method_snapshot = CARD`, `intended_total_cents`, and `clover_approved_confirmed_at`, and after a Phase 2 failure it is updated to `status = COMMIT_FAILED`.
+- The `checkout_requests` row created in Phase 1 Step A (Section 31) — before Clover was ever invoked — is the durable local record of this incident. For a Card attempt it carries `payment_method_snapshot = CARD` and `intended_total_cents` from the moment it is created, gains `clover_approved_confirmed_at` once Step B succeeds, and after a Phase 2 failure is updated to `status = COMMIT_FAILED`. A row that never reaches Step B (Case 2) remains discoverable at `PENDING_PAYMENT` and is still surfaced once stale.
 - The UI must immediately and unambiguously tell the cashier that (a) the local sale was **not** recorded, and (b) if Clover already showed approval, that charge may still be valid on the customer's card and must be checked/voided/refunded **separately and manually in Clover** — Go Phones POS performs no automatic reversal. Example required wording:
 
 ```text
@@ -2677,7 +2714,12 @@ This attempt has been recorded for reconciliation as CHK-83ac...
 
 # 31B. Reconciliation Queue
 
-`checkout_requests` rows with `status = COMMIT_FAILED` and `payment_method_snapshot = CARD` are surfaced together in a Reconciliation Queue view (Settings/Support area) until resolved.
+`checkout_requests` rows with `payment_method_snapshot = CARD` are surfaced together in a Reconciliation Queue view (Settings/Support area) until resolved when either:
+
+- `status = COMMIT_FAILED` with a `failure_code` other than `CLOVER_DECLINED` (Phase 2 failed, or Step B's confirmation write failed and a best-effort `COMMIT_FAILED` transition succeeded), or
+- `status = PENDING_PAYMENT` and the row has not advanced within the 5-minute staleness window (Section 31, Phase 1 Step B) — covering Case 2, where the confirmation write itself could not be recorded at all.
+
+A `PENDING_PAYMENT` row that is not yet stale is a normal, healthy in-progress checkout and must not appear in the queue. A row explicitly resolved as declined/cancelled (`failure_code = CLOVER_DECLINED`, `POS_WORKFLOWS.md` Section 31) is not an incident — no charge occurred — and must not appear in the queue either. This reuses the existing `COMMIT_FAILED` status and `failure_code` field rather than introducing another status value: a decline is recorded the same way a commit failure is (a terminal, best-effort update to the Phase 1 row), and the queue simply distinguishes the two by `failure_code`.
 
 Additional fields supporting this (see Section 33 for the full table):
 
@@ -2821,7 +2863,7 @@ CASH
 CARD
 ```
 
-Recorded at Phase 1 (Section 31) so it survives a Phase 2 failure.
+Recorded at Phase 1, Step A (Section 31) — before Clover is ever invoked for Card — so it survives a Step B or Phase 2 failure.
 
 ---
 
@@ -2839,7 +2881,7 @@ Yes
 
 Purpose:
 
-The final total the cashier reviewed and, for Card, the amount processed on Clover. Recorded at Phase 1 so it is available even if Phase 2 never produces a `sales` row.
+The final total the cashier reviewed and, for Card, the amount that will be processed on Clover. Recorded at Phase 1, Step A — before the cashier is sent to Clover — so it is available even if Clover approval is never confirmed or Phase 2 never produces a `sales` row.
 
 ---
 
@@ -2853,11 +2895,11 @@ TEXT
 
 Required:
 
-Only when `payment_method_snapshot = CARD`.
+Only once `status` has advanced past `PENDING_PAYMENT` for a Card attempt (i.e., `SUBMITTED`, `COMPLETED`, or `COMMIT_FAILED` reached via a successful Step B). `NULL` while `status = PENDING_PAYMENT`, and always `NULL` for Cash.
 
 Purpose:
 
-Timestamp of the cashier's explicit confirmation that Clover approved the charge, captured before Phase 2 is attempted. This is the durable evidence required by Section 31A.
+Timestamp of the cashier's explicit confirmation that Clover approved the charge, captured by Phase 1 Step B — after Clover has responded but before Phase 2 is attempted. This is the durable evidence required by Section 31A. The application must never populate this field except in direct response to that confirmation.
 
 ---
 
@@ -2892,12 +2934,15 @@ UNIQUE when present
 Allowed values:
 
 ```text
+PENDING_PAYMENT
 SUBMITTED
 COMPLETED
 COMMIT_FAILED
 ```
 
-`SUBMITTED` is written durably in Phase 1 before Phase 2 begins. A successful Phase 2 commit advances the same row to `COMPLETED` with `sale_id`. A failed Phase 2 advances the same row to `COMMIT_FAILED` with `failure_code`. Unlike the sale transaction itself, this status transition on the `checkout_requests` row is never rolled back together with a failed sale attempt — it is written as a separate, best-effort update specifically so it survives.
+`PENDING_PAYMENT` exists only for Card and is written by Phase 1 Step A before the cashier is instructed to process Clover; it means "a checkout is durably on record, but no payment confirmation has been received yet." `SUBMITTED` is reached either directly (Cash, at Step A) or via Phase 1 Step B once Card approval is confirmed; it means the row is eligible for Phase 2. A successful Phase 2 commit advances the same row to `COMPLETED` with `sale_id`. A failed Phase 2 — or a failed Step B confirmation write — advances the same row to `COMMIT_FAILED` with `failure_code` where that transition itself can be durably written. Unlike the sale transaction itself, none of these status transitions on the `checkout_requests` row are rolled back together with a failed sale/confirmation attempt — each is written as its own separate, best-effort or independently-committed update specifically so it survives.
+
+No additional state is introduced beyond `PENDING_PAYMENT`: Cash checkout never uses it, and Card checkout only passes through it briefly between review and Clover approval.
 
 ---
 
@@ -2915,7 +2960,7 @@ Only when `status = COMMIT_FAILED`.
 
 Purpose:
 
-Stable, sanitized error code identifying why Phase 2 failed (see `SUPPORT_DIAGNOSTICS.md` error codes).
+Stable, sanitized error code identifying why Phase 2 failed, why the Phase 1 Step B confirmation write failed, or (`CLOVER_DECLINED`) that the cashier explicitly recorded a Clover decline/cancel rather than a failure — see `SUPPORT_DIAGNOSTICS.md` error codes. `CLOVER_DECLINED` is excluded from the Reconciliation Queue (Section 31B); every other value represents a genuine incident.
 
 ---
 
@@ -2938,7 +2983,7 @@ UNRESOLVED
 RESOLVED
 ```
 
-Only meaningful when `status = COMMIT_FAILED`. Defaults to `UNRESOLVED`.
+Only meaningful for a row surfaced in the Reconciliation Queue (Section 31B): `status = COMMIT_FAILED`, or `status = PENDING_PAYMENT` past the staleness window. Defaults to `UNRESOLVED`.
 
 ---
 
@@ -3130,7 +3175,14 @@ CARD_LOCAL_COMMIT_FAILURE
 AUTH_CREDENTIAL_CHANGED
 ```
 
-`id` is the immutable primary key (a UUID-style text identifier, consistent with Section 3). `sequence` is a separate, database-assigned monotonically increasing integer (SQLite `INTEGER PRIMARY KEY AUTOINCREMENT` on a dedicated column, or an equivalent strictly-increasing rowid-derived value) used as the authoritative **ordering** key for display, diagnostics, and any "what happened before what" question. `occurred_at` remains the wall-clock business timestamp used for reporting and is what a person reads, but it is not trusted for ordering because Section 3.33/`REQ-HEALTH-002` (`SUPPORT_DIAGNOSTICS.md` Section 33) anticipates a system clock that can jump backward or forward. `sequence` cannot jump: two events are ordered by `sequence` regardless of what `occurred_at` says. No distributed/multi-device ordering scheme is introduced in V1 — this is purely a local monotonic counter, sufficient for a single-machine deployment.
+```text
+id       TEXT    PRIMARY KEY
+sequence INTEGER NOT NULL UNIQUE
+```
+
+`id` remains the sole primary key and immutable event identity — a UUID-style text identifier, consistent with Section 3, used for foreign references, correlation, and lookup. `sequence` is a separate, strictly increasing local ordering field (`INTEGER NOT NULL UNIQUE`, not a second primary key — SQLite allows only one primary key per table) used purely as the authoritative **ordering** key for display, diagnostics, and any "what happened before what" question. `occurred_at` remains the wall-clock business timestamp used for reporting and is what a person reads, but it is not trusted for ordering because `SUPPORT_DIAGNOSTICS.md` Section 33 (clock-change awareness, `REQ-HEALTH-002`) anticipates a system clock that can jump backward or forward. `sequence` cannot jump: two events are ordered by `sequence` regardless of what `occurred_at` says. `sequence` is consulted specifically when wall-clock order is unreliable (a detected or suspected clock anomaly); ordinary chronological display may still present `occurred_at` for readability. No distributed/multi-device ordering scheme is introduced in V1 — this is purely a local monotonic counter, sufficient for a single-machine deployment.
+
+`sequence` values are allocated the same way `receipt_number` values are (Section 29): a dedicated `counters` row (key `audit_sequence`) is read and incremented within the same SQLite transaction that inserts the `audit_events` row, and the incremented value becomes that row's `sequence`. When the audit event is part of a larger business transaction (e.g., `SALE_COMPLETED`), this counter increment is part of that same transaction and rolls back with it, exactly like the receipt-number counter — no `sequence` value is ever assigned to an event that does not durably commit. When an audit event is written independently (e.g., `BACKUP_COMPLETED`), the counter increment and the audit-event insert are committed together in their own small transaction. This reuses an existing, already-understood atomic-allocation mechanism rather than introducing a new one.
 
 `actor_type` identifies `USER` or `SYSTEM`; `actor_identifier` may be null where V1's shared login cannot identify an individual. `subject_type` and `subject_id` identify the affected sale, product, setting, backup, migration, checkout request, or update when applicable. `correlation_id` links the event to related checkout, void, export, backup, migration, or update diagnostics. `details_json` may contain only schema-validated, sanitized context and must not contain secrets or unnecessary customer PII.
 
@@ -3418,13 +3470,29 @@ Before stock validation, the trusted application layer aggregates cart lines by 
 
 ```text
 - customer_id (or null)
-- for each cart line, ordered by product_id: { product_id, quantity, sold_price_cents, listed_price_cents }
+- cart lines, canonically ordered (see below): { product_id, listed_price_cents, sold_price_cents, quantity }
 - reviewed tax_rate_bps
 - reviewed subtotal_cents, discount_cents, taxable_amount_cents, tax_cents, total_cents
 - payment_method
 ```
 
-At Phase 2 (Section 31), the trusted application layer independently recalculates every one of these values from current authoritative state: current product `is_active`/`quantity_on_hand`, the currently configured `tax_rate_bps`, and the submitted line prices. If any recalculated authoritative value differs from the value captured in the reviewed fingerprint above — including a configured tax-rate change between review and submission, a product archived or price-changed after the cart was built, or a stock level that has since changed — Phase 2 rejects the attempt with a "checkout details changed, please review again" error rather than silently committing different financial values. The cashier must re-review the cart (a new fingerprint is computed) before retrying.
+## Canonical Line Ordering
+
+V1 allows the same `product_id` to appear on more than one cart line with different negotiated prices (Section 41A), so ordering lines by `product_id` alone is not sufficient — it does not define a stable relative order among lines that share a product ID, meaning the same logical cart could serialize differently (and therefore fingerprint differently) depending only on incidental renderer/cart insertion order.
+
+Cart lines are instead sorted by the full stable tuple, applied in this fixed field order:
+
+```text
+(product_id, listed_price_cents, sold_price_cents, quantity)
+```
+
+This tuple is sorted ascending, field by field, exactly like a compound database `ORDER BY`. Because the sort key is derived entirely from each line's own content — never from insertion order, a client-side line index, or any other incidental detail — two carts containing the same multiset of line tuples always produce the identical sorted sequence and therefore the identical fingerprint, regardless of the order in which the cashier or renderer added them. Two carts whose line tuples actually differ in `product_id`, either price, or `quantity` sort differently (or contain a different tuple outright) and therefore fingerprint differently.
+
+Lines with identical tuples (the same product added twice at the same price and quantity) remain two separate entries in the serialized sequence — canonical ordering never merges or deduplicates lines, and it never changes the fact that stock validation separately aggregates quantity by `product_id` (Section 41A) while the sale's individual line rows remain distinct in `sale_items`.
+
+## Drift Detection
+
+At Phase 2 (Section 31), the trusted application layer independently recalculates every one of these values from current authoritative state: current product `is_active`/`quantity_on_hand`, the currently configured `tax_rate_bps`, and the submitted line prices — canonically ordered the same way before comparison. If any recalculated authoritative value differs from the value captured in the reviewed fingerprint above — including a configured tax-rate change between review and submission, a product archived or price-changed after the cart was built, or a stock level that has since changed — Phase 2 rejects the attempt with a "checkout details changed, please review again" error rather than silently committing different financial values. The cashier must re-review the cart (a new fingerprint is computed) before retrying.
 
 For Card payments this rule is strict: the `total_cents` the cashier actually processed on Clover (`checkout_requests.intended_total_cents`) must equal the authoritative recalculated `sales.total_cents` exactly, or Phase 2 is rejected rather than committing a sale for a different amount than was charged.
 
@@ -3626,7 +3694,7 @@ By default every V1 backup (`backup_records.location_kind = LOCAL_DISK`) is writ
 
 A whole-database restore is a destructive operation and must not silently discard newer business records than the backup being restored. The trusted application layer:
 
-1. Before touching the active database, copies the **current** (pre-restore) database file to a timestamped recovery location (e.g., `gophones-pre-restore-<timestamp>.sqlite`) so today's state is never lost even if the wrong backup is chosen.
+1. Before touching the active database, creates a SQLite-consistent snapshot/backup copy (Section 54, "Backup and Recovery-Copy Safety Under WAL" — not a raw copy of the live main file) of the **current** (pre-restore) database at a timestamped recovery location (e.g., `gophones-pre-restore-<timestamp>.sqlite`) so today's state is never lost even if the wrong backup is chosen.
 2. Reads the candidate backup's metadata (`backup_records`, or the equivalent metadata embedded alongside a backup file selected from outside `backup_records`, e.g., one copied in from an external drive) — its schema version, source app version, and creation timestamp — without yet replacing anything.
 3. Compares the backup's creation timestamp and the latest `sales.completed_at` it contains against the **current** database's latest `sales.completed_at`. If the current database contains completed sales newer than the backup, the restore would discard them.
 4. If the current database is newer, the UI clearly warns the user how many transactions (and their date range) would be lost, and requires an explicit, unambiguous confirmation before proceeding — restoring an older backup over newer data is never a silent or default-confirmed action.
@@ -3658,6 +3726,7 @@ one checkout request per completed sale
 one reversal per original sale movement
 VOIDED sales require voided_at and void_reason
 audit events are append-only
+audit_events.sequence NOT NULL and UNIQUE, allocated only via the counters.audit_sequence pattern (Sections 29-30, 36A)
 condition/status/movement_type/payment method restricted to their documented enum values (Sections 7, 11, 15, 17)
 ```
 
@@ -3680,7 +3749,27 @@ PRAGMA busy_timeout = 5000
 - **Synchronous: FULL.** V1 prioritizes durability over raw write throughput given the expected transaction volume (~50 products, modest daily sale count). `FULL` ensures a checkout commit is flushed to durable storage before the application reports success, so a power loss immediately after a reported commit cannot lose that transaction. `NORMAL` is not used in V1 because, in WAL mode, `NORMAL` can lose the most recent commits after a power loss (though the database itself remains structurally consistent); that trade-off is unacceptable for a POS whose central invariant is that a reported sale is never lost.
 - **Busy timeout: 5000 ms.** Since Section 55 already requires checkout to acquire a write transaction (`BEGIN IMMEDIATE`) even though V1 is single-machine/single-user, a 5-second busy timeout absorbs brief contention (e.g., a backup or export-worker read) without surfacing a spurious failure to the cashier.
 - **Checkout transactions** use `BEGIN IMMEDIATE` (Sections 31, 55) so a writer acquires the write lock up front rather than discovering a conflict mid-transaction.
-- **Checkpointing.** WAL is checkpointed automatically by SQLite's default auto-checkpoint behavior; the backup procedure (Section 37 of `ARCHITECTURE.md`) additionally performs a full checkpoint (`PRAGMA wal_checkpoint(TRUNCATE)`) immediately before copying the database file, so a backup never captures an unbounded WAL file and always reflects a consistent, checkpointed image.
+- **Checkpointing.** WAL is checkpointed automatically by SQLite's default auto-checkpoint behavior. This keeps the WAL file bounded during normal operation, but a manual checkpoint immediately before a copy is **not**, by itself, a safe backup mechanism (see below) — a writer (checkout) could still open and begin a new transaction between the checkpoint and the copy finishing, since nothing blocks it.
+
+## Backup and Recovery-Copy Safety Under WAL
+
+> A backup or pre-restore recovery copy must be created using a SQLite-consistent snapshot/backup procedure. Copying only the live main database file while SQLite connections/WAL activity may exist is prohibited.
+
+Because V1 runs in WAL mode, the durable state of the database is split across the main `.sqlite` file and its `-wal`/`-shm` companion files, and a writer can begin a new transaction between a checkpoint and a naive file copy. Copying only the main `.sqlite` file — even immediately after a `wal_checkpoint` — is not guaranteed to be transactionally consistent and is prohibited as a backup mechanism for automatic, manual, and pre-migration backups, and for the pre-restore recovery copy (Section 52A).
+
+A valid mechanism is either of the following (the exact library/API is an implementation choice, not fixed here):
+
+- **A SQLite backup API or equivalent safe snapshot mechanism** (e.g., the SQLite Online Backup API, or a library that wraps it) that produces a transactionally consistent copy while the database remains open and usable, including under concurrent read/write activity; or
+- **A raw file copy taken only after the database connection has been safely quiesced or closed** and any WAL content has been fully checkpointed back into the main file (`PRAGMA wal_checkpoint(TRUNCATE)` followed by verifying the WAL is empty, with no writer permitted to open a new transaction until the copy completes) — this is only safe for a maintenance-window operation (e.g., during exclusive backup/restore/migration coordination, `ARCHITECTURE.md` Section 42.3), never as a "copy the file while checkout might still be running" shortcut.
+
+This rule applies identically to:
+
+- Automatic backups (Section 36B, `backup_type = AUTOMATIC`)
+- Manual backups (`backup_type = MANUAL`)
+- Pre-migration backups (`backup_type = PRE_MIGRATION`)
+- The pre-restore recovery copy (Section 52A, step 1)
+
+The existing WAL + `synchronous = FULL` durability policy for the live operational database is unchanged by this rule — this section governs how a *separate copy* of the database is produced, not how the operational database itself is written.
 
 ## Supported Filesystem Assumption
 
