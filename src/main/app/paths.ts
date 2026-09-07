@@ -84,7 +84,9 @@ export interface AppPaths {
   readonly logs: string;
   /** Support/diagnostics working directory. */
   readonly diagnostics: string;
-  /** Planned location of the authoritative operational database (not opened in the foundation). */
+  /** Root directory for SQLite backups (pre-migration in Phase 2A; automatic/manual later). */
+  readonly backups: string;
+  /** Location of the authoritative operational database (`DATA_MODEL.md §13`). */
   readonly databaseFile: string;
   /** Throwaway database file used only by the native-module scaffold check. */
   readonly nativeCheckDbFile: string;
@@ -100,6 +102,7 @@ export function resolveAppPaths(): AppPaths {
     userData,
     logs: join(userData, 'logs'),
     diagnostics: join(userData, 'diagnostics'),
+    backups: join(userData, 'backups'),
     databaseFile: join(userData, 'gophones.sqlite'),
     nativeCheckDbFile: join(userData, 'diagnostics', 'native-module-check.sqlite'),
   };

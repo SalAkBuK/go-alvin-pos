@@ -1,8 +1,9 @@
 import { app, ipcMain } from 'electron';
 import { IPC } from '../../shared/ipc';
-import type { AppInfo, NativeSqliteCheckResult } from '../../shared/ipc';
+import type { AppInfo, DatabaseStatus, NativeSqliteCheckResult } from '../../shared/ipc';
 import type { Logger } from '../app/logger';
 import type { AppPaths } from '../app/paths';
+import { getDatabaseStatus } from '../database/status';
 import { runNativeSqliteCheck } from '../diagnostics/nativeSqliteCheck';
 
 /**
@@ -44,4 +45,6 @@ export function registerIpcHandlers(context: IpcContext): void {
     }
     return result;
   });
+
+  ipcMain.handle(IPC.databaseStatus, (): DatabaseStatus => getDatabaseStatus());
 }

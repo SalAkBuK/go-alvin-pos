@@ -1,18 +1,24 @@
 import { useEffect, useState } from 'react';
-import type { AppInfo, NativeSqliteCheckResult } from '../../shared/ipc';
+import type { AppInfo, DatabaseStatus, NativeSqliteCheckResult } from '../../shared/ipc';
 
 /**
  * Intentionally minimal foundation renderer.
  *
- * It shows only that the application shell is running. The small
- * "foundation status" block below exercises the typed IPC bridge end to end
- * (renderer -> preload -> main -> better-sqlite3) so the scaffold's wiring is
- * visible; it is not POS UI and carries no business behavior.
+ * It shows only that the application shell is running plus a small status block
+ * that exercises the typed IPC bridge end to end
+ * (renderer -> preload -> main -> better-sqlite3 / production database). It is
+ * not POS UI and carries no business behavior; it also makes a database that
+ * failed to initialize visible instead of silent.
  */
 
 type FoundationState =
   | { readonly kind: 'loading' }
-  | { readonly kind: 'ready'; readonly info: AppInfo; readonly sqlite: NativeSqliteCheckResult }
+  | {
+      readonly kind: 'ready';
+      readonly info: AppInfo;
+      readonly sqlite: NativeSqliteCheckResult;
+      readonly database: DatabaseStatus;
+    }
   | { readonly kind: 'error'; readonly message: string };
 
 export function App() {
@@ -21,10 +27,14 @@ export function App() {
   useEffect(() => {
     let active = true;
 
-    void Promise.all([window.pos.app.getInfo(), window.pos.diagnostics.checkNativeSqlite()])
-      .then(([info, sqlite]) => {
+    void Promise.all([
+      window.pos.app.getInfo(),
+      window.pos.diagnostics.checkNativeSqlite(),
+      window.pos.diagnostics.databaseStatus(),
+    ])
+      .then(([info, sqlite, database]) => {
         if (active) {
-          setState({ kind: 'ready', info, sqlite });
+          setState({ kind: 'ready', info, sqlite, database });
         }
       })
       .catch((error: unknown) => {
@@ -50,6 +60,16 @@ export function App() {
   );
 }
 
+function describeDatabase(database: DatabaseStatus): string {
+  if (database.state === 'ready') {
+    return `ready — schema v${String(database.schemaVersion)}`;
+  }
+  if (database.state === 'initializing') {
+    return 'initializing…';
+  }
+  return `unavailable — ${database.failureCode ?? 'unknown'}`;
+}
+
 function FoundationStatus({ state }: { state: FoundationState }) {
   if (state.kind === 'loading') {
     return <p className="foundation-status">Checking foundation&hellip;</p>;
@@ -59,7 +79,7 @@ function FoundationStatus({ state }: { state: FoundationState }) {
     return <p className="foundation-status">Foundation check failed: {state.message}</p>;
   }
 
-  const { info, sqlite } = state;
+  const { info, sqlite, database } = state;
 
   return (
     <section className="foundation-status">
@@ -83,6 +103,8 @@ function FoundationStatus({ state }: { state: FoundationState }) {
               })`
             : `unavailable — ${sqlite.error}`}
         </dd>
+        <dt>Production database</dt>
+        <dd>{describeDatabase(database)}</dd>
       </dl>
     </section>
   );

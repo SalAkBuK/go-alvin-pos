@@ -23,6 +23,13 @@ export const IPC = {
    * persistence and must never be turned into one.
    */
   nativeSqliteCheck: 'diagnostics:native-sqlite-check',
+  /**
+   * Read-only production-database health for startup-status display. Returns a
+   * small status enum + schema version + failure code — never SQL, rows, paths,
+   * or business data. It exists so a database that fails to initialize is
+   * visible rather than silent.
+   */
+  databaseStatus: 'diagnostics:database-status',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -48,6 +55,14 @@ export type NativeSqliteCheckResult =
       readonly error: string;
     };
 
+export interface DatabaseStatus {
+  /** `ready` = migrated + validated + connected; `unavailable` = init failed. */
+  readonly state: 'ready' | 'unavailable' | 'initializing';
+  readonly schemaVersion: number | null;
+  /** Stable failure code when `state === 'unavailable'`, else `null`. */
+  readonly failureCode: string | null;
+}
+
 /**
  * The shape exposed to the renderer as `window.pos` by the preload script.
  * Every method is an async, argument-validated request to the main process.
@@ -58,5 +73,6 @@ export interface PosApi {
   };
   readonly diagnostics: {
     checkNativeSqlite(): Promise<NativeSqliteCheckResult>;
+    databaseStatus(): Promise<DatabaseStatus>;
   };
 }

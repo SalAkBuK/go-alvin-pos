@@ -19,6 +19,7 @@ const api: PosApi = {
   },
   diagnostics: {
     checkNativeSqlite: () => ipcRenderer.invoke(IPC.nativeSqliteCheck),
+    databaseStatus: () => ipcRenderer.invoke(IPC.databaseStatus),
   },
 };
 

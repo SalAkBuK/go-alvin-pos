@@ -2,8 +2,29 @@ import { describe, expect, it } from 'vitest';
 import { IPC } from '../../src/shared/ipc';
 
 describe('IPC contract', () => {
-  it('exposes only the foundation channels', () => {
-    expect(Object.keys(IPC).sort()).toEqual(['appInfo', 'nativeSqliteCheck']);
+  it('exposes only the foundation + diagnostic channels', () => {
+    expect(Object.keys(IPC).sort()).toEqual(['appInfo', 'databaseStatus', 'nativeSqliteCheck']);
+  });
+
+  it('does not expose any product / customer / checkout / sale / SQL channel', () => {
+    const bannedTerms = [
+      'product',
+      'customer',
+      'checkout',
+      'sale',
+      'payment',
+      'inventory',
+      'receipt',
+      'migration',
+      'schema',
+      'row',
+      'table',
+    ];
+    for (const name of Object.values(IPC)) {
+      for (const term of bannedTerms) {
+        expect(name.toLowerCase()).not.toContain(term);
+      }
+    }
   });
 
   it('uses stable, unique, namespaced channel names', () => {

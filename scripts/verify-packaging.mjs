@@ -127,6 +127,45 @@ try {
   fail(`could not read out/renderer/index.html from app.asar: ${error.message}`);
 }
 
+// (5) migrations are bundled into the packaged main process, not loose files.
+// Phase 2A migrations are TypeScript modules compiled into out/main/index.js,
+// so the canonical schema DDL + migration identity must be present in the bundle.
+try {
+  const mainBundle = extractFile(asarPath, join('out', 'main', 'index.js')).toString('utf8');
+  const requiredTables = [
+    'schema_migrations',
+    'counters',
+    'products',
+    'customers',
+    'sales',
+    'sale_items',
+    'payments',
+    'inventory_movements',
+    'settings',
+    'google_sheet_export_jobs',
+    'checkout_requests',
+    'audit_events',
+    'backup_records',
+  ];
+  const missingTables = requiredTables.filter(
+    (table) => !mainBundle.includes(`CREATE TABLE ${table}`),
+  );
+  const hasMigrationIdentity =
+    /initial_schema/.test(mainBundle) && /schema_migrations/.test(mainBundle);
+
+  if (missingTables.length > 0) {
+    fail(`packaged main bundle is missing CREATE TABLE for: ${missingTables.join(', ')}`);
+  } else if (!hasMigrationIdentity) {
+    fail('packaged main bundle does not contain the 001_initial_schema migration');
+  } else {
+    pass(
+      `initial-schema migration bundled into packaged main process (${requiredTables.length} tables)`,
+    );
+  }
+} catch (error) {
+  fail(`could not read out/main/index.js from app.asar: ${error.message}`);
+}
+
 console.log('');
 if (failures > 0) {
   console.error(`verify-packaging: ${failures} check(s) FAILED`);
