@@ -1,0 +1,136 @@
+/**
+ * Shared Products + Inventory contract (Phase 2B).
+ *
+ * Pure TypeScript types and string constants, dependency-free, so the same
+ * definitions bundle into the main process, the sandboxed preload, and the
+ * renderer. These are the ONLY product/inventory shapes that cross the IPC
+ * boundary — the renderer never sees a raw SQLite row, SQL text, or an
+ * `Error`/stack. All monetary values are integer cents (`DATA_MODEL.md §5`).
+ */
+
+/** Canonical V1 product conditions (`DATA_MODEL.md §7`, `REQ-PROD-002`). */
+export const PRODUCT_CONDITIONS = ['NEW', 'USED', 'REFURBISHED'] as const;
+export type ProductCondition = (typeof PRODUCT_CONDITIONS)[number];
+
+/**
+ * A product as presented to the renderer. `lowStock` / `zeroStock` are derived
+ * once here (`DATA_MODEL.md §13` / `REQ-PROD-007`) so every screen indicates the
+ * same state; the renderer must not re-derive its own rule.
+ */
+export interface ProductRecord {
+  readonly id: string;
+  readonly sku: string | null;
+  readonly barcode: string | null;
+  readonly name: string;
+  readonly brand: string;
+  readonly model: string;
+  readonly condition: ProductCondition;
+  readonly costPriceCents: number | null;
+  readonly sellingPriceCents: number;
+  readonly quantityOnHand: number;
+  readonly lowStockThreshold: number | null;
+  readonly isActive: boolean;
+  readonly lowStock: boolean;
+  readonly zeroStock: boolean;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+/** One immutable inventory-movement history row (`DATA_MODEL.md §17`). */
+export interface InventoryMovementRecord {
+  readonly id: string;
+  readonly productId: string;
+  readonly movementType: 'SALE' | 'VOID_REVERSAL' | 'MANUAL_ADJUSTMENT' | 'INITIAL_STOCK';
+  readonly quantityChange: number;
+  readonly quantityBefore: number;
+  readonly quantityAfter: number;
+  readonly reason: string | null;
+  readonly createdAt: string;
+}
+
+/** `products:create` payload — the canonical create fields (`POS_WORKFLOWS.md §8`). */
+export interface CreateProductInput {
+  readonly name: string;
+  readonly brand: string;
+  readonly model: string;
+  readonly condition: ProductCondition;
+  readonly sellingPriceCents: number;
+  readonly quantity: number;
+  readonly sku?: string | null;
+  readonly barcode?: string | null;
+  readonly costPriceCents?: number | null;
+  readonly lowStockThreshold?: number | null;
+}
+
+/**
+ * `products:update` payload — editable metadata/pricing only. `quantityOnHand`
+ * is deliberately absent: stock changes go through `inventory:adjust`
+ * (`DATA_MODEL.md §40`, `POS_WORKFLOWS.md §10`).
+ */
+export interface UpdateProductInput {
+  readonly name: string;
+  readonly brand: string;
+  readonly model: string;
+  readonly condition: ProductCondition;
+  readonly sellingPriceCents: number;
+  readonly costPriceCents: number | null;
+  readonly sku: string | null;
+  readonly barcode: string | null;
+  readonly lowStockThreshold: number | null;
+}
+
+export interface ProductListOptions {
+  /** Product-management screens may include archived rows; sellable search must not. */
+  readonly includeArchived?: boolean;
+}
+
+export interface ProductSearchOptions extends ProductListOptions {
+  readonly query: string;
+}
+
+/** Barcode lookup result — an unknown barcode is a typed, non-fatal outcome. */
+export type ProductBarcodeLookup =
+  { readonly found: true; readonly product: ProductRecord } | { readonly found: false };
+
+/**
+ * `inventory:adjust` payload. One explicit internal contract: the caller states
+ * either a signed `delta` or an absolute `targetQuantity`; the service resolves
+ * it against the authoritative current quantity (never a renderer-supplied
+ * previous quantity). `reason` is required (`POS_WORKFLOWS.md §12`).
+ */
+export type InventoryAdjustmentInput = {
+  readonly productId: string;
+  readonly reason: string;
+} & (
+  | { readonly mode: 'delta'; readonly delta: number }
+  | { readonly mode: 'target'; readonly targetQuantity: number }
+);
+
+export interface InventoryAdjustmentResult {
+  readonly product: ProductRecord;
+  readonly movement: InventoryMovementRecord;
+}
+
+/** Stable structured error codes surfaced to the renderer. Never a raw SQLite code. */
+export const APP_ERROR_CODES = [
+  'VALIDATION',
+  'PRODUCT_NOT_FOUND',
+  'DUPLICATE_BARCODE',
+  'DUPLICATE_SKU',
+  'INVENTORY_NEGATIVE',
+  'ADJUSTMENT_NO_CHANGE',
+  'DATABASE_UNAVAILABLE',
+  'FORBIDDEN',
+  'INTERNAL',
+] as const;
+export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
+
+export interface IpcError {
+  readonly code: AppErrorCode;
+  /** A complete, user-facing sentence. Contains no SQL, paths, or stack frames. */
+  readonly message: string;
+}
+
+/** Every Phase 2B privileged IPC call resolves to this envelope — it never rejects for a business error. */
+export type IpcResult<T> =
+  { readonly ok: true; readonly data: T } | { readonly ok: false; readonly error: IpcError };

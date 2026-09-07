@@ -18,7 +18,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { extractFile } from '@electron/asar';
+import { extractFile, listPackage } from '@electron/asar';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const appDir = join(repoRoot, 'release', 'win-unpacked');
@@ -164,6 +164,38 @@ try {
   }
 } catch (error) {
   fail(`could not read out/main/index.js from app.asar: ${error.message}`);
+}
+
+// (6) the packaged renderer bundle must not contain better-sqlite3 (REQ-DB-006).
+// The renderer only ever talks to the narrow typed preload surface; the native
+// module is a main-process concern.
+try {
+  const rendererAssets = listPackage(asarPath)
+    .map((p) => p.replace(/^[\\/]/, ''))
+    .filter((p) => {
+      const norm = p.replace(/\\/g, '/');
+      return norm.startsWith('out/renderer/') && /\.(js|mjs|cjs|html)$/.test(norm);
+    });
+
+  if (rendererAssets.length === 0) {
+    fail('no renderer JS/HTML assets found in the packaged asar');
+  } else {
+    let bad = 0;
+    for (const assetPath of rendererAssets) {
+      const content = extractFile(asarPath, assetPath).toString('utf8');
+      if (/better-sqlite3|bindings\.node|node_sqlite3/.test(content)) {
+        fail(`renderer asset ${assetPath} references a native SQLite module`);
+        bad += 1;
+      }
+    }
+    if (bad === 0) {
+      pass(
+        `renderer bundle free of better-sqlite3 (${rendererAssets.length} JS/HTML asset(s) scanned)`,
+      );
+    }
+  }
+} catch (error) {
+  fail(`could not scan renderer assets for native-module leakage: ${error.message}`);
 }
 
 console.log('');

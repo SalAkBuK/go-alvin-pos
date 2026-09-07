@@ -68,7 +68,12 @@ if (!app.requestSingleInstanceLock()) {
     .whenReady()
     .then(async () => {
       installWebContentsHardening(rendererEntry);
-      registerIpcHandlers({ logger, paths });
+      registerIpcHandlers({
+        logger,
+        paths,
+        appVersion: app.getVersion(),
+        getDatabase: () => productionDatabase,
+      });
 
       // (2) Open the production database — only now that we own the instance.
       try {

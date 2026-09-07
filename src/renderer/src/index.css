@@ -14,9 +14,9 @@ body {
 }
 
 .app {
-  max-width: 40rem;
+  max-width: 60rem;
   margin: 0 auto;
-  padding: 3rem 1.5rem;
+  padding: 2rem 1.5rem 4rem;
 }
 
 .app h1 {
@@ -24,8 +24,128 @@ body {
   font-size: 1.5rem;
 }
 
+.app h2 {
+  margin: 1.5rem 0 0.75rem;
+  font-size: 1.15rem;
+}
+
 .app p {
   margin: 0;
+}
+
+.app-status {
+  font-size: 0.8125rem;
+  opacity: 0.65;
+}
+
+.products-toolbar,
+.barcode-lookup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.products-toolbar input[type='search'] {
+  flex: 1 1 18rem;
+  padding: 0.35rem 0.5rem;
+}
+
+.products-summary {
+  font-size: 0.8125rem;
+  opacity: 0.7;
+  margin-bottom: 0.5rem;
+}
+
+.products-notice {
+  color: #1a7f37;
+  font-size: 0.875rem;
+}
+
+.product-form-error {
+  color: #b3261e;
+  font-size: 0.875rem;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.875rem;
+}
+
+th,
+td {
+  border-bottom: 1px solid rgba(127, 127, 127, 0.25);
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.archived-row {
+  opacity: 0.55;
+}
+
+.row-actions button {
+  margin-right: 0.35rem;
+}
+
+.tag {
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  border-radius: 0.75rem;
+  font-size: 0.75rem;
+  margin-right: 0.25rem;
+}
+
+.tag-low {
+  background: #fff4ce;
+  color: #7a5b00;
+}
+
+.tag-zero {
+  background: #fde7e9;
+  color: #8a1c1c;
+}
+
+.tag-archived {
+  background: rgba(127, 127, 127, 0.2);
+}
+
+.product-form,
+.adjust-stock {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-width: 28rem;
+}
+
+.product-form label,
+.adjust-stock label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.875rem;
+}
+
+.product-form input,
+.product-form select,
+.adjust-stock input {
+  padding: 0.35rem 0.5rem;
+}
+
+.product-form-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.adjust-stock-preview {
+  font-size: 0.875rem;
+}
+
+.movement-history {
+  margin-top: 2rem;
 }
 
 .foundation-status {

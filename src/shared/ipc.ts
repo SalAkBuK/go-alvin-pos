@@ -5,14 +5,26 @@
  * string constants) so it can be bundled into the main process (Node),
  * the sandboxed preload, and the renderer (browser) alike.
  *
- * FOUNDATION SCOPE: the only channels defined here are the minimum needed to
- * prove the typed IPC path works end to end and that better-sqlite3 loads in
- * the main process. No POS business capability (products, checkout, sales,
- * customers, reports, backup, printing, ...) is defined yet. When those are
- * added they must each be an explicit, narrow, business-named channel per
- * ARCHITECTURE.md Sections 8-9 — never a generic `database:query`,
- * `execute-sql`, `read-file`, or `run-command` surface.
+ * SCOPE: foundation/diagnostic channels plus the Phase 2B Products + Inventory
+ * slice. Every business channel is an explicit, narrow, business-named
+ * capability per ARCHITECTURE.md Sections 8-9 — never a generic
+ * `database:query`, `execute-sql`, `read-file`, or `run-command` surface.
+ * Checkout, sales, customers, reports, backup, printing, and Google Sheets are
+ * NOT defined yet.
  */
+
+import type {
+  CreateProductInput,
+  InventoryAdjustmentInput,
+  InventoryAdjustmentResult,
+  InventoryMovementRecord,
+  IpcResult,
+  ProductBarcodeLookup,
+  ProductListOptions,
+  ProductRecord,
+  ProductSearchOptions,
+  UpdateProductInput,
+} from './products';
 
 export const IPC = {
   /** Static application/runtime identity for display and diagnostics. */
@@ -30,6 +42,16 @@ export const IPC = {
    * visible rather than silent.
    */
   databaseStatus: 'diagnostics:database-status',
+
+  // ── Phase 2B: Products + Inventory ──────────────────────────────────────────
+  productsCreate: 'products:create',
+  productsUpdate: 'products:update',
+  productsArchive: 'products:archive',
+  productsList: 'products:list',
+  productsSearch: 'products:search',
+  productsFindByBarcode: 'products:find-by-barcode',
+  inventoryAdjust: 'inventory:adjust',
+  inventoryMovements: 'inventory:movements',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -74,5 +96,17 @@ export interface PosApi {
   readonly diagnostics: {
     checkNativeSqlite(): Promise<NativeSqliteCheckResult>;
     databaseStatus(): Promise<DatabaseStatus>;
+  };
+  readonly products: {
+    create(input: CreateProductInput): Promise<IpcResult<ProductRecord>>;
+    update(id: string, input: UpdateProductInput): Promise<IpcResult<ProductRecord>>;
+    archive(id: string): Promise<IpcResult<ProductRecord>>;
+    list(options?: ProductListOptions): Promise<IpcResult<readonly ProductRecord[]>>;
+    search(options: ProductSearchOptions): Promise<IpcResult<readonly ProductRecord[]>>;
+    findByBarcode(barcode: string): Promise<IpcResult<ProductBarcodeLookup>>;
+  };
+  readonly inventory: {
+    adjust(input: InventoryAdjustmentInput): Promise<IpcResult<InventoryAdjustmentResult>>;
+    movements(productId: string): Promise<IpcResult<readonly InventoryMovementRecord[]>>;
   };
 }

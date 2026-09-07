@@ -3,23 +3,30 @@
 Local-first Windows point-of-sale application for Go Phones. See [`docs/`](docs/) for
 the canonical V1 specification and [`AGENTS.md`](AGENTS.md) before changing architecture.
 
-## Status: Phase 1 foundation scaffold
+## Status: Phase 2B — Products & Inventory
 
-This repository currently contains the **application foundation only**. It is not
-a working POS. There is intentionally **no** product/inventory/customer/checkout/
-sales/payment/tax/receipt/printing/Google Sheets/backup/auth/reporting/update
-functionality, and **no** SQLite schema or migrations.
+The application foundation (Phase 1), real SQLite persistence (Phase 2A), and the
+first V1 business slice — **Products & Inventory** (Phase 2B) — are implemented.
+
+Still **not** implemented: checkout / cart / sale completion, receipt numbering,
+tax, discounts, payments, the Clover / reconciliation workflow, customers, sales
+history, void, receipts, printing, the Google Sheets API and export worker,
+authentication, reporting, CSV export, backup scheduling / restore UI,
+application updates, and the Support & Diagnostics UI.
 
 What exists:
 
-| Area                        | State                                                                                                           |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Electron main process       | window lifecycle, single-instance lock, structured logging, renderer hardening                                  |
-| Preload bridge              | narrow typed `window.pos` surface — no `ipcRenderer`, no generic SQL/FS/command APIs                            |
-| React + TypeScript renderer | minimal "foundation initialized" screen                                                                         |
-| Typed IPC                   | `app:info`, `diagnostics:native-sqlite-check` only                                                              |
-| better-sqlite3              | dependency retained, main-process-only, load proven by a throwaway diagnostic                                   |
-| Tooling                     | strict TypeScript, ESLint, Prettier, Vitest (unit + integration), electron-builder (Windows), GitHub Actions CI |
+| Area                        | State                                                                                                                                                                                               |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Electron main process       | window lifecycle, single-instance lock, structured logging, renderer hardening                                                                                                                      |
+| SQLite persistence (2A)     | `ProductionDatabase` lifecycle owner; WAL + `synchronous=FULL` + FK durability policy; backup-gated versioned migrations                                                                            |
+| Canonical V1 schema         | `001_initial_schema` creates the **complete** `DATA_MODEL.md` logical schema (13 tables, constraints, indexes, seed counters)                                                                       |
+| Products & Inventory (2B)   | create / edit / archive / search / barcode lookup; low- & zero-stock state; initial stock + manual adjustment with atomic inventory movement and `INVENTORY_ADJUSTED` audit event; movement history |
+| Preload bridge              | narrow typed `window.pos` surface — `app`, `diagnostics`, `products.*`, `inventory.*`; no `ipcRenderer`, no generic SQL/FS/command APIs                                                             |
+| React + TypeScript renderer | product-management screen (list/search, add, edit, archive, adjust stock)                                                                                                                           |
+| Typed IPC                   | `app:info`, `diagnostics:*`, `products:*`, `inventory:*` — every business channel sender-validated and returning a typed result envelope                                                            |
+| better-sqlite3              | main-process-only; renderer bundle proven free of it by `verify:packaging`                                                                                                                          |
+| Tooling                     | strict TypeScript, ESLint, Prettier, Vitest (unit + integration), electron-builder (Windows), GitHub Actions CI                                                                                     |
 
 ## Requirements
 
@@ -63,7 +70,8 @@ independent of `package.json` `name` / `productName` / `app.getName()`:
 %LOCALAPPDATA%\GoPhonesPOS\
   logs\
   diagnostics\
-  gophones.sqlite      (planned — not created until Phase 2 persistence)
+  backups\             (pre-migration backups)
+  gophones.sqlite      (authoritative operational database, WAL)
 ```
 
 `src/main/app/paths.ts` calls `app.setPath('userData', …)` once at the very

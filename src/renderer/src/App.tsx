@@ -1,66 +1,24 @@
 import { useEffect, useState } from 'react';
-import type { AppInfo, DatabaseStatus, NativeSqliteCheckResult } from '../../shared/ipc';
+import type { AppInfo, DatabaseStatus } from '../../shared/ipc';
+import { ProductsPage } from './features/products/ProductsPage';
 
 /**
- * Intentionally minimal foundation renderer.
+ * Application shell for the Phase 2B slice.
  *
- * It shows only that the application shell is running plus a small status block
- * that exercises the typed IPC bridge end to end
- * (renderer -> preload -> main -> better-sqlite3 / production database). It is
- * not POS UI and carries no business behavior; it also makes a database that
- * failed to initialize visible instead of silent.
+ * The one implemented business area is Products + Inventory (`ProductsPage`).
+ * A small status line keeps the database/runtime state visible; there is no
+ * checkout, customers, sales, reporting, or settings UI yet.
  */
 
-type FoundationState =
-  | { readonly kind: 'loading' }
-  | {
-      readonly kind: 'ready';
-      readonly info: AppInfo;
-      readonly sqlite: NativeSqliteCheckResult;
-      readonly database: DatabaseStatus;
-    }
-  | { readonly kind: 'error'; readonly message: string };
-
-export function App() {
-  const [state, setState] = useState<FoundationState>({ kind: 'loading' });
-
-  useEffect(() => {
-    let active = true;
-
-    void Promise.all([
-      window.pos.app.getInfo(),
-      window.pos.diagnostics.checkNativeSqlite(),
-      window.pos.diagnostics.databaseStatus(),
-    ])
-      .then(([info, sqlite, database]) => {
-        if (active) {
-          setState({ kind: 'ready', info, sqlite, database });
-        }
-      })
-      .catch((error: unknown) => {
-        if (active) {
-          setState({
-            kind: 'error',
-            message: error instanceof Error ? error.message : String(error),
-          });
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  return (
-    <main className="app">
-      <h1>Go Phones POS</h1>
-      <p>Application foundation initialized.</p>
-      <FoundationStatus state={state} />
-    </main>
-  );
+interface ShellStatus {
+  readonly info: AppInfo | null;
+  readonly database: DatabaseStatus | null;
 }
 
-function describeDatabase(database: DatabaseStatus): string {
+function describeDatabase(database: DatabaseStatus | null): string {
+  if (!database) {
+    return 'status unavailable';
+  }
   if (database.state === 'ready') {
     return `ready — schema v${String(database.schemaVersion)}`;
   }
@@ -70,42 +28,39 @@ function describeDatabase(database: DatabaseStatus): string {
   return `unavailable — ${database.failureCode ?? 'unknown'}`;
 }
 
-function FoundationStatus({ state }: { state: FoundationState }) {
-  if (state.kind === 'loading') {
-    return <p className="foundation-status">Checking foundation&hellip;</p>;
-  }
+export function App() {
+  const [status, setStatus] = useState<ShellStatus>({ info: null, database: null });
 
-  if (state.kind === 'error') {
-    return <p className="foundation-status">Foundation check failed: {state.message}</p>;
-  }
-
-  const { info, sqlite, database } = state;
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.pos === 'undefined') {
+      return;
+    }
+    let active = true;
+    void Promise.all([window.pos.app.getInfo(), window.pos.diagnostics.databaseStatus()])
+      .then(([info, database]) => {
+        if (active) {
+          setStatus({ info, database });
+        }
+      })
+      .catch(() => {
+        /* status line is best-effort; product operations surface their own errors */
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   return (
-    <section className="foundation-status">
-      <strong>Foundation status</strong>
-      <dl>
-        <dt>App</dt>
-        <dd>
-          {info.name} {info.version}
-        </dd>
-        <dt>Runtime</dt>
-        <dd>
-          Electron {info.electron} &middot; Chromium {info.chrome} &middot; Node {info.node}
-        </dd>
-        <dt>Mode</dt>
-        <dd>{info.packaged ? 'packaged' : 'development'}</dd>
-        <dt>SQLite (main process)</dt>
-        <dd>
-          {sqlite.ok
-            ? `ok — ${sqlite.sqliteVersion} (${sqlite.journalMode}, backup API ${
-                sqlite.hasBackupApi ? 'present' : 'missing'
-              })`
-            : `unavailable — ${sqlite.error}`}
-        </dd>
-        <dt>Production database</dt>
-        <dd>{describeDatabase(database)}</dd>
-      </dl>
-    </section>
+    <main className="app">
+      <header className="app-header">
+        <h1>Go Phones POS</h1>
+        <p className="app-status">
+          {status.info ? `${status.info.name} ${status.info.version}` : 'Go Phones POS'} · database{' '}
+          {describeDatabase(status.database)}
+        </p>
+      </header>
+      <h2>Products &amp; Inventory</h2>
+      <ProductsPage />
+    </main>
   );
 }

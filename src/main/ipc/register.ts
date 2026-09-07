@@ -3,8 +3,10 @@ import { IPC } from '../../shared/ipc';
 import type { AppInfo, DatabaseStatus, NativeSqliteCheckResult } from '../../shared/ipc';
 import type { Logger } from '../app/logger';
 import type { AppPaths } from '../app/paths';
+import type { ProductionDatabase } from '../database/database';
 import { getDatabaseStatus } from '../database/status';
 import { runNativeSqliteCheck } from '../diagnostics/nativeSqliteCheck';
+import { registerProductIpcHandlers } from './productIpc';
 
 /**
  * Registers the foundation IPC handlers (ARCHITECTURE.md Sections 9-10).
@@ -17,6 +19,9 @@ import { runNativeSqliteCheck } from '../diagnostics/nativeSqliteCheck';
 export interface IpcContext {
   readonly logger: Logger;
   readonly paths: AppPaths;
+  readonly appVersion: string;
+  /** The one production database, or `null` while/if initialization has not succeeded. */
+  readonly getDatabase: () => ProductionDatabase | null;
 }
 
 export function registerIpcHandlers(context: IpcContext): void {
@@ -47,4 +52,10 @@ export function registerIpcHandlers(context: IpcContext): void {
   });
 
   ipcMain.handle(IPC.databaseStatus, (): DatabaseStatus => getDatabaseStatus());
+
+  registerProductIpcHandlers({
+    logger: context.logger,
+    getDatabase: context.getDatabase,
+    appVersion: context.appVersion,
+  });
 }

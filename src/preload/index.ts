@@ -21,6 +21,18 @@ const api: PosApi = {
     checkNativeSqlite: () => ipcRenderer.invoke(IPC.nativeSqliteCheck),
     databaseStatus: () => ipcRenderer.invoke(IPC.databaseStatus),
   },
+  products: {
+    create: (input) => ipcRenderer.invoke(IPC.productsCreate, input),
+    update: (id, input) => ipcRenderer.invoke(IPC.productsUpdate, id, input),
+    archive: (id) => ipcRenderer.invoke(IPC.productsArchive, id),
+    list: (options) => ipcRenderer.invoke(IPC.productsList, options),
+    search: (options) => ipcRenderer.invoke(IPC.productsSearch, options),
+    findByBarcode: (barcode) => ipcRenderer.invoke(IPC.productsFindByBarcode, barcode),
+  },
+  inventory: {
+    adjust: (input) => ipcRenderer.invoke(IPC.inventoryAdjust, input),
+    movements: (productId) => ipcRenderer.invoke(IPC.inventoryMovements, productId),
+  },
 };
 
 contextBridge.exposeInMainWorld('pos', api);
