@@ -3,17 +3,19 @@ import type { AppInfo, DatabaseStatus } from '../../shared/ipc';
 import { CheckoutPage } from './features/checkout/CheckoutPage';
 import { CustomersPage } from './features/customers/CustomersPage';
 import { ProductsPage } from './features/products/ProductsPage';
+import { SettingsPage } from './features/settings/SettingsPage';
 
 /**
  * Application shell.
  *
  * Implemented business areas: Products + Inventory (Phase 2B), Customers
- * (Phase 2C), and a temporary Checkout / New Sale review (Phase 2D — reviews a
- * cart but completes no sale). A small status line keeps the database/runtime
- * state visible. There is no sales history, reporting, or settings UI yet.
+ * (Phase 2C), a temporary Checkout / New Sale review (Phase 2D — reviews a cart
+ * but completes no sale), and a minimal Settings area limited to the sales-tax
+ * rate (Phase 2D.1). A small status line keeps the database/runtime state
+ * visible. There is no sales history or reporting UI yet.
  */
 
-type Area = 'checkout' | 'products' | 'customers';
+type Area = 'checkout' | 'products' | 'customers' | 'settings';
 
 interface ShellStatus {
   readonly info: AppInfo | null;
@@ -86,6 +88,13 @@ export function App() {
           >
             Customers
           </button>
+          <button
+            type="button"
+            aria-current={area === 'settings'}
+            onClick={() => setArea('settings')}
+          >
+            Settings
+          </button>
         </nav>
       </header>
       {area === 'checkout' && (
@@ -104,6 +113,12 @@ export function App() {
         <>
           <h2>Customers</h2>
           <CustomersPage />
+        </>
+      )}
+      {area === 'settings' && (
+        <>
+          <h2>Settings</h2>
+          <SettingsPage />
         </>
       )}
     </main>

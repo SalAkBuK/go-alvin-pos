@@ -9,6 +9,7 @@ import { runNativeSqliteCheck } from '../diagnostics/nativeSqliteCheck';
 import { registerCheckoutIpcHandlers } from './checkoutIpc';
 import { registerCustomerIpcHandlers } from './customerIpc';
 import { registerProductIpcHandlers } from './productIpc';
+import { registerSettingsIpcHandlers } from './settingsIpc';
 
 /**
  * Registers the foundation IPC handlers (ARCHITECTURE.md Sections 9-10).
@@ -69,5 +70,11 @@ export function registerIpcHandlers(context: IpcContext): void {
   registerCheckoutIpcHandlers({
     logger: context.logger,
     getDatabase: context.getDatabase,
+  });
+
+  registerSettingsIpcHandlers({
+    logger: context.logger,
+    getDatabase: context.getDatabase,
+    appVersion: context.appVersion,
   });
 }

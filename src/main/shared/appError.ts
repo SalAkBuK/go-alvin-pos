@@ -74,4 +74,9 @@ export const appErrors = {
       'CHECKOUT_TOTAL_EXCEEDED',
       'This cart total is above the maximum a single sale can record. Split it into smaller sales.',
     ),
+  taxRateUnchanged: (): AppError =>
+    new AppError(
+      'TAX_RATE_UNCHANGED',
+      'That is already the configured tax rate. No change was made.',
+    ),
 } as const;

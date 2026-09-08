@@ -135,6 +135,9 @@ export const APP_ERROR_CODES = [
   'TAX_RATE_NOT_CONFIGURED',
   /** The recalculated checkout total exceeds the canonical ceiling (`DATA_MODEL.md §41A`). */
   'CHECKOUT_TOTAL_EXCEEDED',
+  // ── Phase 2D.1: Minimal tax configuration ──────────────────────────────────
+  /** The requested tax rate equals the currently configured one — no change to record. */
+  'TAX_RATE_UNCHANGED',
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
 

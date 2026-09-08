@@ -44,6 +44,12 @@ const api: PosApi = {
   checkout: {
     review: (request) => ipcRenderer.invoke(IPC.checkoutReview, request),
   },
+  settings: {
+    tax: {
+      get: () => ipcRenderer.invoke(IPC.settingsTaxGet),
+      update: (input) => ipcRenderer.invoke(IPC.settingsTaxUpdate, input),
+    },
+  },
 };
 
 contextBridge.exposeInMainWorld('pos', api);

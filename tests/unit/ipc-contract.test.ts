@@ -3,7 +3,7 @@ import { IPC } from '../../src/shared/ipc';
 import type { PosApi } from '../../src/shared/ipc';
 
 describe('IPC contract', () => {
-  it('exposes exactly the foundation, diagnostic, Phase 2B product/inventory, Phase 2C customer, and Phase 2D checkout-review channels', () => {
+  it('exposes exactly the foundation, diagnostic, Phase 2B product/inventory, Phase 2C customer, Phase 2D checkout-review, and Phase 2D.1 tax-settings channels', () => {
     expect(Object.keys(IPC).sort()).toEqual(
       [
         'appInfo',
@@ -24,12 +24,14 @@ describe('IPC contract', () => {
         'customersGet',
         'customersPurchaseHistory',
         'checkoutReview',
+        'settingsTaxGet',
+        'settingsTaxUpdate',
       ].sort(),
     );
   });
 
   it('every business channel is an explicit namespaced business capability', () => {
-    // products:*, inventory:*, customers:*, checkout:* are allowed; a generic data/SQL surface is not.
+    // products:*, inventory:*, customers:*, checkout:*, settings:* are allowed; a generic data/SQL surface is not.
     const allowedNamespaces = [
       'app',
       'diagnostics',
@@ -37,6 +39,7 @@ describe('IPC contract', () => {
       'inventory',
       'customers',
       'checkout',
+      'settings',
     ];
     for (const name of Object.values(IPC)) {
       const namespace = name.split(':')[0];
@@ -73,6 +76,8 @@ describe('IPC contract', () => {
       inventory: ['adjust', 'movements'],
       customers: ['create', 'update', 'list', 'search', 'get', 'purchaseHistory'],
       checkout: ['review'],
+      // `settings` exposes only the tax sub-object (get/update) — no generic setter.
+      settings: ['tax.get', 'tax.update'],
     };
     expect(Object.keys(surface).sort()).toEqual([
       'app',
@@ -81,10 +86,11 @@ describe('IPC contract', () => {
       'diagnostics',
       'inventory',
       'products',
+      'settings',
     ]);
     for (const methods of Object.values(surface)) {
       for (const method of methods) {
-        expect(/^(raw|invoke|send|ipc|ipcRenderer|query|execute)$/i.test(method)).toBe(false);
+        expect(/^(raw|invoke|send|ipc|ipcRenderer|query|execute|set)$/i.test(method)).toBe(false);
       }
     }
   });

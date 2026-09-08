@@ -14,6 +14,7 @@
  */
 
 import type { CheckoutReview, CheckoutReviewRequest } from './checkout';
+import type { TaxRateConfig, UpdateTaxRateInput } from './settings';
 import type {
   CreateCustomerInput,
   CustomerPurchase,
@@ -73,6 +74,12 @@ export const IPC = {
   // Trusted recalculation of a temporary cart. This does NOT complete a sale;
   // there is deliberately no `checkout:complete` channel in this phase.
   checkoutReview: 'checkout:review',
+
+  // ── Phase 2D.1: Minimal tax configuration ──────────────────────────────────
+  // The sales-tax rate only — NOT a generic settings surface. `tax-update` is
+  // the sole settings write and it accepts only a basis-point tax rate.
+  settingsTaxGet: 'settings:tax-get',
+  settingsTaxUpdate: 'settings:tax-update',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -145,5 +152,16 @@ export interface PosApi {
      * deterministic checkout fingerprint. Writes nothing.
      */
     review(request: CheckoutReviewRequest): Promise<IpcResult<CheckoutReview>>;
+  };
+  readonly settings: {
+    /** The sales-tax rate only — no generic settings access. */
+    readonly tax: {
+      get(): Promise<IpcResult<TaxRateConfig>>;
+      /**
+       * Validate the rate, persist it, and write a `TAX_SETTING_CHANGED` audit
+       * event in the same SQLite transaction. Returns the now-configured rate.
+       */
+      update(input: UpdateTaxRateInput): Promise<IpcResult<TaxRateConfig>>;
+    };
   };
 }
