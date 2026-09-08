@@ -141,6 +141,26 @@ export const APP_ERROR_CODES = [
   // ── Phase 2D.2: Minimal business & receipt configuration ───────────────────
   /** The submitted business/receipt details match what is already saved — nothing to record. */
   'BUSINESS_SETTINGS_UNCHANGED',
+  // ── Phase 2E: Cash checkout / first real sale ──────────────────────────────
+  /**
+   * Authoritative state changed between review and completion (price, tax rate,
+   * availability, stock, totals). The cashier must review the cart again. A
+   * drift/validation rejection — no sale was attempted; distinct from
+   * `SALE_COMMIT_FAILED` because the retry behaviour differs (`REQ-SALE-014`).
+   */
+  'CHECKOUT_DRIFT',
+  /** The checkout request id was reused with a different fingerprint (`DATA_MODEL.md §34`). */
+  'IDEMPOTENCY_CONFLICT',
+  /** Store business/receipt configuration is incomplete, so no sale can be completed. */
+  'BUSINESS_NOT_CONFIGURED',
+  /**
+   * The authoritative sale transaction (Phase 2) could not be committed to
+   * SQLite. No sale, payment, inventory change, movement, export job, or audit
+   * event was recorded (`POS_WORKFLOWS.md §35`, `SUPPORT_DIAGNOSTICS.md §42`).
+   */
+  'SALE_COMMIT_FAILED',
+  /** The checkout request exists but is not in a state Cash Phase 2 can act on. */
+  'CHECKOUT_REQUEST_INVALID',
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
 

@@ -9,10 +9,11 @@ import { SettingsPage } from './features/settings/SettingsPage';
  * Application shell.
  *
  * Implemented business areas: Products + Inventory (Phase 2B), Customers
- * (Phase 2C), a temporary Checkout / New Sale review (Phase 2D — reviews a cart
- * but completes no sale), and a minimal Settings area limited to the sales-tax
- * rate (Phase 2D.1). A small status line keeps the database/runtime state
- * visible. There is no sales history or reporting UI yet.
+ * (Phase 2C), Checkout / New Sale (Phase 2D review + Phase 2E Cash completion),
+ * and a Settings area for the sales-tax rate and business/receipt details
+ * (Phase 2D.1 / 2D.2). A small status line keeps the database/runtime state
+ * visible. There is no sales history or reporting UI yet, and Card checkout is
+ * not available.
  */
 
 type Area = 'checkout' | 'products' | 'customers' | 'settings';

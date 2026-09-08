@@ -1,13 +1,19 @@
 import { useCallback, useMemo, useState } from 'react';
-import type { CheckoutReview, PaymentMethod } from '../../../../shared/checkout';
+import type {
+  CheckoutReview,
+  CompletedSaleResult,
+  PaymentMethod,
+} from '../../../../shared/checkout';
 import { PAYMENT_METHODS } from '../../../../shared/checkout';
 import { formatCents, MoneyParseError, parseCurrencyToCents } from '../../../../shared/money';
 import type { CustomerRecord } from '../../../../shared/customers';
-import type { IpcResult, ProductRecord } from '../../../../shared/products';
+import type { AppErrorCode, IpcResult, ProductRecord } from '../../../../shared/products';
 import {
   addProduct,
+  canCompleteCash,
   cartPreview,
   clearCart,
+  clearReview,
   EMPTY_CART,
   lineDiscountCents,
   lineTotalCents,
@@ -17,22 +23,29 @@ import {
   setPaymentMethod,
   setQuantity,
   setSoldPrice,
+  toCompleteCashRequest,
   toReviewRequest,
   withReview,
 } from './cart';
 import type { CartState } from './cart';
+import {
+  describeSaleSuccess,
+  isRetryableCommitFailure,
+  requiresReReview,
+} from './checkoutCompletion';
 
 /**
- * New Sale / Checkout screen (task `§16`).
+ * New Sale / Checkout screen (task `§16`; `POS_WORKFLOWS.md §16`-`§28`, `§33`,
+ * `§37`, `§87`; `REQ-CUST-004`).
  *
- * A focused checkout screen on the existing shell. The draft cart lives only in
- * this component's state — no persistence, no `sales` row. All authoritative
- * calculation happens in the trusted `window.pos.checkout.review` call; the
- * numbers shown before Review are an immediate local preview only.
+ * The draft cart lives only in this component's state — no persistence until the
+ * cashier completes the sale. All authoritative calculation happens in the
+ * trusted `window.pos.checkout.*` calls; the numbers shown before Review are an
+ * immediate local preview only.
  *
- * There is deliberately NO working Complete Sale action — Phase 2D cannot
- * commit a transaction. The review panel states that payment workflow is the
- * next step without writing any business record.
+ * Phase 2E adds a real Cash `Complete sale` action (enabled only after a current
+ * Cash review), Create Customer During Checkout, a Clear-cart confirmation, and
+ * the sale-success screen. Card completion is deliberately still unavailable.
  */
 
 function pos() {
@@ -42,12 +55,21 @@ function pos() {
   return window.pos;
 }
 
+/** An error that carries the trusted layer's stable code, not just its message. */
+class IpcResultError extends Error {
+  readonly code: AppErrorCode;
+  constructor(code: AppErrorCode, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
 async function unwrap<T>(promise: Promise<IpcResult<T>>): Promise<T> {
   const result = await promise;
   if (result.ok) {
     return result.data;
   }
-  throw new Error(result.error.message);
+  throw new IpcResultError(result.error.code, result.error.message);
 }
 
 function priceInputValue(cents: number): string {
@@ -59,16 +81,23 @@ export function CheckoutPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reviewing, setReviewing] = useState(false);
+  const [completing, setCompleting] = useState(false);
+  const [saleResult, setSaleResult] = useState<CompletedSaleResult | null>(null);
 
   // Product search / add
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<readonly ProductRecord[]>([]);
   const [barcode, setBarcode] = useState('');
 
-  // Customer search / attach
+  // Customer search / attach / create
   const [customerQuery, setCustomerQuery] = useState('');
   const [customerResults, setCustomerResults] = useState<readonly CustomerRecord[]>([]);
   const [attachedCustomer, setAttachedCustomer] = useState<CustomerRecord | null>(null);
+  const [showAddCustomer, setShowAddCustomer] = useState(false);
+  const [newCustomerName, setNewCustomerName] = useState('');
+  const [newCustomerPhone, setNewCustomerPhone] = useState('');
+  const [addCustomerError, setAddCustomerError] = useState<string | null>(null);
+  const [savingCustomer, setSavingCustomer] = useState(false);
 
   const preview = useMemo(() => cartPreview(cart), [cart]);
   const previewErrors = useMemo(() => previewValidationErrors(cart), [cart]);
@@ -181,6 +210,36 @@ export function CheckoutPage() {
     mutate(setCustomer(cart, null));
   }, [cart, mutate]);
 
+  const saveNewCustomer = useCallback(async () => {
+    const api = pos();
+    if (!api) {
+      setAddCustomerError('Customer creation is unavailable in this context.');
+      return;
+    }
+    const name = newCustomerName.trim();
+    if (name === '') {
+      setAddCustomerError('Enter the customer name.');
+      return;
+    }
+    setSavingCustomer(true);
+    try {
+      const phone = newCustomerPhone.trim();
+      const created = await unwrap(api.customers.create(phone === '' ? { name } : { name, phone }));
+      // Reuses the existing customer-create path; only then attach + continue.
+      attachCustomer(created);
+      setShowAddCustomer(false);
+      setNewCustomerName('');
+      setNewCustomerPhone('');
+      setAddCustomerError(null);
+      setNotice(`Customer “${created.name}” created and attached.`);
+    } catch (err) {
+      // Cart and any existing customer selection are untouched; no sale occurs.
+      setAddCustomerError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingCustomer(false);
+    }
+  }, [newCustomerName, newCustomerPhone, attachCustomer]);
+
   const choosePayment = useCallback(
     (method: PaymentMethod) => {
       mutate(setPaymentMethod(cart, cart.paymentMethod === method ? null : method));
@@ -188,14 +247,36 @@ export function CheckoutPage() {
     [cart, mutate],
   );
 
+  const resetForNewSale = useCallback(() => {
+    setCart(clearCart());
+    setSaleResult(null);
+    setAttachedCustomer(null);
+    setResults([]);
+    setCustomerResults([]);
+    setShowAddCustomer(false);
+    setNewCustomerName('');
+    setNewCustomerPhone('');
+    setAddCustomerError(null);
+    setNotice(null);
+    setError(null);
+  }, []);
+
   const onClearCart = useCallback(() => {
+    if (
+      cart.lines.length > 0 &&
+      typeof window !== 'undefined' &&
+      !window.confirm('Clear the cart? The current sale is not saved.')
+    ) {
+      return;
+    }
     setCart(clearCart());
     setAttachedCustomer(null);
     setResults([]);
     setCustomerResults([]);
+    setShowAddCustomer(false);
     setNotice('Cart cleared.');
     setError(null);
-  }, []);
+  }, [cart.lines.length]);
 
   const runReview = useCallback(async () => {
     const api = pos();
@@ -216,8 +297,77 @@ export function CheckoutPage() {
     }
   }, [cart]);
 
+  const onCompleteCash = useCallback(async () => {
+    if (completing || saleResult !== null) {
+      return;
+    }
+    const api = pos();
+    if (!api) {
+      setError('Checkout is unavailable in this context.');
+      return;
+    }
+    let request;
+    try {
+      request = toCompleteCashRequest(cart);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    setCompleting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await unwrap(api.checkout.completeCash(request));
+      setSaleResult(result);
+      setNotice(null);
+    } catch (err) {
+      if (err instanceof IpcResultError && requiresReReview(err.code)) {
+        setCart((current) => clearReview(current));
+        setError(`${err.message} The cart is still here — Review it again to continue.`);
+      } else if (err instanceof IpcResultError && isRetryableCommitFailure(err.code)) {
+        setError(`${err.message} You can try Complete sale again.`);
+      } else if (err instanceof IpcResultError && err.code === 'BUSINESS_NOT_CONFIGURED') {
+        setError(err.message);
+      } else {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      setCompleting(false);
+    }
+  }, [cart, completing, saleResult]);
+
   const review: CheckoutReview | null = cart.review;
-  const canReview = cart.lines.length > 0 && previewErrors.length === 0 && !reviewing;
+  const canReview =
+    cart.lines.length > 0 && previewErrors.length === 0 && !reviewing && !saleResult;
+  const cashReady = canCompleteCash(cart) && !completing && !saleResult;
+
+  if (saleResult) {
+    const success = describeSaleSuccess(saleResult);
+    return (
+      <section className="checkout-page">
+        <section className="checkout-success" role="status">
+          <h3>{success.heading}</h3>
+          <dl className="checkout-totals">
+            {success.lines.map((line) => (
+              <div key={line.label}>
+                <dt>{line.label}</dt>
+                <dd>{line.value}</dd>
+              </div>
+            ))}
+          </dl>
+          <p className="field-hint">The receipt is saved. Printing arrives in a later version.</p>
+          <div className="checkout-actions">
+            <button type="button" onClick={resetForNewSale}>
+              New Sale
+            </button>
+            <button type="button" disabled title="Receipt printing arrives in a later version">
+              Print receipt (not available yet)
+            </button>
+          </div>
+        </section>
+      </section>
+    );
+  }
 
   return (
     <section className="checkout-page">
@@ -361,23 +511,66 @@ export function CheckoutPage() {
               </button>
             </p>
           ) : (
-            <div className="products-toolbar">
-              <input
-                type="search"
-                placeholder="Search customers by name or phone"
-                value={customerQuery}
-                onChange={(e) => setCustomerQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    void runCustomerSearch();
-                  }
-                }}
-              />
-              <button type="button" onClick={() => void runCustomerSearch()}>
-                Find
-              </button>
-            </div>
+            <>
+              <div className="products-toolbar">
+                <input
+                  type="search"
+                  placeholder="Search customers by name or phone"
+                  value={customerQuery}
+                  onChange={(e) => setCustomerQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      void runCustomerSearch();
+                    }
+                  }}
+                />
+                <button type="button" onClick={() => void runCustomerSearch()}>
+                  Find
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAddCustomer((v) => !v);
+                    setAddCustomerError(null);
+                  }}
+                >
+                  {showAddCustomer ? 'Cancel' : 'Add customer'}
+                </button>
+              </div>
+              {showAddCustomer && (
+                <div className="checkout-add-customer">
+                  <label>
+                    Name
+                    <input
+                      value={newCustomerName}
+                      onChange={(e) => setNewCustomerName(e.target.value)}
+                      aria-label="New customer name"
+                    />
+                  </label>
+                  <label>
+                    Phone (optional)
+                    <input
+                      value={newCustomerPhone}
+                      onChange={(e) => setNewCustomerPhone(e.target.value)}
+                      aria-label="New customer phone"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    disabled={savingCustomer}
+                    onClick={() => void saveNewCustomer()}
+                  >
+                    {savingCustomer ? 'Saving…' : 'Save customer'}
+                  </button>
+                  {addCustomerError && (
+                    <p className="product-form-error" role="alert">
+                      {addCustomerError}
+                    </p>
+                  )}
+                </div>
+              )}
+            </>
           )}
           {customerResults.length > 0 && (
             <ul className="checkout-results">
@@ -410,7 +603,7 @@ export function CheckoutPage() {
             </label>
           ))}
           <p className="field-hint">
-            Recorded for review only in this version — no payment is taken here.
+            Cash sales complete here. Card checkout arrives in a later version.
           </p>
         </section>
       </div>
@@ -453,15 +646,23 @@ export function CheckoutPage() {
         <button type="button" onClick={() => void runReview()} disabled={!canReview}>
           {reviewing ? 'Reviewing…' : 'Review checkout'}
         </button>
-        <button type="button" disabled title="Payment workflow arrives in a later version">
-          Complete sale (not available yet)
-        </button>
+        {review && review.paymentMethod === 'CASH' ? (
+          <button type="button" onClick={() => void onCompleteCash()} disabled={!cashReady}>
+            {completing ? 'Completing…' : 'Complete sale (cash)'}
+          </button>
+        ) : (
+          <button type="button" disabled title="Card checkout arrives in a later version">
+            Complete sale (card — not available yet)
+          </button>
+        )}
       </div>
 
       {review && (
         <section className="checkout-review" role="status">
-          <h4>Checkout reviewed — ready for payment workflow</h4>
-          <p>No sale has been recorded. Payment and completion arrive in a later version.</p>
+          <h4>Checkout reviewed{review.paymentMethod === 'CASH' ? ' — ready to complete' : ''}</h4>
+          {review.paymentMethod === 'CARD' && (
+            <p>Card completion is not available yet. No sale has been recorded.</p>
+          )}
           <dl className="checkout-totals">
             <div>
               <dt>Subtotal</dt>

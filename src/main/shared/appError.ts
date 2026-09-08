@@ -84,4 +84,29 @@ export const appErrors = {
       'BUSINESS_SETTINGS_UNCHANGED',
       'The business and receipt details are already saved as entered. No change was made.',
     ),
+  checkoutDrift: (): AppError =>
+    new AppError(
+      'CHECKOUT_DRIFT',
+      'Checkout details changed. Review the sale again before completing it.',
+    ),
+  idempotencyConflict: (): AppError =>
+    new AppError(
+      'IDEMPOTENCY_CONFLICT',
+      'This checkout request was already used for a different sale. Review the cart again.',
+    ),
+  businessNotConfigured: (): AppError =>
+    new AppError(
+      'BUSINESS_NOT_CONFIGURED',
+      'The store address and phone must be set in Settings before a sale can be completed.',
+    ),
+  saleCommitFailed: (): AppError =>
+    new AppError(
+      'SALE_COMMIT_FAILED',
+      'Sale could not be completed because the local database could not be updated safely. No sale was recorded.',
+    ),
+  checkoutRequestInvalid: (): AppError =>
+    new AppError(
+      'CHECKOUT_REQUEST_INVALID',
+      'This checkout can no longer be completed. Start a new sale.',
+    ),
 } as const;

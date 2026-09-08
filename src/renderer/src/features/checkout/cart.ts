@@ -1,6 +1,7 @@
 import type {
   CheckoutReview,
   CheckoutReviewRequest,
+  CompleteCashSaleRequest,
   PaymentMethod,
 } from '../../../../shared/checkout';
 import { CART_LINE_QUANTITY_MAX, CART_LINE_QUANTITY_MIN } from '../../../../shared/checkout';
@@ -23,6 +24,17 @@ let lineCounter = 0;
 function nextLineKey(): string {
   lineCounter += 1;
   return `line-${lineCounter}`;
+}
+
+/**
+ * A stable unique id for one Cash completion attempt (`DATA_MODEL.md §32`-`§34`).
+ * Generated once per successful review; a materially changed cart clears it, so a
+ * re-review always produces a fresh id, while retrying the *same* reviewed cart
+ * (double-click, IPC timeout, restart) reuses it and the trusted layer replays
+ * the existing sale instead of creating another.
+ */
+function newRequestId(): string {
+  return globalThis.crypto.randomUUID();
 }
 
 export interface CartLine {
@@ -50,6 +62,11 @@ export interface CartState {
    * material change has invalidated it (task `§18`). Never persisted.
    */
   readonly review: CheckoutReview | null;
+  /**
+   * The Cash completion attempt id tied to the current `review`. Non-null
+   * exactly when `review` is non-null; cleared together with it.
+   */
+  readonly requestId: string | null;
 }
 
 export const EMPTY_CART: CartState = {
@@ -57,15 +74,16 @@ export const EMPTY_CART: CartState = {
   customerId: null,
   paymentMethod: null,
   review: null,
+  requestId: null,
 };
 
-/** Any material change clears a prior review so a fresh Review is required. */
+/** Any material change clears a prior review (and its attempt id) so a fresh Review is required. */
 function invalidate(
   state: CartState,
   lines: readonly CartLine[],
   patch: Partial<CartState> = {},
 ): CartState {
-  return { ...state, lines, review: null, ...patch };
+  return { ...state, lines, review: null, requestId: null, ...patch };
 }
 
 /**
@@ -138,9 +156,18 @@ export function clearCart(): CartState {
   return EMPTY_CART;
 }
 
-/** Record a successful trusted review. */
+/** Record a successful trusted review and mint the completion attempt id for it. */
 export function withReview(state: CartState, review: CheckoutReview): CartState {
-  return { ...state, review };
+  return { ...state, review, requestId: newRequestId() };
+}
+
+/**
+ * Drop the current review without otherwise touching the cart — used after the
+ * trusted layer rejects completion for re-review (drift, stock, archived, …).
+ * The lines/customer/payment stay so the cashier can fix and Review again.
+ */
+export function clearReview(state: CartState): CartState {
+  return { ...state, review: null, requestId: null };
 }
 
 export function isReviewCurrent(state: CartState): boolean {
@@ -251,5 +278,34 @@ export function toReviewRequest(state: CartState): CheckoutReviewRequest {
       quantity: line.quantity,
       soldPriceCents: line.soldPriceCents,
     })),
+  };
+}
+
+/** True when a current Cash review exists that the cashier may complete. */
+export function canCompleteCash(state: CartState): boolean {
+  return (
+    state.review !== null &&
+    state.requestId !== null &&
+    state.review.paymentMethod === 'CASH' &&
+    state.paymentMethod === 'CASH'
+  );
+}
+
+/**
+ * Shape the `checkout:complete-cash` request from the current reviewed draft.
+ * Sends the reviewed intent, the trusted fingerprint, and the attempt id — never
+ * authoritative money or a receipt number.
+ */
+export function toCompleteCashRequest(state: CartState): CompleteCashSaleRequest {
+  if (state.review === null || state.requestId === null) {
+    throw new Error('Review the checkout before completing it.');
+  }
+  if (state.review.paymentMethod !== 'CASH') {
+    throw new Error('Only Cash sales can be completed in this version.');
+  }
+  return {
+    requestId: state.requestId,
+    reviewedFingerprint: state.review.fingerprint,
+    checkout: toReviewRequest(state),
   };
 }

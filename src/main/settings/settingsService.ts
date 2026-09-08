@@ -62,6 +62,16 @@ const BUSINESS_EDITABLE_KEYS = [
 ] as const;
 type BusinessEditableKey = (typeof BUSINESS_EDITABLE_KEYS)[number];
 
+/**
+ * Read the current business/receipt configuration directly, without a service
+ * instance. Opens no transaction — safe to call inside another transaction, so
+ * Phase 2E's Cash completion can gate a sale on `configured === true`
+ * (`POS_WORKFLOWS.md §69`, `DATA_MODEL.md §44-49`, `REQ-REC-002`).
+ */
+export function readBusinessConfig(db: Database.Database): BusinessConfig {
+  return toBusinessConfig(readBusinessSettings(db));
+}
+
 function toBusinessConfig(row: BusinessSettingsRow): BusinessConfig {
   const missing: BusinessRequiredField[] = [];
   if (row.businessAddress === null || row.businessAddress.trim() === '') {
@@ -143,7 +153,7 @@ export function createSettingsService(deps: SettingsServiceDeps): SettingsServic
     },
 
     getBusinessConfig(): BusinessConfig {
-      return toBusinessConfig(readBusinessSettings(db));
+      return readBusinessConfig(db);
     },
 
     updateBusinessConfig(raw: unknown): BusinessConfig {

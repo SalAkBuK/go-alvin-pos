@@ -70,6 +70,7 @@ export function registerIpcHandlers(context: IpcContext): void {
   registerCheckoutIpcHandlers({
     logger: context.logger,
     getDatabase: context.getDatabase,
+    appVersion: context.appVersion,
   });
 
   registerSettingsIpcHandlers({

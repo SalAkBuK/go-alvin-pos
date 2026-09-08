@@ -1,16 +1,16 @@
 /**
- * Shared Checkout / Cart-review contract (Phase 2D).
+ * Shared Checkout contract (Phase 2D cart review + Phase 2E Cash completion).
  *
  * Pure TypeScript types + string constants, dependency-free, so the same
  * definitions bundle into the main process, the sandboxed preload, and the
  * renderer. These are the ONLY checkout shapes that cross the IPC boundary.
  *
- * SCOPE: the temporary checkout cart and its *authoritative review* only. This
- * phase completes no sale — there is deliberately no `checkout:complete`
- * channel, no payment persistence, and no `sales` / `sale_items` / `payments` /
- * `checkout_requests` shape here. The reviewed values and the deterministic
- * `fingerprint` are the primitives a later phase's durable checkout flow will
- * re-validate at commit (`DATA_MODEL.md §41B`, `REQ-SALE-014`).
+ * SCOPE: the temporary checkout cart, its *authoritative review* (Phase 2D),
+ * and *Cash* sale completion (Phase 2E). Card/Clover completion, `PENDING_PAYMENT`,
+ * the reconciliation queue, receipt printing, sales history, and voids are NOT
+ * defined here. The reviewed values and the deterministic `fingerprint` are the
+ * primitives the Cash completion flow re-validates at commit (`DATA_MODEL.md
+ * §41B`, `REQ-SALE-014`).
  *
  * The typed result envelope (`IpcResult` / `IpcError`) and error codes are
  * reused from `./products` — the shared cross-slice contract.
@@ -94,4 +94,48 @@ export interface CheckoutReview {
   readonly totalCents: number;
   /** Deterministic digest of the normalized intent (`§41B`). */
   readonly fingerprint: string;
+}
+
+// ── Phase 2E: Cash sale completion ──────────────────────────────────────────
+
+/**
+ * `checkout:complete-cash` payload.
+ *
+ * The renderer submits the checkout *intent* it reviewed (`checkout`), the
+ * deterministic `reviewedFingerprint` the trusted layer returned from
+ * `checkout:review`, and a stable `requestId` it generated for this completion
+ * attempt (`POS_WORKFLOWS.md §33`, `DATA_MODEL.md §31`, `§32`). It never sends
+ * authoritative money, a receipt number, a Sale ID, or product snapshots — the
+ * trusted layer recomputes all of that from current SQLite state and rejects the
+ * attempt if anything drifted from `reviewedFingerprint` (`REQ-SALE-014`).
+ *
+ * The same `requestId` retried with the same `reviewedFingerprint` is idempotent
+ * (returns the existing sale, or re-attempts Phase 2 after a commit failure);
+ * the same `requestId` with a different fingerprint is an `IDEMPOTENCY_CONFLICT`.
+ */
+export interface CompleteCashSaleRequest {
+  readonly requestId: string;
+  readonly reviewedFingerprint: string;
+  readonly checkout: CheckoutReviewRequest;
+}
+
+/** Whether the sale's single durable Google Sheets export job is still queued. */
+export type SaleExportStatus = 'PENDING' | 'EXPORTING' | 'EXPORTED' | 'FAILED';
+
+/**
+ * The result of a successful (or idempotently replayed) Cash completion —
+ * exactly what the success screen needs (`POS_WORKFLOWS.md §37`). No customer
+ * PII, no payment detail beyond method + amount.
+ */
+export interface CompletedSaleResult {
+  readonly saleId: string;
+  readonly receiptNumber: string;
+  readonly totalCents: number;
+  readonly paymentMethod: PaymentMethod;
+  readonly exportStatus: SaleExportStatus;
+  /**
+   * `true` when this call did not create the sale — it returned an existing one
+   * for a repeated/retried `requestId` (double-click, IPC retry, restart replay).
+   */
+  readonly alreadyCompleted: boolean;
 }

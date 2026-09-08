@@ -82,7 +82,7 @@ Unresolved Card Charges: 0
 [View Reconciliation Queue]
 ```
 
-"Unresolved Card Charges" counts `checkout_requests` rows with `status = COMMIT_FAILED` and `payment_method_snapshot = CARD` that have not yet been marked resolved (`DATA_MODEL.md` Sections 31A–31B). A non-zero count is a visible warning, not a critical failure, since the local database itself is healthy — but it must never be hidden among ordinary diagnostics, since it represents a possible customer charge with no matching local sale.
+"Unresolved Card Charges" counts `checkout_requests` rows with `status = COMMIT_FAILED` and `payment_method_snapshot = CARD` that have not yet been marked resolved (`DATA_MODEL.md` Sections 31A–31B). A non-zero count is a visible warning, not a critical failure, since the local database itself is healthy — but it must never be hidden among ordinary diagnostics, since it represents a possible customer charge with no matching local sale. A Cash `COMMIT_FAILED` row is never counted here: for Cash, `COMMIT_FAILED` is terminal/retry evidence for a local checkout attempt (`DATA_MODEL.md` Section 33), not a possible external charge.
 
 ---
 
@@ -966,6 +966,23 @@ DB_PATH_UNSUPPORTED_FILESYSTEM
 ```
 
 These help support identify categories without reading raw stack traces.
+
+## Phase 2 checkout-request failure codes
+
+When a Phase 2 sale attempt rolls back, the same code is stored as `checkout_requests.failure_code` (`DATA_MODEL.md` Sections 31, 33) and surfaced to the renderer:
+
+```text
+SALE_COMMIT_FAILED       unexpected or storage-level local commit failure — no sale recorded
+CHECKOUT_DRIFT           reviewed values no longer match authoritative state — re-review required
+INSUFFICIENT_STOCK       cart quantity now exceeds available stock — re-review required
+PRODUCT_ARCHIVED         a cart product was archived since review — re-review required
+TAX_RATE_NOT_CONFIGURED  no tax rate is configured — fix in Settings, then re-review
+BUSINESS_NOT_CONFIGURED  store identity is incomplete — fix in Settings, then re-review
+```
+
+`SALE_COMMIT_FAILED` is the only code that means "something went wrong with the local write"; the retry path for it is to try the same request again once the underlying problem clears (`DATA_MODEL.md` Section 34). Every other code is a *trusted revalidation* reason — the local database is healthy, the reviewed checkout is simply no longer valid, and the cashier must Review again (a fresh review carries a new `request_id`). These codes reuse the application's existing error-code spellings; no new synonyms are introduced.
+
+Whether a `COMMIT_FAILED` row is a **reconciliation incident** is determined by payment method and the Card workflow (`DATA_MODEL.md` Sections 31A–31B), never by the mere existence of the row. A Cash `COMMIT_FAILED` row is terminal/retry evidence for a local attempt and is not a reconciliation case.
 
 ---
 

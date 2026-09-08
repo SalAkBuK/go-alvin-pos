@@ -2591,9 +2591,11 @@ BEGIN IMMEDIATE
 ```
 
 1. Look up `request_id`. If a row already exists, verify its `request_fingerprint` matches; if it does not match, reject as an idempotency-key conflict and stop (see Section 34).
-2. If no row exists, insert a new `checkout_requests` row with the normalized `request_fingerprint`, `payment_method_snapshot`, and `intended_total_cents`, and:
+2. If no row exists: first verify the store's business identity is configured (Section 19; `POS_WORKFLOWS.md` Section 69) and the other preconditions for a completable sale hold (a tax rate is configured, the cart's products are active and in stock). If a precondition is already broken, stop with the specific error (`BUSINESS_NOT_CONFIGURED`, `TAX_RATE_NOT_CONFIGURED`, `PRODUCT_ARCHIVED`, `INSUFFICIENT_STOCK`) and create **no** row — a `SUBMITTED` row is never inserted for a checkout that cannot proceed. Otherwise insert a new `checkout_requests` row with the normalized `request_fingerprint`, `payment_method_snapshot`, and `intended_total_cents`, and:
    - For **Cash**, `status = SUBMITTED` immediately — there is no external payment step to await.
    - For **Card**, `status = PENDING_PAYMENT` — `clover_approved_confirmed_at` is left `NULL`; the POS does not yet know, and must not imply, whether Clover will approve anything.
+
+Drift between the reviewed values and current authoritative state is **not** judged in Step A — that is Phase 2's single authoritative gate (Phase 2 step 5, Section 41B). Step A only refuses to create a row when a sale plainly cannot be completed at all.
 
 ```text
 COMMIT
@@ -2632,7 +2634,7 @@ BEGIN IMMEDIATE
 2. Read required products.
 3. Verify all products are active.
 4. Verify quantities are sufficient, aggregating duplicate product IDs across cart lines first (Section 41A).
-5. Calculate authoritative totals and compare them against the reviewed values captured in the request fingerprint; reject with a re-review error if authoritative values differ (Section 41B).
+5. Calculate authoritative totals and compare them against the reviewed values captured in the request fingerprint; reject with a re-review error if authoritative values differ (Section 41B). A rejection here (or at steps 3–4: a product archived since review, stock now below the cart quantity) is a Phase 2 attempt that did not complete — it rolls the transaction back and is recorded exactly like any other Phase 2 failure (see "Phase 2 failure — record the outcome" below).
 6. Generate Sale ID.
 7. Generate the unique receipt number.
 8. Insert sale.
@@ -2653,6 +2655,8 @@ If any required step in Phase 2 fails, that transaction rolls back in full — n
 ## Phase 2 failure — record the outcome
 
 If Phase 2 rolls back, the application immediately performs one additional best-effort write, independent of the failed transaction: update the existing `checkout_requests` row to `status = COMMIT_FAILED` with `failure_code` and `failed_at`. If SQLite is reachable enough to have rolled back cleanly, this update is expected to succeed. If SQLite is not reachable at all (the underlying failure), the row from Phase 1 Step A (and, for Card, Step B) still exists from before the failure and remains durable evidence even though its `status` could not advance past `SUBMITTED`; diagnostics additionally record the failure per Section 31A.
+
+"Phase 2 rolls back" here means **any** Phase 2 attempt that begins from an eligible (`SUBMITTED`) request and does not commit a sale — not only an unexpected or storage-level commit failure, but also a *trusted revalidation* rejection: checkout drift (Section 41B), a product archived or deleted since review, stock that has fallen below the cart quantity, a tax rate or business identity that is no longer configured, or a recalculated total that now exceeds the ceiling. Each rolls the authoritative transaction back with nothing written and is recorded on the same row the same way. The `failure_code` is the stable, specific reason: `SALE_COMMIT_FAILED` is reserved for an unexpected/storage-level failure, and a specific code (`CHECKOUT_DRIFT`, `INSUFFICIENT_STOCK`, `PRODUCT_ARCHIVED`, `BUSINESS_NOT_CONFIGURED`, `TAX_RATE_NOT_CONFIGURED`, …) records a trusted revalidation rejection (`SUPPORT_DIAGNOSTICS.md` Section 42). `SUBMITTED` therefore means *currently eligible for Phase 2*: a request that Phase 2 has rejected does not remain `SUBMITTED`. When the cashier re-reviews materially changed checkout content, that review computes a new fingerprint and the completion uses a **new `request_id`** (Section 34); the `COMMIT_FAILED` row is left as durable evidence of the superseded attempt. For a Cash request this row is terminal/retry evidence only — it is **not** an external-payment reconciliation case; Card reconciliation continues to be governed by payment method and Sections 31A–31B. A precondition that is already broken *before* Phase 1 (no tax rate, no business identity, an already-archived cart product) is rejected before the `SUBMITTED` row is created, so nothing is written and there is no row to mark.
 
 This design means the four pieces of durable local evidence Priority 0 requires — checkout request, intended total, payment method, and cashier-confirmed Clover approval — are captured across Phase 1's two steps, each committed independently and in order *before* the corresponding external or internal action it protects (Step A before Clover is invoked; Step B before Phase 2 is attempted), and therefore survive any later failure.
 
@@ -2940,7 +2944,7 @@ COMPLETED
 COMMIT_FAILED
 ```
 
-`PENDING_PAYMENT` exists only for Card and is written by Phase 1 Step A before the cashier is instructed to process Clover; it means "a checkout is durably on record, but no payment confirmation has been received yet." `SUBMITTED` is reached either directly (Cash, at Step A) or via Phase 1 Step B once Card approval is confirmed; it means the row is eligible for Phase 2. A successful Phase 2 commit advances the same row to `COMPLETED` with `sale_id`. A failed Phase 2 — or a failed Step B confirmation write — advances the same row to `COMMIT_FAILED` with `failure_code` where that transition itself can be durably written. Unlike the sale transaction itself, none of these status transitions on the `checkout_requests` row are rolled back together with a failed sale/confirmation attempt — each is written as its own separate, best-effort or independently-committed update specifically so it survives.
+`PENDING_PAYMENT` exists only for Card and is written by Phase 1 Step A before the cashier is instructed to process Clover; it means "a checkout is durably on record, but no payment confirmation has been received yet." `SUBMITTED` is reached either directly (Cash, at Step A) or via Phase 1 Step B once Card approval is confirmed; it means the row is **currently eligible for Phase 2**. A successful Phase 2 commit advances the same row to `COMPLETED` with `sale_id`. A failed Phase 2 — or a failed Step B confirmation write — advances the same row to `COMMIT_FAILED` with `failure_code` where that transition itself can be durably written. "A failed Phase 2" is not only an unexpected/storage commit failure: a trusted revalidation rejection (checkout drift, insufficient stock, a product archived since review, tax rate or business identity no longer configured) also rolls the authoritative transaction back with nothing written and is recorded the same way, carrying a specific `failure_code` rather than `SALE_COMMIT_FAILED` (Section 31 "Phase 2 failure — record the outcome"; `SUPPORT_DIAGNOSTICS.md` Section 42). A row therefore does not stay `SUBMITTED` once Phase 2 has rejected it; re-reviewing materially changed content produces a new fingerprint and a new `request_id` (Section 34), and the `COMMIT_FAILED` row remains as evidence of the superseded attempt. For a Cash request, `COMMIT_FAILED` is terminal/retry evidence only and never by itself a reconciliation incident (Section 31B is Card-only). Unlike the sale transaction itself, none of these status transitions on the `checkout_requests` row are rolled back together with a failed sale/confirmation attempt — each is written as its own separate, best-effort or independently-committed update specifically so it survives.
 
 No additional state is introduced beyond `PENDING_PAYMENT`: Cash checkout never uses it, and Card checkout only passes through it briefly between review and Clover approval.
 
@@ -3051,7 +3055,7 @@ GP-000126
 
 If the same request ID is submitted with a different `request_fingerprint`, the application must reject it as an idempotency-key conflict (Section 31, Phase 1, step 1).
 
-If the same request ID is submitted again after a prior `COMMIT_FAILED` outcome, and the fingerprint matches, the application attempts Phase 2 again against the existing row (Section 31A retry behavior) rather than treating it as a conflict.
+If the same request ID is submitted again after a prior `COMMIT_FAILED` outcome, and the fingerprint matches, the application attempts Phase 2 again against the existing row (Section 31A retry behavior) rather than treating it as a conflict. This is the correct retry path for a transient/storage `COMMIT_FAILED` (`SALE_COMMIT_FAILED`) once the underlying problem clears. When the failure was a re-review rejection instead (the checkout content materially changed), the cashier re-reviews and that review carries a **new `request_id`** and a new fingerprint; the earlier `COMMIT_FAILED` row is not reused and stays as evidence of the superseded attempt. Submitting a *different* fingerprint against the earlier `request_id` remains an idempotency-key conflict.
 
 ---
 

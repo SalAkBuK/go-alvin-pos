@@ -329,6 +329,34 @@ td {
   word-break: break-all;
 }
 
+.checkout-add-customer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.checkout-add-customer label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.85rem;
+}
+
+.checkout-success {
+  border: 1px solid rgba(26, 127, 55, 0.5);
+  border-radius: 0.4rem;
+  padding: 1rem 1.25rem;
+  margin-top: 0.5rem;
+}
+
+.checkout-success h3 {
+  margin: 0 0 0.5rem;
+  color: #1a7f37;
+  letter-spacing: 0.04em;
+}
+
 .settings-page + .settings-page {
   margin-top: 2rem;
   padding-top: 1.5rem;

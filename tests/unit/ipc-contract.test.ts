@@ -24,6 +24,7 @@ describe('IPC contract', () => {
         'customersGet',
         'customersPurchaseHistory',
         'checkoutReview',
+        'checkoutCompleteCash',
         'settingsTaxGet',
         'settingsTaxUpdate',
         'settingsBusinessGet',
@@ -77,7 +78,7 @@ describe('IPC contract', () => {
       products: ['create', 'update', 'archive', 'list', 'search', 'findByBarcode'],
       inventory: ['adjust', 'movements'],
       customers: ['create', 'update', 'list', 'search', 'get', 'purchaseHistory'],
-      checkout: ['review'],
+      checkout: ['review', 'completeCash'],
       // `settings` exposes only the tax and business sub-objects — no generic setter.
       settings: ['tax.get', 'tax.update', 'business.get', 'business.update'],
     };

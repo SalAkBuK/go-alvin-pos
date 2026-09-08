@@ -844,6 +844,8 @@ Expected:
 
 The commit is rejected with a re-review error rather than silently completing using the new tax rate/availability/stock; no sale, payment, or inventory change occurs.
 
+If a durable checkout request had already been recorded for this attempt (`status = SUBMITTED`), it does not remain misleadingly `SUBMITTED`: it is best-effort advanced to `status = COMMIT_FAILED` with the stable re-review failure code (`CHECKOUT_DRIFT`, `INSUFFICIENT_STOCK`, or `PRODUCT_ARCHIVED`) and `failed_at` set (`DATA_MODEL.md` Sections 31, 33). A precondition that is already broken before the request is recorded (no tax rate, no business identity, an already-archived product) is rejected before any `checkout_requests` row is created. To retry, the cashier Reviews the cart again; that fresh review computes a new fingerprint and uses a **new `request_id`**, and can complete if current state is valid. The original drifted request stays `COMMIT_FAILED` as evidence of the superseded attempt.
+
 ---
 
 ## TEST-IDEMP-007 — Card Total Must Match Clover-Processed Amount

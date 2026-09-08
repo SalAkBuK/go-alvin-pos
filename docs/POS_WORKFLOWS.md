@@ -762,7 +762,7 @@ Payment method
 
 Cashier should have a clear opportunity to verify the transaction before completion.
 
-What the cashier reviews here is exactly what the trusted application layer fingerprints and later re-validates at commit (`DATA_MODEL.md` Section 41B). If anything material changes between this review and Complete Sale — a price, the tax rate, product availability, or stock — the commit step rejects the attempt for re-review rather than silently completing with different values (Section 33).
+What the cashier reviews here is exactly what the trusted application layer fingerprints and later re-validates at commit (`DATA_MODEL.md` Section 41B). If anything material changes between this review and Complete Sale — a price, the tax rate, product availability, or stock — the commit step rejects the attempt for re-review rather than silently completing with different values; the durable checkout request is recorded `COMMIT_FAILED` and the cashier Reviews again under a new request ID (Section 33).
 
 ---
 
@@ -946,7 +946,8 @@ BEGIN IMMEDIATE
 
 1. Compute the checkout fingerprint over the reviewed cart, customer, tax rate, and totals (`DATA_MODEL.md` Section 41B).
 2. Check checkout request ID; if it already exists with a different fingerprint, reject as a conflict.
-3. Insert (or reuse) the `checkout_requests` row with the payment method and intended total, and `status = SUBMITTED` (Cash) or `status = PENDING_PAYMENT` (Card, before Clover is invoked).
+3. For a brand-new request, verify the store can complete a sale at all — business identity configured (Section 69), a tax rate configured, cart products active and in stock. If not, stop with the specific error and create **no** row (`DATA_MODEL.md` Section 31, Phase 1 Step A). Drift versus current values is not judged here.
+4. Insert (or reuse) the `checkout_requests` row with the payment method and intended total, and `status = SUBMITTED` (Cash) or `status = PENDING_PAYMENT` (Card, before Clover is invoked).
 
 ```text
 COMMIT
@@ -985,7 +986,7 @@ BEGIN IMMEDIATE
 8. Load the currently configured tax rate.
 9. Calculate tax using the fixed rounding rule (`DATA_MODEL.md` Section 42).
 10. Calculate final total.
-11. Compare every recalculated value against the reviewed fingerprint (step 1 of Phase 1, Step A); if anything drifted — price, tax rate, availability, stock, or totals — reject with a re-review error instead of committing different values.
+11. Compare every recalculated value against the reviewed fingerprint (step 1 of Phase 1, Step A); if anything drifted — price, tax rate, availability, stock, or totals — reject the sale commit and roll back instead of committing different values. This rejection is a Phase 2 attempt that did not complete: it is recorded on the checkout-request row exactly like any other Phase 2 failure below — a best-effort `COMMIT_FAILED` with a stable re-review failure code (`CHECKOUT_DRIFT`, `INSUFFICIENT_STOCK`, `PRODUCT_ARCHIVED`, …). The cart, customer, and payment selection are kept; the cashier Reviews again, and that fresh review is a new checkout attempt with a **new request ID**.
 12. Validate payment information; for Card, the recalculated total must exactly equal the amount already recorded as `intended_total_cents`.
 13. Generate Sale ID.
 14. Generate receipt number.
@@ -1005,13 +1006,13 @@ BEGIN IMMEDIATE
 COMMIT
 ```
 
-If any required operation in Phase 2 fails:
+If any required operation in Phase 2 fails — an unexpected storage/commit failure, a constraint failure, **or** the trusted revalidation/drift rejection at step 11:
 
 ```text
 ROLLBACK
 ```
 
-followed immediately by a separate best-effort update marking the same checkout-request row `COMMIT_FAILED` with a failure code (Section 35A). Phase 1's record is never lost, even though Phase 2 rolled back completely.
+The authoritative transaction rolls back completely (no sale, payment, inventory change, movement, export job, or completion audit survives), followed immediately by a separate best-effort update marking the same checkout-request row `COMMIT_FAILED` with a stable, specific failure code — `SALE_COMMIT_FAILED` for an unexpected/storage failure, the specific re-review code (`CHECKOUT_DRIFT`, `INSUFFICIENT_STOCK`, …) otherwise (Section 35A; `SUPPORT_DIAGNOSTICS.md` Section 42). Phase 1's record is never lost. `SUBMITTED` means the request is currently eligible for Phase 2; a request rejected during Phase 2 does not stay `SUBMITTED`. For a Cash request a `COMMIT_FAILED` row is terminal/retry evidence only and is never itself a Card reconciliation item (Section 35B).
 
 ---
 
@@ -1055,6 +1056,8 @@ It must not:
 - Report success
 - Create partial inventory changes
 - Queue Google export for a nonexistent sale
+
+In every case the durable checkout request is best-effort marked `COMMIT_FAILED` (Section 33): `failure_code = SALE_COMMIT_FAILED` for an unexpected/storage failure, or the specific re-review code when the rollback was a trusted revalidation rejection (drift, stock, archived — the cashier is told to Review again rather than shown the generic message, and Reviews under a new request ID).
 
 If the payment method was Card and the cashier had already confirmed Clover approval, follow Section 35A instead of a generic failure message — the cashier must be warned specifically about the possible Clover charge.
 

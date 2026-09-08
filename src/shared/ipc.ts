@@ -13,7 +13,12 @@
  * NOT defined yet.
  */
 
-import type { CheckoutReview, CheckoutReviewRequest } from './checkout';
+import type {
+  CheckoutReview,
+  CheckoutReviewRequest,
+  CompleteCashSaleRequest,
+  CompletedSaleResult,
+} from './checkout';
 import type {
   BusinessConfig,
   TaxRateConfig,
@@ -76,9 +81,14 @@ export const IPC = {
   customersPurchaseHistory: 'customers:purchase-history',
 
   // ── Phase 2D: Checkout review ──────────────────────────────────────────────
-  // Trusted recalculation of a temporary cart. This does NOT complete a sale;
-  // there is deliberately no `checkout:complete` channel in this phase.
+  // Trusted recalculation of a temporary cart. Writes nothing.
   checkoutReview: 'checkout:review',
+
+  // ── Phase 2E: Cash sale completion ─────────────────────────────────────────
+  // The authoritative Cash sale transaction (Phase 1 durable request + Phase 2
+  // sale). Cash only — there is deliberately no Card completion channel and no
+  // generic `checkout:complete`.
+  checkoutCompleteCash: 'checkout:complete-cash',
 
   // ── Phase 2D.1: Minimal tax configuration ──────────────────────────────────
   // The sales-tax rate only — NOT a generic settings surface. `tax-update` is
@@ -164,6 +174,14 @@ export interface PosApi {
      * deterministic checkout fingerprint. Writes nothing.
      */
     review(request: CheckoutReviewRequest): Promise<IpcResult<CheckoutReview>>;
+    /**
+     * Complete a *Cash* sale for a reviewed cart: Phase 1 durably records the
+     * checkout request, Phase 2 writes the sale, items, payment, inventory
+     * deduction, movements, `PENDING` export job, and audit events in one
+     * transaction. Idempotent for a repeated `requestId` + fingerprint; rejects
+     * `CHECKOUT_DRIFT` if authoritative state changed since review.
+     */
+    completeCash(request: CompleteCashSaleRequest): Promise<IpcResult<CompletedSaleResult>>;
   };
   readonly settings: {
     /** The sales-tax rate only — no generic settings access. */

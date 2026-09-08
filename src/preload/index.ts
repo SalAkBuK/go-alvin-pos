@@ -43,6 +43,7 @@ const api: PosApi = {
   },
   checkout: {
     review: (request) => ipcRenderer.invoke(IPC.checkoutReview, request),
+    completeCash: (request) => ipcRenderer.invoke(IPC.checkoutCompleteCash, request),
   },
   settings: {
     tax: {

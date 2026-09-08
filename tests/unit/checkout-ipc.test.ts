@@ -37,28 +37,36 @@ const untrustedEvent = () => ({ senderFrame: { url: 'https://evil.example/', par
 
 beforeEach(() => {
   handlers.clear();
-  registerCheckoutIpcHandlers({ logger, getDatabase: () => null, rendererEntry: entry });
+  registerCheckoutIpcHandlers({
+    logger,
+    getDatabase: () => null,
+    appVersion: 'test',
+    rendererEntry: entry,
+  });
 });
 afterEach(() => vi.clearAllMocks());
 
 describe('checkout IPC registration', () => {
-  it('registers exactly the one checkout:review channel', () => {
-    expect([...handlers.keys()]).toEqual([IPC.checkoutReview]);
-  });
-
-  it('defines no checkout:complete (or any sale-completing) channel', () => {
-    for (const channel of handlers.keys()) {
-      expect(channel).not.toMatch(/complete|commit|pay|sale/i);
-    }
-  });
-
-  it('rejects a request from an untrusted sender', async () => {
-    await expect(handlers.get(IPC.checkoutReview)!(untrustedEvent())).rejects.toThrow(
-      /untrusted sender/i,
+  it('registers exactly checkout:review and checkout:complete-cash', () => {
+    expect([...handlers.keys()].sort()).toEqual(
+      [IPC.checkoutCompleteCash, IPC.checkoutReview].sort(),
     );
   });
 
-  it('a trusted request with no database returns a typed DATABASE_UNAVAILABLE result (no throw)', async () => {
+  it('defines no Card completion / generic complete channel', () => {
+    for (const channel of handlers.keys()) {
+      expect(channel).not.toMatch(/card|clover|pending/i);
+      expect(channel).not.toBe('checkout:complete');
+    }
+  });
+
+  it('rejects a request from an untrusted sender on every channel', async () => {
+    for (const channel of handlers.keys()) {
+      await expect(handlers.get(channel)!(untrustedEvent())).rejects.toThrow(/untrusted sender/i);
+    }
+  });
+
+  it('a trusted review with no database returns a typed DATABASE_UNAVAILABLE result (no throw)', async () => {
     const result = (await handlers.get(IPC.checkoutReview)!(trustedEvent(), {
       customerId: null,
       paymentMethod: 'CASH',
@@ -67,5 +75,15 @@ describe('checkout IPC registration', () => {
     expect(result.ok).toBe(false);
     expect(result.error.code).toBe('DATABASE_UNAVAILABLE');
     expect(result.error.message).not.toMatch(/sqlite|C:\\|SELECT/i);
+  });
+
+  it('a trusted complete-cash with no database returns a typed DATABASE_UNAVAILABLE result (no throw)', async () => {
+    const result = (await handlers.get(IPC.checkoutCompleteCash)!(trustedEvent(), {
+      requestId: 'r1',
+      reviewedFingerprint: 'a'.repeat(64),
+      checkout: { customerId: null, paymentMethod: 'CASH', lines: [] },
+    })) as { ok: false; error: { code: string; message: string } };
+    expect(result.ok).toBe(false);
+    expect(result.error.code).toBe('DATABASE_UNAVAILABLE');
   });
 });
