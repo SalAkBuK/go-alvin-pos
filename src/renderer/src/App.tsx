@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { AppInfo, DatabaseStatus } from '../../shared/ipc';
+import { BrandLogo } from './components/BrandLogo';
 import { CheckoutPage } from './features/checkout/CheckoutPage';
 import { CustomersPage } from './features/customers/CustomersPage';
 import { ProductsPage } from './features/products/ProductsPage';
@@ -62,7 +63,10 @@ export function App() {
   return (
     <main className="app">
       <header className="app-header">
-        <h1>Go Phones POS</h1>
+        <div className="app-brand">
+          <BrandLogo className="app-logo" />
+          <h1>Go Phones POS</h1>
+        </div>
         <p className="app-status">
           {status.info ? `${status.info.name} ${status.info.version}` : 'Go Phones POS'} · database{' '}
           {describeDatabase(status.database)}

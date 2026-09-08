@@ -1,4 +1,5 @@
 import type { ReceiptRepresentation } from '../../../../shared/receipt';
+import { BrandLogo } from '../../components/BrandLogo';
 import { toReceiptView } from './receiptView';
 
 /**
@@ -80,6 +81,7 @@ export function ReceiptPreview({
     <section className="checkout-page">
       <article className="receipt-paper" aria-label={`Receipt ${view.meta[0]?.value ?? ''}`}>
         <header className="receipt-head">
+          <BrandLogo className="receipt-logo" decorative />
           <h3>{view.title}</h3>
           {view.businessLines
             .filter((l) => l.trim() !== '')
