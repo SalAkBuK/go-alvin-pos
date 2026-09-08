@@ -19,6 +19,7 @@ import { appErrors } from '../shared/appError';
  */
 
 const TAX_RATE_KEY = 'tax_rate_bps';
+const BUSINESS_TIMEZONE_KEY = 'business_timezone';
 
 const BUSINESS_ADDRESS_KEY = 'business_address';
 const BUSINESS_PHONE_KEY = 'business_phone';
@@ -57,6 +58,26 @@ export function getSettingValue(db: Database.Database, key: string): string | nu
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
     { value: string | null } | undefined;
   return row && row.value !== null ? row.value : null;
+}
+
+/**
+ * The configured IANA business timezone. Migration `001` seeds
+ * `business_timezone = America/Chicago` (`DATA_MODEL.md §4`, "Initial store
+ * timezone"), so the row is always present; the constant fallback covers only a
+ * corrupted/blank row and keeps date rendering deterministic.
+ *
+ * Read *live*. `DATA_MODEL.md §4` defines current-configured-zone derivation
+ * only for reporting/business-day bucketing; for a receipt it requires local
+ * display of `completed_at` but not current-vs-snapshotted zone. Phase 2E.1
+ * reuses the current value by convention — no timezone snapshot exists, no
+ * migration is warranted, the store is a single fixed location, and it matches
+ * the reporting convention.
+ */
+export const DEFAULT_BUSINESS_TIMEZONE = 'America/Chicago';
+
+export function readBusinessTimezone(db: Database.Database): string {
+  const value = getSettingValue(db, BUSINESS_TIMEZONE_KEY);
+  return value && value.trim() !== '' ? value.trim() : DEFAULT_BUSINESS_TIMEZONE;
 }
 
 export interface TaxRateSetting {

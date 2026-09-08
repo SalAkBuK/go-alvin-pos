@@ -109,4 +109,11 @@ export const appErrors = {
       'CHECKOUT_REQUEST_INVALID',
       'This checkout can no longer be completed. Start a new sale.',
     ),
+  receiptNotFound: (): AppError =>
+    new AppError('RECEIPT_NOT_FOUND', 'That sale could not be found.'),
+  receiptDataInconsistent: (): AppError =>
+    new AppError(
+      'RECEIPT_DATA_INCONSISTENT',
+      'The receipt for this sale could not be assembled from the stored transaction data.',
+    ),
 } as const;

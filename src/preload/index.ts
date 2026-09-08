@@ -45,6 +45,9 @@ const api: PosApi = {
     review: (request) => ipcRenderer.invoke(IPC.checkoutReview, request),
     completeCash: (request) => ipcRenderer.invoke(IPC.checkoutCompleteCash, request),
   },
+  receipts: {
+    getBySaleId: (saleId) => ipcRenderer.invoke(IPC.receiptsGetBySaleId, saleId),
+  },
   settings: {
     tax: {
       get: () => ipcRenderer.invoke(IPC.settingsTaxGet),

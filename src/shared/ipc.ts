@@ -19,6 +19,7 @@ import type {
   CompleteCashSaleRequest,
   CompletedSaleResult,
 } from './checkout';
+import type { ReceiptRepresentation } from './receipt';
 import type {
   BusinessConfig,
   TaxRateConfig,
@@ -89,6 +90,12 @@ export const IPC = {
   // sale). Cash only — there is deliberately no Card completion channel and no
   // generic `checkout:complete`.
   checkoutCompleteCash: 'checkout:complete-cash',
+
+  // ── Phase 2E.1: Receipt representation & preview ───────────────────────────
+  // Read-only assembly of one committed sale's receipt from its transaction-time
+  // snapshots, addressed only by immutable Sale ID. Writes nothing. Physical
+  // printing and reprint-from-history are NOT here.
+  receiptsGetBySaleId: 'receipts:get-by-sale-id',
 
   // ── Phase 2D.1: Minimal tax configuration ──────────────────────────────────
   // The sales-tax rate only — NOT a generic settings surface. `tax-update` is
@@ -182,6 +189,15 @@ export interface PosApi {
      * `CHECKOUT_DRIFT` if authoritative state changed since review.
      */
     completeCash(request: CompleteCashSaleRequest): Promise<IpcResult<CompletedSaleResult>>;
+  };
+  readonly receipts: {
+    /**
+     * Assemble one committed sale's printer-independent receipt representation
+     * from its transaction-time snapshots (`sales` / `sale_items` / `payments`).
+     * Read-only, local SQLite only, no network or printer. The renderer passes
+     * only the immutable Sale ID; a sale that does not exist is `RECEIPT_NOT_FOUND`.
+     */
+    getBySaleId(saleId: string): Promise<IpcResult<ReceiptRepresentation>>;
   };
   readonly settings: {
     /** The sales-tax rate only — no generic settings access. */

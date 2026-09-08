@@ -3,7 +3,7 @@ import { IPC } from '../../src/shared/ipc';
 import type { PosApi } from '../../src/shared/ipc';
 
 describe('IPC contract', () => {
-  it('exposes exactly the foundation, diagnostic, product/inventory, customer, checkout-review, and settings (tax + business) channels', () => {
+  it('exposes exactly the foundation, diagnostic, product/inventory, customer, checkout-review, receipt, and settings (tax + business) channels', () => {
     expect(Object.keys(IPC).sort()).toEqual(
       [
         'appInfo',
@@ -25,6 +25,7 @@ describe('IPC contract', () => {
         'customersPurchaseHistory',
         'checkoutReview',
         'checkoutCompleteCash',
+        'receiptsGetBySaleId',
         'settingsTaxGet',
         'settingsTaxUpdate',
         'settingsBusinessGet',
@@ -42,6 +43,7 @@ describe('IPC contract', () => {
       'inventory',
       'customers',
       'checkout',
+      'receipts',
       'settings',
     ];
     for (const name of Object.values(IPC)) {
@@ -79,6 +81,7 @@ describe('IPC contract', () => {
       inventory: ['adjust', 'movements'],
       customers: ['create', 'update', 'list', 'search', 'get', 'purchaseHistory'],
       checkout: ['review', 'completeCash'],
+      receipts: ['getBySaleId'],
       // `settings` exposes only the tax and business sub-objects — no generic setter.
       settings: ['tax.get', 'tax.update', 'business.get', 'business.update'],
     };
@@ -89,6 +92,7 @@ describe('IPC contract', () => {
       'diagnostics',
       'inventory',
       'products',
+      'receipts',
       'settings',
     ]);
     for (const methods of Object.values(surface)) {

@@ -8,6 +8,7 @@ import { PAYMENT_METHODS } from '../../../../shared/checkout';
 import { formatCents, MoneyParseError, parseCurrencyToCents } from '../../../../shared/money';
 import type { CustomerRecord } from '../../../../shared/customers';
 import type { AppErrorCode, IpcResult, ProductRecord } from '../../../../shared/products';
+import type { ReceiptRepresentation } from '../../../../shared/receipt';
 import {
   addProduct,
   canCompleteCash,
@@ -28,11 +29,9 @@ import {
   withReview,
 } from './cart';
 import type { CartState } from './cart';
-import {
-  describeSaleSuccess,
-  isRetryableCommitFailure,
-  requiresReReview,
-} from './checkoutCompletion';
+import { isRetryableCommitFailure, requiresReReview } from './checkoutCompletion';
+import { ReceiptPreview } from './ReceiptPreview';
+import { SaleSuccess } from './SaleSuccess';
 
 /**
  * New Sale / Checkout screen (task `§16`; `POS_WORKFLOWS.md §16`-`§28`, `§33`,
@@ -83,6 +82,13 @@ export function CheckoutPage() {
   const [reviewing, setReviewing] = useState(false);
   const [completing, setCompleting] = useState(false);
   const [saleResult, setSaleResult] = useState<CompletedSaleResult | null>(null);
+
+  // Post-sale receipt preview (Phase 2E.1) — reachable only from the success
+  // screen, retrieved by the committed Sale ID, never from the checkout cart.
+  const [showReceipt, setShowReceipt] = useState(false);
+  const [receipt, setReceipt] = useState<ReceiptRepresentation | null>(null);
+  const [receiptError, setReceiptError] = useState<string | null>(null);
+  const [receiptLoading, setReceiptLoading] = useState(false);
 
   // Product search / add
   const [query, setQuery] = useState('');
@@ -250,6 +256,10 @@ export function CheckoutPage() {
   const resetForNewSale = useCallback(() => {
     setCart(clearCart());
     setSaleResult(null);
+    setShowReceipt(false);
+    setReceipt(null);
+    setReceiptError(null);
+    setReceiptLoading(false);
     setAttachedCustomer(null);
     setResults([]);
     setCustomerResults([]);
@@ -259,6 +269,33 @@ export function CheckoutPage() {
     setAddCustomerError(null);
     setNotice(null);
     setError(null);
+  }, []);
+
+  const onViewReceipt = useCallback(async () => {
+    if (!saleResult) {
+      return;
+    }
+    setShowReceipt(true);
+    setReceiptError(null);
+    const api = pos();
+    if (!api) {
+      setReceipt(null);
+      setReceiptError('Receipt preview is unavailable in this context.');
+      return;
+    }
+    setReceiptLoading(true);
+    try {
+      setReceipt(await unwrap(api.receipts.getBySaleId(saleResult.saleId)));
+    } catch (err) {
+      setReceipt(null);
+      setReceiptError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReceiptLoading(false);
+    }
+  }, [saleResult]);
+
+  const onBackFromReceipt = useCallback(() => {
+    setShowReceipt(false);
   }, []);
 
   const onClearCart = useCallback(() => {
@@ -342,30 +379,24 @@ export function CheckoutPage() {
   const cashReady = canCompleteCash(cart) && !completing && !saleResult;
 
   if (saleResult) {
-    const success = describeSaleSuccess(saleResult);
+    if (showReceipt) {
+      return (
+        <ReceiptPreview
+          representation={receipt}
+          loading={receiptLoading}
+          error={receiptError}
+          saleReceiptNumber={saleResult.receiptNumber}
+          onBack={onBackFromReceipt}
+          onNewSale={resetForNewSale}
+        />
+      );
+    }
     return (
-      <section className="checkout-page">
-        <section className="checkout-success" role="status">
-          <h3>{success.heading}</h3>
-          <dl className="checkout-totals">
-            {success.lines.map((line) => (
-              <div key={line.label}>
-                <dt>{line.label}</dt>
-                <dd>{line.value}</dd>
-              </div>
-            ))}
-          </dl>
-          <p className="field-hint">The receipt is saved. Printing arrives in a later version.</p>
-          <div className="checkout-actions">
-            <button type="button" onClick={resetForNewSale}>
-              New Sale
-            </button>
-            <button type="button" disabled title="Receipt printing arrives in a later version">
-              Print receipt (not available yet)
-            </button>
-          </div>
-        </section>
-      </section>
+      <SaleSuccess
+        result={saleResult}
+        onViewReceipt={() => void onViewReceipt()}
+        onNewSale={resetForNewSale}
+      />
     );
   }
 

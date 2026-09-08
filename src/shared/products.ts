@@ -161,6 +161,15 @@ export const APP_ERROR_CODES = [
   'SALE_COMMIT_FAILED',
   /** The checkout request exists but is not in a state Cash Phase 2 can act on. */
   'CHECKOUT_REQUEST_INVALID',
+  // ── Phase 2E.1: Receipt representation & preview ───────────────────────────
+  /** No committed sale exists for the given Sale ID, so no receipt can be generated. */
+  'RECEIPT_NOT_FOUND',
+  /**
+   * A committed sale exists but its stored rows do not satisfy a V1 receipt
+   * invariant (missing items, missing/duplicate payment, payment total ≠ sale
+   * total). Read-only detection — the sale itself is never touched.
+   */
+  'RECEIPT_DATA_INCONSISTENT',
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
 

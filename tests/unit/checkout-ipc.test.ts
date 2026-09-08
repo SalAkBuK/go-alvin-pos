@@ -47,9 +47,9 @@ beforeEach(() => {
 afterEach(() => vi.clearAllMocks());
 
 describe('checkout IPC registration', () => {
-  it('registers exactly checkout:review and checkout:complete-cash', () => {
+  it('registers exactly checkout:review, checkout:complete-cash, and receipts:get-by-sale-id', () => {
     expect([...handlers.keys()].sort()).toEqual(
-      [IPC.checkoutCompleteCash, IPC.checkoutReview].sort(),
+      [IPC.checkoutCompleteCash, IPC.checkoutReview, IPC.receiptsGetBySaleId].sort(),
     );
   });
 
@@ -58,6 +58,16 @@ describe('checkout IPC registration', () => {
       expect(channel).not.toMatch(/card|clover|pending/i);
       expect(channel).not.toBe('checkout:complete');
     }
+  });
+
+  it('a trusted receipt request with no database returns a typed DATABASE_UNAVAILABLE result (no throw)', async () => {
+    const result = (await handlers.get(IPC.receiptsGetBySaleId)!(trustedEvent(), 's1')) as {
+      ok: false;
+      error: { code: string; message: string };
+    };
+    expect(result.ok).toBe(false);
+    expect(result.error.code).toBe('DATABASE_UNAVAILABLE');
+    expect(result.error.message).not.toMatch(/sqlite|C:\\|SELECT/i);
   });
 
   it('rejects a request from an untrusted sender on every channel', async () => {

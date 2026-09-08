@@ -357,6 +357,153 @@ td {
   letter-spacing: 0.04em;
 }
 
+/* ── Receipt preview (Phase 2E.1) ──────────────────────────────────────────
+   A constrained receipt-paper surface so 80mm/58mm thermal rendering can be
+   added later without a page-width-dependent redesign (REQ-PRINT-003). */
+.receipt-load-error {
+  border: 1px solid rgba(179, 38, 30, 0.4);
+  border-radius: 0.4rem;
+  padding: 0.75rem 1rem;
+  margin: 0.5rem 0 1rem;
+}
+
+.receipt-paper {
+  max-width: 22rem;
+  margin: 0.5rem auto 1rem;
+  padding: 1.25rem 1.5rem;
+  border: 1px solid rgba(127, 127, 127, 0.35);
+  border-radius: 0.25rem;
+  background: #fff;
+  color: #111;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.receipt-head {
+  text-align: center;
+  margin-bottom: 0.75rem;
+}
+
+.receipt-head h3 {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+  letter-spacing: 0.05em;
+}
+
+.receipt-head p {
+  margin: 0;
+}
+
+.receipt-meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.1rem 0.75rem;
+  margin: 0;
+}
+
+.receipt-meta div {
+  display: contents;
+}
+
+.receipt-meta dt {
+  opacity: 0.7;
+}
+
+.receipt-meta dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.receipt-customer {
+  margin-top: 0.5rem;
+}
+
+.receipt-customer p,
+.receipt-payment {
+  margin: 0;
+}
+
+.receipt-section-label {
+  opacity: 0.7;
+}
+
+.receipt-paper hr {
+  border: none;
+  border-top: 1px dashed rgba(0, 0, 0, 0.35);
+  margin: 0.75rem 0;
+}
+
+.receipt-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.receipt-items li + li {
+  margin-top: 0.5rem;
+}
+
+.receipt-item-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-weight: 600;
+}
+
+.receipt-item-amount {
+  font-variant-numeric: tabular-nums;
+}
+
+.receipt-item-line {
+  font-variant-numeric: tabular-nums;
+}
+
+.receipt-item-detail,
+.receipt-item-note {
+  font-size: 0.75rem;
+  opacity: 0.75;
+}
+
+.receipt-totals {
+  display: grid;
+  grid-template-columns: 1fr max-content;
+  gap: 0.1rem 0.75rem;
+  margin: 0;
+}
+
+.receipt-totals div {
+  display: contents;
+}
+
+.receipt-totals dt {
+  opacity: 0.75;
+}
+
+.receipt-totals dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.receipt-total-emphasis dt,
+.receipt-total-emphasis dd {
+  font-weight: 700;
+  opacity: 1;
+}
+
+.receipt-payment {
+  margin-top: 0.75rem;
+}
+
+.receipt-disclaimer,
+.receipt-footer {
+  margin: 0.5rem 0 0;
+  font-size: 0.75rem;
+  text-align: center;
+  white-space: pre-wrap;
+}
+
 .settings-page + .settings-page {
   margin-top: 2rem;
   padding-top: 1.5rem;
