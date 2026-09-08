@@ -41,6 +41,9 @@ const api: PosApi = {
     get: (id) => ipcRenderer.invoke(IPC.customersGet, id),
     purchaseHistory: (id) => ipcRenderer.invoke(IPC.customersPurchaseHistory, id),
   },
+  checkout: {
+    review: (request) => ipcRenderer.invoke(IPC.checkoutReview, request),
+  },
 };
 
 contextBridge.exposeInMainWorld('pos', api);

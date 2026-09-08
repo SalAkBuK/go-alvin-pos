@@ -1,17 +1,19 @@
 import { useEffect, useState } from 'react';
 import type { AppInfo, DatabaseStatus } from '../../shared/ipc';
+import { CheckoutPage } from './features/checkout/CheckoutPage';
 import { CustomersPage } from './features/customers/CustomersPage';
 import { ProductsPage } from './features/products/ProductsPage';
 
 /**
  * Application shell.
  *
- * Implemented business areas: Products + Inventory (Phase 2B) and Customers
- * (Phase 2C). A small status line keeps the database/runtime state visible.
- * There is no checkout, sales, reporting, or settings UI yet.
+ * Implemented business areas: Products + Inventory (Phase 2B), Customers
+ * (Phase 2C), and a temporary Checkout / New Sale review (Phase 2D — reviews a
+ * cart but completes no sale). A small status line keeps the database/runtime
+ * state visible. There is no sales history, reporting, or settings UI yet.
  */
 
-type Area = 'products' | 'customers';
+type Area = 'checkout' | 'products' | 'customers';
 
 interface ShellStatus {
   readonly info: AppInfo | null;
@@ -33,7 +35,7 @@ function describeDatabase(database: DatabaseStatus | null): string {
 
 export function App() {
   const [status, setStatus] = useState<ShellStatus>({ info: null, database: null });
-  const [area, setArea] = useState<Area>('products');
+  const [area, setArea] = useState<Area>('checkout');
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.pos === 'undefined') {
@@ -65,6 +67,13 @@ export function App() {
         <nav className="app-nav">
           <button
             type="button"
+            aria-current={area === 'checkout'}
+            onClick={() => setArea('checkout')}
+          >
+            New Sale
+          </button>
+          <button
+            type="button"
             aria-current={area === 'products'}
             onClick={() => setArea('products')}
           >
@@ -79,12 +88,19 @@ export function App() {
           </button>
         </nav>
       </header>
-      {area === 'products' ? (
+      {area === 'checkout' && (
+        <>
+          <h2>New Sale</h2>
+          <CheckoutPage />
+        </>
+      )}
+      {area === 'products' && (
         <>
           <h2>Products &amp; Inventory</h2>
           <ProductsPage />
         </>
-      ) : (
+      )}
+      {area === 'customers' && (
         <>
           <h2>Customers</h2>
           <CustomersPage />

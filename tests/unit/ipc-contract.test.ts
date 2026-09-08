@@ -3,7 +3,7 @@ import { IPC } from '../../src/shared/ipc';
 import type { PosApi } from '../../src/shared/ipc';
 
 describe('IPC contract', () => {
-  it('exposes exactly the foundation, diagnostic, Phase 2B product/inventory, and Phase 2C customer channels', () => {
+  it('exposes exactly the foundation, diagnostic, Phase 2B product/inventory, Phase 2C customer, and Phase 2D checkout-review channels', () => {
     expect(Object.keys(IPC).sort()).toEqual(
       [
         'appInfo',
@@ -23,13 +23,21 @@ describe('IPC contract', () => {
         'customersSearch',
         'customersGet',
         'customersPurchaseHistory',
+        'checkoutReview',
       ].sort(),
     );
   });
 
   it('every business channel is an explicit namespaced business capability', () => {
-    // products:*, inventory:*, customers:* are allowed; a generic data/SQL surface is not.
-    const allowedNamespaces = ['app', 'diagnostics', 'products', 'inventory', 'customers'];
+    // products:*, inventory:*, customers:*, checkout:* are allowed; a generic data/SQL surface is not.
+    const allowedNamespaces = [
+      'app',
+      'diagnostics',
+      'products',
+      'inventory',
+      'customers',
+      'checkout',
+    ];
     for (const name of Object.values(IPC)) {
       const namespace = name.split(':')[0];
       expect(allowedNamespaces).toContain(namespace);
@@ -64,9 +72,11 @@ describe('IPC contract', () => {
       products: ['create', 'update', 'archive', 'list', 'search', 'findByBarcode'],
       inventory: ['adjust', 'movements'],
       customers: ['create', 'update', 'list', 'search', 'get', 'purchaseHistory'],
+      checkout: ['review'],
     };
     expect(Object.keys(surface).sort()).toEqual([
       'app',
+      'checkout',
       'customers',
       'diagnostics',
       'inventory',

@@ -126,6 +126,15 @@ export const APP_ERROR_CODES = [
   'DATABASE_UNAVAILABLE',
   'FORBIDDEN',
   'INTERNAL',
+  // ── Phase 2D: Checkout review ──────────────────────────────────────────────
+  /** A cart line references a product that is archived / no longer sellable. */
+  'PRODUCT_ARCHIVED',
+  /** Aggregated cart quantity for a product exceeds current `quantity_on_hand`. */
+  'INSUFFICIENT_STOCK',
+  /** No usable `tax_rate_bps` is configured in local settings. */
+  'TAX_RATE_NOT_CONFIGURED',
+  /** The recalculated checkout total exceeds the canonical ceiling (`DATA_MODEL.md §41A`). */
+  'CHECKOUT_TOTAL_EXCEEDED',
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
 

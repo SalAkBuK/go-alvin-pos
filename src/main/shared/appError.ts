@@ -50,4 +50,28 @@ export const appErrors = {
       'DATABASE_UNAVAILABLE',
       'The local database is not available. Restart the application and try again.',
     ),
+  productArchived: (name?: string): AppError =>
+    new AppError(
+      'PRODUCT_ARCHIVED',
+      name
+        ? `“${name}” is archived and can no longer be sold. Remove it from the cart.`
+        : 'That product is archived and can no longer be sold. Remove it from the cart.',
+    ),
+  insufficientStock: (name: string, available: number): AppError =>
+    new AppError(
+      'INSUFFICIENT_STOCK',
+      available === 1
+        ? `Only 1 of “${name}” is available.`
+        : `Only ${available} of “${name}” are available.`,
+    ),
+  taxRateNotConfigured: (): AppError =>
+    new AppError(
+      'TAX_RATE_NOT_CONFIGURED',
+      'No tax rate is configured for this store. Ask the owner to set the tax rate before checking out.',
+    ),
+  checkoutTotalExceeded: (): AppError =>
+    new AppError(
+      'CHECKOUT_TOTAL_EXCEEDED',
+      'This cart total is above the maximum a single sale can record. Split it into smaller sales.',
+    ),
 } as const;

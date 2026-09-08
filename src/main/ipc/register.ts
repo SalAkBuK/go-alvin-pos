@@ -6,6 +6,7 @@ import type { AppPaths } from '../app/paths';
 import type { ProductionDatabase } from '../database/database';
 import { getDatabaseStatus } from '../database/status';
 import { runNativeSqliteCheck } from '../diagnostics/nativeSqliteCheck';
+import { registerCheckoutIpcHandlers } from './checkoutIpc';
 import { registerCustomerIpcHandlers } from './customerIpc';
 import { registerProductIpcHandlers } from './productIpc';
 
@@ -61,6 +62,11 @@ export function registerIpcHandlers(context: IpcContext): void {
   });
 
   registerCustomerIpcHandlers({
+    logger: context.logger,
+    getDatabase: context.getDatabase,
+  });
+
+  registerCheckoutIpcHandlers({
     logger: context.logger,
     getDatabase: context.getDatabase,
   });

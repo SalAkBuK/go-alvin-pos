@@ -13,6 +13,7 @@
  * NOT defined yet.
  */
 
+import type { CheckoutReview, CheckoutReviewRequest } from './checkout';
 import type {
   CreateCustomerInput,
   CustomerPurchase,
@@ -67,6 +68,11 @@ export const IPC = {
   customersSearch: 'customers:search',
   customersGet: 'customers:get',
   customersPurchaseHistory: 'customers:purchase-history',
+
+  // ── Phase 2D: Checkout review ──────────────────────────────────────────────
+  // Trusted recalculation of a temporary cart. This does NOT complete a sale;
+  // there is deliberately no `checkout:complete` channel in this phase.
+  checkoutReview: 'checkout:review',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -131,5 +137,13 @@ export interface PosApi {
     search(options: CustomerSearchOptions): Promise<IpcResult<readonly CustomerRecord[]>>;
     get(id: string): Promise<IpcResult<CustomerRecord>>;
     purchaseHistory(id: string): Promise<IpcResult<readonly CustomerPurchase[]>>;
+  };
+  readonly checkout: {
+    /**
+     * Trusted recalculation of a temporary cart: reloads authoritative product
+     * state, validates it, computes the canonical review, and returns the
+     * deterministic checkout fingerprint. Writes nothing.
+     */
+    review(request: CheckoutReviewRequest): Promise<IpcResult<CheckoutReview>>;
   };
 }
