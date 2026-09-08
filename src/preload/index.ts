@@ -33,6 +33,14 @@ const api: PosApi = {
     adjust: (input) => ipcRenderer.invoke(IPC.inventoryAdjust, input),
     movements: (productId) => ipcRenderer.invoke(IPC.inventoryMovements, productId),
   },
+  customers: {
+    create: (input) => ipcRenderer.invoke(IPC.customersCreate, input),
+    update: (id, input) => ipcRenderer.invoke(IPC.customersUpdate, id, input),
+    list: () => ipcRenderer.invoke(IPC.customersList),
+    search: (options) => ipcRenderer.invoke(IPC.customersSearch, options),
+    get: (id) => ipcRenderer.invoke(IPC.customersGet, id),
+    purchaseHistory: (id) => ipcRenderer.invoke(IPC.customersPurchaseHistory, id),
+  },
 };
 
 contextBridge.exposeInMainWorld('pos', api);

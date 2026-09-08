@@ -1,6 +1,6 @@
 /**
- * A labelled text input with inline, accessible field-level error display
- * (Phase 2B UX polish).
+ * A labelled text input with inline, accessible field-level error display.
+ * Shared by the product and customer forms (Phase 2B UX polish, reused in 2C).
  *
  * - `aria-invalid` is set only while an error is showing.
  * - the error text is linked with `aria-describedby` (plus an optional hint).

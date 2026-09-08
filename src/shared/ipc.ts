@@ -6,13 +6,20 @@
  * the sandboxed preload, and the renderer (browser) alike.
  *
  * SCOPE: foundation/diagnostic channels plus the Phase 2B Products + Inventory
- * slice. Every business channel is an explicit, narrow, business-named
- * capability per ARCHITECTURE.md Sections 8-9 — never a generic
- * `database:query`, `execute-sql`, `read-file`, or `run-command` surface.
- * Checkout, sales, customers, reports, backup, printing, and Google Sheets are
+ * slice and the Phase 2C Customers slice. Every business channel is an explicit,
+ * narrow, business-named capability per ARCHITECTURE.md Sections 8-9 — never a
+ * generic `database:query`, `execute-sql`, `read-file`, or `run-command`
+ * surface. Checkout, sales, reports, backup, printing, and Google Sheets are
  * NOT defined yet.
  */
 
+import type {
+  CreateCustomerInput,
+  CustomerPurchase,
+  CustomerRecord,
+  CustomerSearchOptions,
+  UpdateCustomerInput,
+} from './customers';
 import type {
   CreateProductInput,
   InventoryAdjustmentInput,
@@ -52,6 +59,14 @@ export const IPC = {
   productsFindByBarcode: 'products:find-by-barcode',
   inventoryAdjust: 'inventory:adjust',
   inventoryMovements: 'inventory:movements',
+
+  // ── Phase 2C: Customers ────────────────────────────────────────────────────
+  customersCreate: 'customers:create',
+  customersUpdate: 'customers:update',
+  customersList: 'customers:list',
+  customersSearch: 'customers:search',
+  customersGet: 'customers:get',
+  customersPurchaseHistory: 'customers:purchase-history',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -108,5 +123,13 @@ export interface PosApi {
   readonly inventory: {
     adjust(input: InventoryAdjustmentInput): Promise<IpcResult<InventoryAdjustmentResult>>;
     movements(productId: string): Promise<IpcResult<readonly InventoryMovementRecord[]>>;
+  };
+  readonly customers: {
+    create(input: CreateCustomerInput): Promise<IpcResult<CustomerRecord>>;
+    update(id: string, input: UpdateCustomerInput): Promise<IpcResult<CustomerRecord>>;
+    list(): Promise<IpcResult<readonly CustomerRecord[]>>;
+    search(options: CustomerSearchOptions): Promise<IpcResult<readonly CustomerRecord[]>>;
+    get(id: string): Promise<IpcResult<CustomerRecord>>;
+    purchaseHistory(id: string): Promise<IpcResult<readonly CustomerPurchase[]>>;
   };
 }

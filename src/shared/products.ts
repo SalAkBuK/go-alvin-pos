@@ -111,7 +111,10 @@ export interface InventoryAdjustmentResult {
   readonly movement: InventoryMovementRecord;
 }
 
-/** Stable structured error codes surfaced to the renderer. Never a raw SQLite code. */
+/**
+ * Stable structured error codes surfaced to the renderer. Never a raw SQLite
+ * code. Shared across every business slice (products, inventory, customers).
+ */
 export const APP_ERROR_CODES = [
   'VALIDATION',
   'PRODUCT_NOT_FOUND',
@@ -119,6 +122,7 @@ export const APP_ERROR_CODES = [
   'DUPLICATE_SKU',
   'INVENTORY_NEGATIVE',
   'ADJUSTMENT_NO_CHANGE',
+  'CUSTOMER_NOT_FOUND',
   'DATABASE_UNAVAILABLE',
   'FORBIDDEN',
   'INTERNAL',

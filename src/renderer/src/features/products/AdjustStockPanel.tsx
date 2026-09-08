@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { InventoryAdjustmentInput, ProductRecord } from '../../../../shared/products';
-import { FormField } from './FormField';
+import { FormField } from '../../components/FormField';
 import {
   resultingQuantity,
   validateAdjustmentField,

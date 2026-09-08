@@ -3,7 +3,7 @@ import { IPC } from '../../src/shared/ipc';
 import type { PosApi } from '../../src/shared/ipc';
 
 describe('IPC contract', () => {
-  it('exposes exactly the foundation, diagnostic, and Phase 2B product/inventory channels', () => {
+  it('exposes exactly the foundation, diagnostic, Phase 2B product/inventory, and Phase 2C customer channels', () => {
     expect(Object.keys(IPC).sort()).toEqual(
       [
         'appInfo',
@@ -17,13 +17,19 @@ describe('IPC contract', () => {
         'productsList',
         'productsSearch',
         'productsUpdate',
+        'customersCreate',
+        'customersUpdate',
+        'customersList',
+        'customersSearch',
+        'customersGet',
+        'customersPurchaseHistory',
       ].sort(),
     );
   });
 
   it('every business channel is an explicit namespaced business capability', () => {
-    // products:* and inventory:* are allowed; a generic data/SQL surface is not.
-    const allowedNamespaces = ['app', 'diagnostics', 'products', 'inventory'];
+    // products:*, inventory:*, customers:* are allowed; a generic data/SQL surface is not.
+    const allowedNamespaces = ['app', 'diagnostics', 'products', 'inventory', 'customers'];
     for (const name of Object.values(IPC)) {
       const namespace = name.split(':')[0];
       expect(allowedNamespaces).toContain(namespace);
@@ -57,8 +63,15 @@ describe('IPC contract', () => {
       diagnostics: ['checkNativeSqlite', 'databaseStatus'],
       products: ['create', 'update', 'archive', 'list', 'search', 'findByBarcode'],
       inventory: ['adjust', 'movements'],
+      customers: ['create', 'update', 'list', 'search', 'get', 'purchaseHistory'],
     };
-    expect(Object.keys(surface).sort()).toEqual(['app', 'diagnostics', 'inventory', 'products']);
+    expect(Object.keys(surface).sort()).toEqual([
+      'app',
+      'customers',
+      'diagnostics',
+      'inventory',
+      'products',
+    ]);
     for (const methods of Object.values(surface)) {
       for (const method of methods) {
         expect(/^(raw|invoke|send|ipc|ipcRenderer|query|execute)$/i.test(method)).toBe(false);

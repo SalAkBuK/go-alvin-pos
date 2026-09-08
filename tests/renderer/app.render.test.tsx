@@ -4,10 +4,12 @@ import { App } from '../../src/renderer/src/App';
 import { ProductForm } from '../../src/renderer/src/features/products/ProductForm';
 
 describe('<App />', () => {
-  it('renders the POS shell with the Products & Inventory area', () => {
+  it('renders the POS shell with the Products & Inventory area and a Customers nav', () => {
     const html = renderToStaticMarkup(<App />);
     expect(html).toContain('Go Phones POS');
     expect(html).toContain('Products &amp; Inventory');
+    // Customers nav button is present; Products is the default area.
+    expect(html).toContain('Customers');
   });
 
   it('renders the create-product form with every canonical create field', () => {

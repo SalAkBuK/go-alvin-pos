@@ -38,6 +38,8 @@ export const appErrors = {
     new AppError('DUPLICATE_SKU', 'This SKU is already assigned to another product.'),
   inventoryNegative: (): AppError =>
     new AppError('INVENTORY_NEGATIVE', 'Stock cannot be reduced below zero.'),
+  customerNotFound: (): AppError =>
+    new AppError('CUSTOMER_NOT_FOUND', 'That customer could not be found.'),
   adjustmentNoChange: (): AppError =>
     new AppError(
       'ADJUSTMENT_NO_CHANGE',

@@ -6,7 +6,7 @@ import type {
   ProductRecord,
   UpdateProductInput,
 } from '../../../../shared/products';
-import { FormField } from './FormField';
+import { FormField } from '../../components/FormField';
 import { mapProductServerError, validateProductField, validateProductForm } from './formValidation';
 import type { ProductFieldName, ProductFormErrors, ProductFormFields } from './formValidation';
 

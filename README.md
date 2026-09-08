@@ -3,14 +3,14 @@
 Local-first Windows point-of-sale application for Go Phones. See [`docs/`](docs/) for
 the canonical V1 specification and [`AGENTS.md`](AGENTS.md) before changing architecture.
 
-## Status: Phase 2B — Products & Inventory
+## Status: Phase 2C — Customers
 
-The application foundation (Phase 1), real SQLite persistence (Phase 2A), and the
-first V1 business slice — **Products & Inventory** (Phase 2B) — are implemented.
+The application foundation (Phase 1), real SQLite persistence (Phase 2A),
+**Products & Inventory** (Phase 2B), and **Customers** (Phase 2C) are implemented.
 
 Still **not** implemented: checkout / cart / sale completion, receipt numbering,
-tax, discounts, payments, the Clover / reconciliation workflow, customers, sales
-history, void, receipts, printing, the Google Sheets API and export worker,
+tax, discounts, payments, the Clover / reconciliation workflow, sales history,
+void, receipts, printing, the Google Sheets API and export worker,
 authentication, reporting, CSV export, backup scheduling / restore UI,
 application updates, and the Support & Diagnostics UI.
 
@@ -22,9 +22,10 @@ What exists:
 | SQLite persistence (2A)     | `ProductionDatabase` lifecycle owner; WAL + `synchronous=FULL` + FK durability policy; backup-gated versioned migrations                                                                            |
 | Canonical V1 schema         | `001_initial_schema` creates the **complete** `DATA_MODEL.md` logical schema (13 tables, constraints, indexes, seed counters)                                                                       |
 | Products & Inventory (2B)   | create / edit / archive / search / barcode lookup; low- & zero-stock state; initial stock + manual adjustment with atomic inventory movement and `INVENTORY_ADJUSTED` audit event; movement history |
-| Preload bridge              | narrow typed `window.pos` surface — `app`, `diagnostics`, `products.*`, `inventory.*`; no `ipcRenderer`, no generic SQL/FS/command APIs                                                             |
-| React + TypeScript renderer | product-management screen (list/search, add, edit, archive, adjust stock)                                                                                                                           |
-| Typed IPC                   | `app:info`, `diagnostics:*`, `products:*`, `inventory:*` — every business channel sender-validated and returning a typed result envelope                                                            |
+| Customers (2C)              | create / edit / list / search by name and phone (formatting-insensitive via derived `phone_normalized`); customer detail with read-only purchase history over existing `sales`; no deletion         |
+| Preload bridge              | narrow typed `window.pos` surface — `app`, `diagnostics`, `products.*`, `inventory.*`, `customers.*`; no `ipcRenderer`, no generic SQL/FS/command APIs                                              |
+| React + TypeScript renderer | product-management + customers screens (list/search, add, edit, archive/adjust; customer detail + purchase history)                                                                                 |
+| Typed IPC                   | `app:info`, `diagnostics:*`, `products:*`, `inventory:*`, `customers:*` — every business channel sender-validated and returning a typed result envelope                                             |
 | better-sqlite3              | main-process-only; renderer bundle proven free of it by `verify:packaging`                                                                                                                          |
 | Tooling                     | strict TypeScript, ESLint, Prettier, Vitest (unit + integration), electron-builder (Windows), GitHub Actions CI                                                                                     |
 
