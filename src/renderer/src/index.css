@@ -128,10 +128,33 @@ td {
   font-size: 0.875rem;
 }
 
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
 .product-form input,
 .product-form select,
 .adjust-stock input {
   padding: 0.35rem 0.5rem;
+}
+
+.form-field-invalid input {
+  border-color: #b3261e;
+  outline-color: #b3261e;
+}
+
+.field-hint {
+  font-size: 0.75rem;
+  opacity: 0.7;
+  margin: 0;
+}
+
+.field-error {
+  font-size: 0.75rem;
+  color: #b3261e;
+  margin: 0;
 }
 
 .product-form-actions {
@@ -142,6 +165,11 @@ td {
 
 .adjust-stock-preview {
   font-size: 0.875rem;
+}
+
+.adjust-stock-preview-invalid {
+  color: #b3261e;
+  font-weight: 600;
 }
 
 .movement-history {
