@@ -79,4 +79,9 @@ export const appErrors = {
       'TAX_RATE_UNCHANGED',
       'That is already the configured tax rate. No change was made.',
     ),
+  businessSettingsUnchanged: (): AppError =>
+    new AppError(
+      'BUSINESS_SETTINGS_UNCHANGED',
+      'The business and receipt details are already saved as entered. No change was made.',
+    ),
 } as const;

@@ -1,31 +1,37 @@
 import type Database from 'better-sqlite3';
-import type { TaxRateConfig } from '../../shared/settings';
+import type { BusinessConfig, BusinessRequiredField, TaxRateConfig } from '../../shared/settings';
 import { appendAuditEvent } from '../audit/appendAuditEvent';
 import { AppError, appErrors } from '../shared/appError';
-import { readTaxRateSetting, writeTaxRateBps } from './settingsRepository';
-import { validateTaxRateUpdate } from './settingsValidation';
+import {
+  BUSINESS_NAME,
+  readBusinessSettings,
+  readTaxRateSetting,
+  writeBusinessSettings,
+  writeTaxRateBps,
+} from './settingsRepository';
+import type { BusinessSettingsRow } from './settingsRepository';
+import { validateBusinessConfigUpdate, validateTaxRateUpdate } from './settingsValidation';
 
 /**
- * Tax-rate configuration (`REQ-TAX-001`, `POS_WORKFLOWS.md §68`,
- * `DATA_MODEL.md §36A`, `ARCHITECTURE.md §42.2`; `REQ-AUDIT-002`,
- * `REQ-AUDIT-004`).
+ * Store configuration: the sales-tax rate (`REQ-TAX-001`, `POS_WORKFLOWS.md
+ * §68`) and the business/receipt values a completed sale freezes into its
+ * snapshots (`DATA_MODEL.md §44-49`, `POS_WORKFLOWS.md §69`, `REQ-REC-002`).
  *
- * `getTaxRate()` is a plain read. `updateTaxRate()` follows the canonical
- * Change Tax Rate flow: validate the new rate, then in ONE `BEGIN IMMEDIATE`
- * transaction persist `settings.tax_rate_bps` and append a `TAX_SETTING_CHANGED`
- * audit event (reusing the shared `appendAuditEvent`, so the `audit_sequence`
- * counter is allocated and rolls back exactly like everywhere else). If either
- * the setting write or the audit insert fails, the whole thing rolls back — no
- * partial state, no consumed sequence value.
+ * Every `*update*` follows the canonical Change-*-Settings flow: validate, then
+ * in ONE `BEGIN IMMEDIATE` transaction persist the `settings` row(s) and append
+ * the required audit event (`TAX_SETTING_CHANGED` / `BUSINESS_SETTING_CHANGED`)
+ * via the shared `appendAuditEvent`, so the `audit_sequence` counter is
+ * allocated and rolls back exactly like everywhere else. If the setting write
+ * or the audit insert fails, the whole thing rolls back — no partial state, no
+ * consumed sequence value (`REQ-AUDIT-004`, `ARCHITECTURE.md §42.2`).
  *
- * The first successful configuration of the rate is recorded with the same
- * `TAX_SETTING_CHANGED` event (there is no separate "created" event type; this
- * mirrors `AUTH_CREDENTIAL_CHANGED` covering first-run credential creation,
- * `DATA_MODEL.md §36A`), carrying `previousTaxRateBps: null`.
+ * First-time configuration is recorded with the same `*_CHANGED` event (there
+ * is no separate "created" type; this mirrors `AUTH_CREDENTIAL_CHANGED`
+ * covering first-run credential creation, `DATA_MODEL.md §36A`).
  *
- * Changing the rate never touches historical `sales` rows — each sale keeps its
- * own `tax_rate_bps` / `tax_cents` / `total_cents` snapshot (`REQ-TAX-003`).
- * This service only writes the `settings` and `audit_events`/`counters` rows.
+ * Changing settings never touches historical `sales` rows — each sale keeps its
+ * own snapshots (`REQ-TAX-003`, `REQ-SALE-009`). This service only writes the
+ * `settings` and `audit_events` / `counters` rows. It creates no sale.
  */
 
 export interface SettingsServiceDeps {
@@ -38,12 +44,54 @@ export interface SettingsServiceDeps {
 export interface SettingsService {
   getTaxRate(): TaxRateConfig;
   updateTaxRate(raw: unknown): TaxRateConfig;
+  getBusinessConfig(): BusinessConfig;
+  updateBusinessConfig(raw: unknown): BusinessConfig;
 }
 
-function toConfig(setting: { taxRateBps: number; updatedAt: string } | null): TaxRateConfig {
+function toTaxConfig(setting: { taxRateBps: number; updatedAt: string } | null): TaxRateConfig {
   return setting
     ? { configured: true, taxRateBps: setting.taxRateBps, updatedAt: setting.updatedAt }
     : { configured: false };
+}
+
+const BUSINESS_EDITABLE_KEYS = [
+  'businessAddress',
+  'businessPhone',
+  'receiptDisclaimer',
+  'receiptFooter',
+] as const;
+type BusinessEditableKey = (typeof BUSINESS_EDITABLE_KEYS)[number];
+
+function toBusinessConfig(row: BusinessSettingsRow): BusinessConfig {
+  const missing: BusinessRequiredField[] = [];
+  if (row.businessAddress === null || row.businessAddress.trim() === '') {
+    missing.push('businessAddress');
+  }
+  if (row.businessPhone === null || row.businessPhone.trim() === '') {
+    missing.push('businessPhone');
+  }
+
+  if (missing.length > 0 || row.updatedAt === null) {
+    return {
+      configured: false,
+      businessName: BUSINESS_NAME,
+      businessAddress: row.businessAddress,
+      businessPhone: row.businessPhone,
+      receiptDisclaimer: row.receiptDisclaimer,
+      receiptFooter: row.receiptFooter,
+      missing,
+    };
+  }
+
+  return {
+    configured: true,
+    businessName: BUSINESS_NAME,
+    businessAddress: row.businessAddress as string,
+    businessPhone: row.businessPhone as string,
+    receiptDisclaimer: row.receiptDisclaimer ?? '',
+    receiptFooter: row.receiptFooter ?? '',
+    updatedAt: row.updatedAt,
+  };
 }
 
 export function createSettingsService(deps: SettingsServiceDeps): SettingsService {
@@ -52,7 +100,7 @@ export function createSettingsService(deps: SettingsServiceDeps): SettingsServic
 
   return {
     getTaxRate(): TaxRateConfig {
-      return toConfig(readTaxRateSetting(db));
+      return toTaxConfig(readTaxRateSetting(db));
     },
 
     updateTaxRate(raw: unknown): TaxRateConfig {
@@ -89,10 +137,57 @@ export function createSettingsService(deps: SettingsServiceDeps): SettingsServic
 
       const saved = readTaxRateSetting(db);
       if (!saved) {
-        // Committed but unreadable — never expected.
         throw new AppError('INTERNAL', 'The tax rate was saved but could not be read back.');
       }
-      return toConfig(saved);
+      return toTaxConfig(saved);
+    },
+
+    getBusinessConfig(): BusinessConfig {
+      return toBusinessConfig(readBusinessSettings(db));
+    },
+
+    updateBusinessConfig(raw: unknown): BusinessConfig {
+      const fields = validateBusinessConfigUpdate(raw);
+      const occurredAt = now();
+
+      const run = db.transaction(() => {
+        const current = readBusinessSettings(db);
+
+        // Which editable fields actually differ from what is stored. `null`
+        // (never configured) and `''` (configured blank) are distinct states.
+        const changed = BUSINESS_EDITABLE_KEYS.filter(
+          (key) => (current[key] ?? null) !== fields[key],
+        );
+        if (changed.length === 0) {
+          throw appErrors.businessSettingsUnchanged();
+        }
+
+        writeBusinessSettings(db, fields, occurredAt);
+
+        const pick = (
+          source: Record<BusinessEditableKey, string | null>,
+        ): Record<string, string | null> =>
+          Object.fromEntries(changed.map((key) => [key, source[key]]));
+
+        appendAuditEvent(db, {
+          eventType: 'BUSINESS_SETTING_CHANGED',
+          occurredAt,
+          actorType: 'USER',
+          outcome: 'SUCCESS',
+          appVersion,
+          subjectType: 'SETTING',
+          subjectId: 'business_information',
+          details: {
+            changedFields: changed,
+            previous: pick(current),
+            next: pick(fields),
+          },
+        });
+      });
+
+      run.immediate();
+
+      return toBusinessConfig(readBusinessSettings(db));
     },
   };
 }

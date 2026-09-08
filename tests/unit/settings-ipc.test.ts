@@ -35,7 +35,12 @@ const trustedEvent = () => ({
 });
 const untrustedEvent = () => ({ senderFrame: { url: 'https://evil.example/', parent: null } });
 
-const CHANNELS = [IPC.settingsTaxGet, IPC.settingsTaxUpdate];
+const CHANNELS = [
+  IPC.settingsTaxGet,
+  IPC.settingsTaxUpdate,
+  IPC.settingsBusinessGet,
+  IPC.settingsBusinessUpdate,
+];
 
 beforeEach(() => {
   handlers.clear();
@@ -49,11 +54,11 @@ beforeEach(() => {
 afterEach(() => vi.clearAllMocks());
 
 describe('settings IPC registration', () => {
-  it('registers exactly the two tax channels — no generic settings setter', () => {
+  it('registers exactly the four purpose-specific channels — no generic settings setter', () => {
     expect([...handlers.keys()].sort()).toEqual([...CHANNELS].sort());
     for (const channel of handlers.keys()) {
       expect(channel).not.toMatch(/^settings:set$/);
-      expect(channel).toMatch(/^settings:tax-(get|update)$/);
+      expect(channel).toMatch(/^settings:(tax|business)-(get|update)$/);
     }
   });
 
@@ -63,13 +68,16 @@ describe('settings IPC registration', () => {
     }
   });
 
-  it('a trusted request with no database returns a typed DATABASE_UNAVAILABLE result (no throw)', async () => {
-    const result = (await handlers.get(IPC.settingsTaxGet)!(trustedEvent())) as {
-      ok: false;
-      error: { code: string; message: string };
-    };
-    expect(result.ok).toBe(false);
-    expect(result.error.code).toBe('DATABASE_UNAVAILABLE');
-    expect(result.error.message).not.toMatch(/sqlite|C:\\|SELECT/i);
-  });
+  it.each([IPC.settingsTaxGet, IPC.settingsBusinessGet])(
+    'a trusted request to %s with no database returns a typed DATABASE_UNAVAILABLE result (no throw)',
+    async (channel) => {
+      const result = (await handlers.get(channel)!(trustedEvent())) as {
+        ok: false;
+        error: { code: string; message: string };
+      };
+      expect(result.ok).toBe(false);
+      expect(result.error.code).toBe('DATABASE_UNAVAILABLE');
+      expect(result.error.message).not.toMatch(/sqlite|C:\\|SELECT/i);
+    },
+  );
 });

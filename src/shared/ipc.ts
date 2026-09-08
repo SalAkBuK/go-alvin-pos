@@ -14,7 +14,12 @@
  */
 
 import type { CheckoutReview, CheckoutReviewRequest } from './checkout';
-import type { TaxRateConfig, UpdateTaxRateInput } from './settings';
+import type {
+  BusinessConfig,
+  TaxRateConfig,
+  UpdateBusinessConfigInput,
+  UpdateTaxRateInput,
+} from './settings';
 import type {
   CreateCustomerInput,
   CustomerPurchase,
@@ -80,6 +85,13 @@ export const IPC = {
   // the sole settings write and it accepts only a basis-point tax rate.
   settingsTaxGet: 'settings:tax-get',
   settingsTaxUpdate: 'settings:tax-update',
+
+  // ── Phase 2D.2: Minimal business & receipt configuration ───────────────────
+  // The business address / phone and receipt disclaimer / footer only — the
+  // source values a future sale freezes into its snapshots. Not a generic
+  // settings surface; `business-update` accepts only those four fields.
+  settingsBusinessGet: 'settings:business-get',
+  settingsBusinessUpdate: 'settings:business-update',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -162,6 +174,16 @@ export interface PosApi {
        * event in the same SQLite transaction. Returns the now-configured rate.
        */
       update(input: UpdateTaxRateInput): Promise<IpcResult<TaxRateConfig>>;
+    };
+    /** Business identity + receipt policy only — no generic settings access. */
+    readonly business: {
+      get(): Promise<IpcResult<BusinessConfig>>;
+      /**
+       * Validate the four fields, persist them, and write one
+       * `BUSINESS_SETTING_CHANGED` audit event in the same SQLite transaction.
+       * Returns the resulting configuration.
+       */
+      update(input: UpdateBusinessConfigInput): Promise<IpcResult<BusinessConfig>>;
     };
   };
 }

@@ -3,7 +3,7 @@ import { IPC } from '../../src/shared/ipc';
 import type { PosApi } from '../../src/shared/ipc';
 
 describe('IPC contract', () => {
-  it('exposes exactly the foundation, diagnostic, Phase 2B product/inventory, Phase 2C customer, Phase 2D checkout-review, and Phase 2D.1 tax-settings channels', () => {
+  it('exposes exactly the foundation, diagnostic, product/inventory, customer, checkout-review, and settings (tax + business) channels', () => {
     expect(Object.keys(IPC).sort()).toEqual(
       [
         'appInfo',
@@ -26,6 +26,8 @@ describe('IPC contract', () => {
         'checkoutReview',
         'settingsTaxGet',
         'settingsTaxUpdate',
+        'settingsBusinessGet',
+        'settingsBusinessUpdate',
       ].sort(),
     );
   });
@@ -76,8 +78,8 @@ describe('IPC contract', () => {
       inventory: ['adjust', 'movements'],
       customers: ['create', 'update', 'list', 'search', 'get', 'purchaseHistory'],
       checkout: ['review'],
-      // `settings` exposes only the tax sub-object (get/update) — no generic setter.
-      settings: ['tax.get', 'tax.update'],
+      // `settings` exposes only the tax and business sub-objects — no generic setter.
+      settings: ['tax.get', 'tax.update', 'business.get', 'business.update'],
     };
     expect(Object.keys(surface).sort()).toEqual([
       'app',

@@ -2,17 +2,18 @@ import { useCallback, useEffect, useState } from 'react';
 import type { IpcResult } from '../../../../shared/products';
 import type { TaxRateConfig } from '../../../../shared/settings';
 import { FormField } from '../../components/FormField';
+import { BusinessConfigSection } from './BusinessConfigSection';
 import { formatBpsAsPercent, parsePercentToBps, validateTaxRatePercent } from './taxRate';
 
 /**
- * Settings → Tax Rate (Phase 2D.1).
+ * Settings area — Phase 2D.1 (Tax Rate) + Phase 2D.2 (Business & Receipt).
  *
- * The minimum needed to make checkout usable on a fresh install: show whether a
- * sales-tax rate is configured and let the store user set or change it. Nothing
- * else lives here — business info, receipt text, printer, Google Sheets,
+ * The minimum needed to make a real sale possible on a fresh install: a
+ * configured sales-tax rate and the business/receipt values a completed sale
+ * freezes into its snapshots. Nothing else lives here — printer, Google Sheets,
  * credentials, backups and diagnostics are each their own later slice.
  *
- * All persistence goes through `window.pos.settings.tax.*` — the narrow typed
+ * All persistence goes through `window.pos.settings.*` — the narrow typed
  * surface. The renderer never sees SQLite and cannot write an arbitrary
  * setting key.
  */
@@ -132,59 +133,63 @@ export function SettingsPage() {
   );
 
   return (
-    <section className="settings-page">
-      <h3>Tax Rate</h3>
+    <>
+      <section className="settings-page">
+        <h3>Tax Rate</h3>
 
-      {loadError && (
-        <p className="product-form-error" role="alert">
-          {loadError}
-        </p>
-      )}
-
-      <dl className="settings-current">
-        <div>
-          <dt>Current</dt>
-          <dd>{describeCurrent(config)}</dd>
-        </div>
-      </dl>
-
-      {config !== null && !config.configured && (
-        <p className="field-hint">
-          Checkout review cannot calculate tax until a rate is configured here. Enter your store’s
-          sales-tax rate to continue.
-        </p>
-      )}
-
-      <form className="settings-form" onSubmit={onSubmit} noValidate>
-        <FormField
-          label="Sales-tax rate (%)"
-          name="taxRatePercent"
-          value={value}
-          onChange={onChange}
-          onBlur={onBlur}
-          error={shownFieldError}
-          hint="Percentage with up to two decimals, e.g. 8.25"
-          inputMode="decimal"
-          placeholder="8.25"
-        />
-
-        {formError && (
+        {loadError && (
           <p className="product-form-error" role="alert">
-            {formError}
-          </p>
-        )}
-        {notice && (
-          <p className="products-notice" role="status">
-            {notice}
+            {loadError}
           </p>
         )}
 
-        <div className="product-form-actions">
-          <button type="submit" disabled={busy}>
-            {config?.configured ? 'Save tax rate' : 'Set tax rate'}
-          </button>
-        </div>
-      </form>
-    </section>
+        <dl className="settings-current">
+          <div>
+            <dt>Current</dt>
+            <dd>{describeCurrent(config)}</dd>
+          </div>
+        </dl>
+
+        {config !== null && !config.configured && (
+          <p className="field-hint">
+            Checkout review cannot calculate tax until a rate is configured here. Enter your store’s
+            sales-tax rate to continue.
+          </p>
+        )}
+
+        <form className="settings-form" onSubmit={onSubmit} noValidate>
+          <FormField
+            label="Sales-tax rate (%)"
+            name="taxRatePercent"
+            value={value}
+            onChange={onChange}
+            onBlur={onBlur}
+            error={shownFieldError}
+            hint="Percentage with up to two decimals, e.g. 8.25"
+            inputMode="decimal"
+            placeholder="8.25"
+          />
+
+          {formError && (
+            <p className="product-form-error" role="alert">
+              {formError}
+            </p>
+          )}
+          {notice && (
+            <p className="products-notice" role="status">
+              {notice}
+            </p>
+          )}
+
+          <div className="product-form-actions">
+            <button type="submit" disabled={busy}>
+              {config?.configured ? 'Save tax rate' : 'Set tax rate'}
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <BusinessConfigSection />
+    </>
   );
 }

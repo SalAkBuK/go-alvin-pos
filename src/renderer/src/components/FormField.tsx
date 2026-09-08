@@ -19,6 +19,9 @@ export interface FormFieldProps {
   readonly inputMode?: 'text' | 'decimal' | 'numeric';
   readonly placeholder?: string;
   readonly autoComplete?: string;
+  /** Render a multi-line `<textarea>` instead of a single-line `<input>`. */
+  readonly multiline?: boolean;
+  readonly rows?: number;
 }
 
 export function FormField({
@@ -32,6 +35,8 @@ export function FormField({
   inputMode,
   placeholder,
   autoComplete,
+  multiline,
+  rows,
 }: FormFieldProps) {
   const errorId = `${name}-error`;
   const hintId = `${name}-hint`;
@@ -41,18 +46,32 @@ export function FormField({
   return (
     <div className={`form-field${error ? ' form-field-invalid' : ''}`}>
       <label htmlFor={name}>{label}</label>
-      <input
-        id={name}
-        name={name}
-        value={value}
-        placeholder={placeholder}
-        {...(inputMode ? { inputMode } : {})}
-        {...(autoComplete ? { autoComplete } : {})}
-        onChange={(event) => onChange(event.target.value)}
-        onBlur={onBlur}
-        aria-invalid={error ? true : undefined}
-        aria-describedby={describedBy}
-      />
+      {multiline ? (
+        <textarea
+          id={name}
+          name={name}
+          value={value}
+          placeholder={placeholder}
+          rows={rows ?? 3}
+          onChange={(event) => onChange(event.target.value)}
+          onBlur={onBlur}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={describedBy}
+        />
+      ) : (
+        <input
+          id={name}
+          name={name}
+          value={value}
+          placeholder={placeholder}
+          {...(inputMode ? { inputMode } : {})}
+          {...(autoComplete ? { autoComplete } : {})}
+          onChange={(event) => onChange(event.target.value)}
+          onBlur={onBlur}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={describedBy}
+        />
+      )}
       {hint && (
         <p id={hintId} className="field-hint">
           {hint}

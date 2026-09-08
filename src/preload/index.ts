@@ -49,6 +49,10 @@ const api: PosApi = {
       get: () => ipcRenderer.invoke(IPC.settingsTaxGet),
       update: (input) => ipcRenderer.invoke(IPC.settingsTaxUpdate, input),
     },
+    business: {
+      get: () => ipcRenderer.invoke(IPC.settingsBusinessGet),
+      update: (input) => ipcRenderer.invoke(IPC.settingsBusinessUpdate, input),
+    },
   },
 };
 

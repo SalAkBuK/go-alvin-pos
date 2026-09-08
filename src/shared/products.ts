@@ -138,6 +138,9 @@ export const APP_ERROR_CODES = [
   // ── Phase 2D.1: Minimal tax configuration ──────────────────────────────────
   /** The requested tax rate equals the currently configured one — no change to record. */
   'TAX_RATE_UNCHANGED',
+  // ── Phase 2D.2: Minimal business & receipt configuration ───────────────────
+  /** The submitted business/receipt details match what is already saved — nothing to record. */
+  'BUSINESS_SETTINGS_UNCHANGED',
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
 
