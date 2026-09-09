@@ -38,6 +38,10 @@ describe('IPC contract', () => {
         'settingsTaxUpdate',
         'settingsBusinessGet',
         'settingsBusinessUpdate',
+        'printingListPrinters',
+        'printingGetConfig',
+        'printingSelectPrinter',
+        'printingPrintReceipt',
       ].sort(),
     );
   });
@@ -55,6 +59,7 @@ describe('IPC contract', () => {
       'receipts',
       'sales-history',
       'settings',
+      'printing',
     ];
     for (const name of Object.values(IPC)) {
       const namespace = name.split(':')[0];
@@ -96,6 +101,8 @@ describe('IPC contract', () => {
       salesHistory: ['list', 'getById', 'voidSale'],
       // `settings` exposes only the tax and business sub-objects — no generic setter.
       settings: ['tax.get', 'tax.update', 'business.get', 'business.update'],
+      // `printing` exposes only narrow capabilities — no generic settings/query surface.
+      printing: ['listPrinters', 'getConfig', 'selectPrinter', 'printReceipt'],
     };
     expect(Object.keys(surface).sort()).toEqual([
       'app',
@@ -103,6 +110,7 @@ describe('IPC contract', () => {
       'customers',
       'diagnostics',
       'inventory',
+      'printing',
       'products',
       'receipts',
       'reconciliation',

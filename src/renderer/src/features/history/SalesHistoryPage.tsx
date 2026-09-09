@@ -3,6 +3,8 @@ import type { IpcResult } from '../../../../shared/products';
 import type { ReceiptRepresentation } from '../../../../shared/receipt';
 import type { SaleDetail, SalesHistoryEntry } from '../../../../shared/salesHistory';
 import { ReceiptPreview } from '../checkout/ReceiptPreview';
+import { failedState, IDLE_PRINT, printingState, runPrint } from '../printing/printReceipt';
+import type { PrintState } from '../printing/printReceipt';
 import {
   toHistorySearch,
   toSaleDetailView,
@@ -71,6 +73,11 @@ export function SalesHistoryPage() {
   const [receiptError, setReceiptError] = useState<string | null>(null);
   const [receiptLoading, setReceiptLoading] = useState(false);
 
+  // Reprint state (Phase 2I) — same trusted print path as Sale Complete, keyed
+  // only by the immutable Sale ID. Never creates a sale / payment / movement /
+  // audit event and never changes the receipt number or void status.
+  const [printState, setPrintState] = useState<PrintState>(IDLE_PRINT);
+
   const load = useCallback(async () => {
     const inputMessage = validateHistorySearchInput({ query, date });
     setInputError(inputMessage);
@@ -128,6 +135,7 @@ export function SalesHistoryPage() {
     setView({ kind: 'receipt', saleId, receiptNumber });
     setReceipt(null);
     setReceiptError(null);
+    setPrintState(IDLE_PRINT);
     const api = pos();
     if (!api) {
       setReceiptError('Receipt preview is unavailable in this context.');
@@ -141,6 +149,16 @@ export function SalesHistoryPage() {
     } finally {
       setReceiptLoading(false);
     }
+  }, []);
+
+  const reprint = useCallback(async (saleId: string) => {
+    const api = pos();
+    if (!api) {
+      setPrintState(failedState('Printing is unavailable in this context.'));
+      return;
+    }
+    setPrintState(printingState());
+    setPrintState(await runPrint((id) => api.printing.printReceipt(id), saleId));
   }, []);
 
   const startVoid = useCallback((saleId: string) => {
@@ -180,6 +198,9 @@ export function SalesHistoryPage() {
         error={receiptError}
         saleReceiptNumber={view.receiptNumber}
         onBack={() => setView({ kind: 'detail', saleId: view.saleId })}
+        onPrint={() => void reprint(view.saleId)}
+        printState={printState}
+        printActionLabel="Reprint receipt"
       />
     );
   }
@@ -220,6 +241,13 @@ export function SalesHistoryPage() {
         onViewReceipt={() => {
           if (detail) {
             void openReceipt(detail.saleId, detail.receiptNumber);
+          }
+        }}
+        onReprint={() => {
+          if (detail) {
+            void openReceipt(detail.saleId, detail.receiptNumber).then(() =>
+              reprint(detail.saleId),
+            );
           }
         }}
         onVoid={() => {
@@ -316,6 +344,7 @@ interface SaleDetailViewProps {
   readonly error: string | null;
   readonly onBack: () => void;
   readonly onViewReceipt: () => void;
+  readonly onReprint: () => void;
   readonly onVoid: () => void;
 }
 
@@ -325,6 +354,7 @@ export function SaleDetailView({
   error,
   onBack,
   onViewReceipt,
+  onReprint,
   onVoid,
 }: SaleDetailViewProps) {
   return (
@@ -341,7 +371,12 @@ export function SaleDetailView({
       )}
 
       {!loading && error === null && detail !== null && (
-        <SaleDetailBody detail={detail} onViewReceipt={onViewReceipt} onVoid={onVoid} />
+        <SaleDetailBody
+          detail={detail}
+          onViewReceipt={onViewReceipt}
+          onReprint={onReprint}
+          onVoid={onVoid}
+        />
       )}
     </section>
   );
@@ -350,10 +385,12 @@ export function SaleDetailView({
 function SaleDetailBody({
   detail,
   onViewReceipt,
+  onReprint,
   onVoid,
 }: {
   readonly detail: SaleDetail;
   readonly onViewReceipt: () => void;
+  readonly onReprint: () => void;
   readonly onVoid: () => void;
 }) {
   const view = toSaleDetailView(detail);
@@ -454,6 +491,9 @@ function SaleDetailBody({
       <div className="checkout-actions">
         <button type="button" onClick={onViewReceipt}>
           View Receipt
+        </button>
+        <button type="button" onClick={onReprint}>
+          Reprint Receipt
         </button>
         {!view.voided && (
           <button type="button" className="void-sale-button" onClick={onVoid}>

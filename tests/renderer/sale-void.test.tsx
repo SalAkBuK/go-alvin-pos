@@ -130,6 +130,7 @@ describe('<SaleDetailView /> — Void Sale action visibility (task §10)', () =>
         error={null}
         onBack={noop}
         onViewReceipt={noop}
+        onReprint={noop}
         onVoid={noop}
       />,
     );
@@ -149,6 +150,7 @@ describe('<SaleDetailView /> — Void Sale action visibility (task §10)', () =>
         error={null}
         onBack={noop}
         onViewReceipt={noop}
+        onReprint={noop}
         onVoid={noop}
       />,
     );

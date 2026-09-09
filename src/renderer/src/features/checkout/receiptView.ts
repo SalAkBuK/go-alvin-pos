@@ -1,5 +1,6 @@
 import type { ReceiptItem, ReceiptRepresentation } from '../../../../shared/receipt';
 import { formatCents } from '../../../../shared/money';
+import { formatReceiptDateTime, formatTaxRateBps } from '../../../../shared/receiptFormat';
 
 /**
  * Pure presentation helpers that turn a {@link ReceiptRepresentation} (committed
@@ -10,52 +11,13 @@ import { formatCents } from '../../../../shared/money';
  * React-free so the shaping is unit-testable without a DOM (repo convention: no
  * jsdom). Nothing here recalculates money — every cent value comes straight from
  * the representation; `formatCents` / percentage formatting are display-only.
- */
-
-/**
- * Render `completedAt` (immutable ISO-8601 UTC — `sales.completed_at`) as a
- * local date/time in `timeZone`. `DATA_MODEL.md §4` requires converting
- * `completed_at` for local display; it does not specify current-vs-snapshotted
- * zone for a receipt (that rule is defined only for reporting), so Phase 2E.1
- * passes the *currently configured* `business_timezone` here by convention.
- * Example: `"Sep 8, 2026, 12:00 PM"`.
  *
- * A malformed timezone or timestamp falls back to a UTC rendering with an
- * explicit `UTC` suffix rather than throwing — a receipt must still show *a*
- * date.
+ * `formatReceiptDateTime` / `formatTaxRateBps` now live in
+ * `shared/receiptFormat.ts` (so the Phase 2I print document reuses the exact
+ * same semantics); they are re-exported here for existing callers.
  */
-export function formatReceiptDateTime(completedAtIsoUtc: string, timeZone: string): string {
-  const instant = new Date(completedAtIsoUtc);
-  if (Number.isNaN(instant.getTime())) {
-    return completedAtIsoUtc;
-  }
-  try {
-    return new Intl.DateTimeFormat('en-US', {
-      timeZone,
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true,
-    }).format(instant);
-  } catch {
-    return `${new Intl.DateTimeFormat('en-US', {
-      timeZone: 'UTC',
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true,
-    }).format(instant)} UTC`;
-  }
-}
 
-/** `825` bps → `"8.25%"` — matches the checkout review's tax label convention. */
-export function formatTaxRateBps(taxRateBps: number): string {
-  return `${(taxRateBps / 100).toFixed(2)}%`;
-}
+export { formatReceiptDateTime, formatTaxRateBps };
 
 export interface ReceiptViewItem {
   readonly name: string;
@@ -74,6 +36,17 @@ export interface ReceiptViewTotalRow {
   readonly emphasis?: boolean;
 }
 
+/**
+ * A `VOIDED` sale's void treatment, or `null` for a normal `COMPLETED` sale. The
+ * on-screen preview and the physical print document both render this so a voided
+ * receipt never hides that it is voided (`REQ-HIST-001`; task `§8`).
+ */
+export interface ReceiptVoidView {
+  readonly bannerLabel: string;
+  readonly voidedAt: string;
+  readonly reason: string;
+}
+
 export interface ReceiptView {
   readonly title: string;
   readonly businessLines: readonly string[];
@@ -82,6 +55,8 @@ export interface ReceiptView {
   readonly items: readonly ReceiptViewItem[];
   readonly totalRows: readonly ReceiptViewTotalRow[];
   readonly paymentLabel: string;
+  /** Non-null only when the sale is `VOIDED`. */
+  readonly voided: ReceiptVoidView | null;
   /** `''` when the sale's disclaimer snapshot is a configured blank — never a substitute. */
   readonly disclaimer: string;
   /** `''` when the sale's footer snapshot is a configured blank — never a substitute. */
@@ -125,6 +100,17 @@ export function toReceiptView(representation: ReceiptRepresentation): ReceiptVie
       },
     ],
     customer: customer ? { name: customer.name, phone: customer.phone } : null,
+    voided:
+      representation.status === 'VOIDED'
+        ? {
+            bannerLabel: 'VOIDED',
+            voidedAt:
+              representation.voidedAt !== null
+                ? formatReceiptDateTime(representation.voidedAt, representation.businessTimezone)
+                : 'Unknown',
+            reason: representation.voidReason ?? '',
+          }
+        : null,
     items: representation.items.map(toViewItem),
     totalRows: [
       { label: 'Subtotal', value: formatCents(totals.subtotalCents) },

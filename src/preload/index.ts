@@ -55,6 +55,12 @@ const api: PosApi = {
   receipts: {
     getBySaleId: (saleId) => ipcRenderer.invoke(IPC.receiptsGetBySaleId, saleId),
   },
+  printing: {
+    listPrinters: () => ipcRenderer.invoke(IPC.printingListPrinters),
+    getConfig: () => ipcRenderer.invoke(IPC.printingGetConfig),
+    selectPrinter: (input) => ipcRenderer.invoke(IPC.printingSelectPrinter, input),
+    printReceipt: (saleId) => ipcRenderer.invoke(IPC.printingPrintReceipt, saleId),
+  },
   salesHistory: {
     list: (search) => ipcRenderer.invoke(IPC.salesHistoryList, search),
     getById: (saleId) => ipcRenderer.invoke(IPC.salesHistoryGetById, saleId),

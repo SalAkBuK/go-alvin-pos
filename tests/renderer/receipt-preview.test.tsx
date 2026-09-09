@@ -69,16 +69,37 @@ function representation(overrides: Partial<ReceiptRepresentation> = {}): Receipt
 }
 
 describe('SaleSuccess', () => {
-  it('offers an enabled View receipt action and a disabled Print receipt', () => {
+  it('offers enabled View receipt and Print receipt actions (Phase 2I)', () => {
     const html = renderToStaticMarkup(
-      <SaleSuccess result={saleResult} onViewReceipt={noop} onNewSale={noop} />,
+      <SaleSuccess result={saleResult} onViewReceipt={noop} onNewSale={noop} onPrint={noop} />,
     );
     expect(html).toContain('View receipt');
     expect(html).toContain('New Sale');
-    expect(html).toContain('Print receipt (not available yet)');
-    expect(html).toContain('disabled');
+    expect(html).toContain('>Print receipt<');
+    expect(html).not.toContain('not available yet');
     // Receipt/total still visible from the Phase 2E success summary.
     expect(html).toContain('GP-000123');
+  });
+
+  it('a print failure keeps the SALE COMPLETE heading and offers Retry print / Continue', () => {
+    const html = renderToStaticMarkup(
+      <SaleSuccess
+        result={saleResult}
+        onViewReceipt={noop}
+        onNewSale={noop}
+        onPrint={noop}
+        printState={{
+          phase: 'failed',
+          error: 'The selected receipt printer is not available.',
+          result: null,
+        }}
+      />,
+    );
+    expect(html).toContain('SALE COMPLETE');
+    expect(html).toContain('The sale is saved. The receipt could not be printed.');
+    expect(html).toContain('Retry print');
+    expect(html).toContain('Continue');
+    expect(html.toLowerCase()).not.toContain('sale failed');
   });
 });
 
@@ -132,10 +153,77 @@ describe('ReceiptPreview — loaded representation', () => {
     expect(html).toContain('Thank you for shopping with Go Phones!');
   });
 
-  it('keeps Print receipt unavailable and offers Back / New Sale', () => {
-    expect(html).toContain('Print receipt (not available yet)');
+  it('offers Back / New Sale and no print button when onPrint is not supplied', () => {
+    expect(html).not.toContain('not available yet');
     expect(html).toContain('Back');
     expect(html).toContain('New Sale');
+  });
+});
+
+describe('ReceiptPreview — Phase 2I print action', () => {
+  it('renders an enabled Print receipt button when onPrint is supplied', () => {
+    const html = renderToStaticMarkup(
+      <ReceiptPreview
+        representation={representation()}
+        loading={false}
+        error={null}
+        saleReceiptNumber="GP-000123"
+        onBack={noop}
+        onPrint={noop}
+      />,
+    );
+    expect(html).toContain('Print receipt');
+  });
+
+  it('uses the Reprint receipt label from Sales History', () => {
+    const html = renderToStaticMarkup(
+      <ReceiptPreview
+        representation={representation()}
+        loading={false}
+        error={null}
+        saleReceiptNumber="GP-000123"
+        onBack={noop}
+        onPrint={noop}
+        printActionLabel="Reprint receipt"
+      />,
+    );
+    expect(html).toContain('Reprint receipt');
+  });
+
+  it('a VOIDED sale shows a clear VOIDED banner with the reason', () => {
+    const html = renderToStaticMarkup(
+      <ReceiptPreview
+        representation={representation({
+          status: 'VOIDED',
+          voidedAt: '2026-09-10T14:00:00.000Z',
+          voidReason: 'Rang up in error',
+        })}
+        loading={false}
+        error={null}
+        saleReceiptNumber="GP-000123"
+        onBack={noop}
+        onPrint={noop}
+      />,
+    );
+    expect(html).toContain('VOIDED');
+    expect(html).toContain('Rang up in error');
+  });
+
+  it('a print failure never says the sale failed', () => {
+    const html = renderToStaticMarkup(
+      <ReceiptPreview
+        representation={representation()}
+        loading={false}
+        error={null}
+        saleReceiptNumber="GP-000123"
+        onBack={noop}
+        onPrint={noop}
+        printState={{ phase: 'failed', error: 'Printer offline.', result: null }}
+      />,
+    );
+    expect(html).toContain('The sale is saved. The receipt could not be printed.');
+    expect(html).toContain('Retry print');
+    expect(html.toLowerCase()).not.toContain('sale failed');
   });
 });
 

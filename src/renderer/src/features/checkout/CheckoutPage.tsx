@@ -37,6 +37,8 @@ import { CardPaymentPanel } from './CardPaymentPanel';
 import { isRetryableCommitFailure, requiresReReview } from './checkoutCompletion';
 import { ReceiptPreview } from './ReceiptPreview';
 import { SaleSuccess } from './SaleSuccess';
+import { failedState, IDLE_PRINT, printingState, runPrint } from '../printing/printReceipt';
+import type { PrintState } from '../printing/printReceipt';
 
 /**
  * New Sale / Checkout screen (task `§16`; `POS_WORKFLOWS.md §16`-`§28`, `§33`,
@@ -99,6 +101,10 @@ export function CheckoutPage() {
   const [receipt, setReceipt] = useState<ReceiptRepresentation | null>(null);
   const [receiptError, setReceiptError] = useState<string | null>(null);
   const [receiptLoading, setReceiptLoading] = useState(false);
+
+  // Physical print of the committed sale (Phase 2I) — deliberate action, keyed
+  // only by the committed Sale ID; a retry never re-sends the checkout.
+  const [printState, setPrintState] = useState<PrintState>(IDLE_PRINT);
 
   // Product search / add
   const [query, setQuery] = useState('');
@@ -271,6 +277,7 @@ export function CheckoutPage() {
     setReceipt(null);
     setReceiptError(null);
     setReceiptLoading(false);
+    setPrintState(IDLE_PRINT);
     setAttachedCustomer(null);
     setResults([]);
     setCustomerResults([]);
@@ -308,6 +315,19 @@ export function CheckoutPage() {
   const onBackFromReceipt = useCallback(() => {
     setShowReceipt(false);
   }, []);
+
+  const onPrintReceipt = useCallback(async () => {
+    if (!saleResult) {
+      return;
+    }
+    const api = pos();
+    if (!api) {
+      setPrintState(failedState('Printing is unavailable in this context.'));
+      return;
+    }
+    setPrintState(printingState());
+    setPrintState(await runPrint((saleId) => api.printing.printReceipt(saleId), saleResult.saleId));
+  }, [saleResult]);
 
   const onClearCart = useCallback(() => {
     if (
@@ -532,6 +552,8 @@ export function CheckoutPage() {
           saleReceiptNumber={saleResult.receiptNumber}
           onBack={onBackFromReceipt}
           onNewSale={resetForNewSale}
+          onPrint={() => void onPrintReceipt()}
+          printState={printState}
         />
       );
     }
@@ -540,6 +562,8 @@ export function CheckoutPage() {
         result={saleResult}
         onViewReceipt={() => void onViewReceipt()}
         onNewSale={resetForNewSale}
+        onPrint={() => void onPrintReceipt()}
+        printState={printState}
       />
     );
   }

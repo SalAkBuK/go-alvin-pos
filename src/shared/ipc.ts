@@ -24,6 +24,12 @@ import type {
   DeclineCardCheckoutRequest,
   DeclineCardCheckoutResult,
 } from './checkout';
+import type {
+  PrinterConfig,
+  PrinterDevice,
+  PrintReceiptResult,
+  SelectPrinterInput,
+} from './printing';
 import type { ReceiptRepresentation } from './receipt';
 import type { ReconciliationEntry, ResolveReconciliationInput } from './reconciliation';
 import type {
@@ -150,6 +156,19 @@ export const IPC = {
   // settings surface; `business-update` accepts only those four fields.
   settingsBusinessGet: 'settings:business-get',
   settingsBusinessUpdate: 'settings:business-update',
+
+  // ── Phase 2I: Physical Printing & Receipt Reprint ─────────────────────────
+  // Four narrow capabilities. `list-printers` / `get-config` are read-only;
+  // `select-printer` persists ONLY `settings.selected_printer` (a dedicated
+  // path — still no generic settings setter); `print-receipt` takes ONLY an
+  // immutable Sale ID, rebuilds the receipt from stored snapshots via the
+  // existing ReceiptService, and submits it to the selected Windows printer.
+  // Nothing on this surface creates or mutates any sale/payment/inventory/
+  // export/receipt-number/void state, and nothing touches the network.
+  printingListPrinters: 'printing:list-printers',
+  printingGetConfig: 'printing:get-config',
+  printingSelectPrinter: 'printing:select-printer',
+  printingPrintReceipt: 'printing:print-receipt',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -295,6 +314,31 @@ export interface PosApi {
      * freshly re-read authoritative {@link SaleDetail}.
      */
     voidSale(input: VoidSaleInput): Promise<IpcResult<SaleDetail>>;
+  };
+  readonly printing: {
+    /**
+     * Enumerate Windows printers as narrow {@link PrinterDevice} metadata. A
+     * failure to enumerate is non-fatal — it never blocks a sale (`task §20`).
+     */
+    listPrinters(): Promise<IpcResult<readonly PrinterDevice[]>>;
+    /** The locally-persisted printer selection plus its current availability. Read-only. */
+    getConfig(): Promise<IpcResult<PrinterConfig>>;
+    /**
+     * Persist `settings.selected_printer` (dedicated path — not a generic
+     * setter). Changes only *future* print attempts; never touches any existing
+     * sale or historical receipt (`POS_WORKFLOWS.md §70`, `task §12`).
+     */
+    selectPrinter(input: SelectPrinterInput): Promise<IpcResult<PrinterConfig>>;
+    /**
+     * Print (or reprint) one committed sale's receipt on the selected printer.
+     * The receipt is rebuilt in the trusted process from stored transaction-time
+     * snapshots via the existing ReceiptService — the renderer passes only the
+     * Sale ID. Read-only w.r.t. all business data; the same path serves the
+     * Sale Complete "Print Receipt" and the Sales History "Reprint Receipt".
+     * Typed failures: `PRINTER_NOT_CONFIGURED`, `PRINTER_UNAVAILABLE`,
+     * `PRINT_FAILED` — a print failure is never a sale failure (`REQ-REC-005`).
+     */
+    printReceipt(saleId: string): Promise<IpcResult<PrintReceiptResult>>;
   };
   readonly settings: {
     /** The sales-tax rate only — no generic settings access. */

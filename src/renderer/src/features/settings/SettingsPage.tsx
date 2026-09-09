@@ -3,6 +3,7 @@ import type { IpcResult } from '../../../../shared/products';
 import type { TaxRateConfig } from '../../../../shared/settings';
 import { FormField } from '../../components/FormField';
 import { BusinessConfigSection } from './BusinessConfigSection';
+import { PrinterSettingsSection } from './PrinterSettingsSection';
 import { ReconciliationQueueSection } from './ReconciliationQueueSection';
 import { formatBpsAsPercent, parsePercentToBps, validateTaxRatePercent } from './taxRate';
 
@@ -191,6 +192,7 @@ export function SettingsPage() {
       </section>
 
       <BusinessConfigSection />
+      <PrinterSettingsSection />
       <ReconciliationQueueSection />
     </>
   );

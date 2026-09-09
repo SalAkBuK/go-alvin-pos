@@ -143,4 +143,19 @@ export const appErrors = {
       'RECEIPT_DATA_INCONSISTENT',
       'The receipt for this sale could not be assembled from the stored transaction data.',
     ),
+  printerNotConfigured: (): AppError =>
+    new AppError(
+      'PRINTER_NOT_CONFIGURED',
+      'No receipt printer is selected. Choose a printer in Settings, then try printing again.',
+    ),
+  printerUnavailable: (): AppError =>
+    new AppError(
+      'PRINTER_UNAVAILABLE',
+      'The selected receipt printer is not available. Check that it is connected and turned on, or choose another printer in Settings. The sale is saved and can be reprinted.',
+    ),
+  printFailed: (): AppError =>
+    new AppError(
+      'PRINT_FAILED',
+      'The receipt could not be printed. The sale is saved — you can retry printing or reprint it later from Sales History.',
+    ),
 } as const;

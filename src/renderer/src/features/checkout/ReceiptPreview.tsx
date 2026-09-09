@@ -1,26 +1,24 @@
 import type { ReceiptRepresentation } from '../../../../shared/receipt';
 import { BrandLogo } from '../../components/BrandLogo';
+import { describePrintSuccess, IDLE_PRINT, PRINT_FAILURE_HEADLINE } from '../printing/printReceipt';
+import type { PrintState } from '../printing/printReceipt';
 import { toReceiptView } from './receiptView';
 
 /**
- * Receipt preview (`REQ-REC-001`-`REQ-REC-003`; `POS_WORKFLOWS.md §37`-`§38`;
- * `ARCHITECTURE.md §18`; task `§14`-`§15`).
+ * Receipt preview (`REQ-REC-001`-`REQ-REC-005`; `POS_WORKFLOWS.md §37`-`§41`;
+ * `ARCHITECTURE.md §18`-`§19`; task `§8`, `§13`-`§14`).
  *
  * Renders the committed transaction — never the temporary checkout cart — on a
- * constrained receipt-paper surface so 80 mm / 58 mm thermal rendering can be
- * added later without a redesign (`REQ-PRINT-003`). It consumes the trusted
+ * constrained receipt-paper surface. It consumes the trusted
  * {@link ReceiptRepresentation} only; it holds no receipt truth of its own.
  *
- * `Back` returns to the success screen (or, from Sales History, to the sale
- * detail) without recreating an editable cart — once committed, this is
- * historical data. `Print receipt` stays unavailable. A failed load still states
- * the sale succeeded (`REQ-REC-005`, `ARCHITECTURE.md §19`): a receipt-view
- * failure never means the sale failed.
+ * Phase 2I enables physical printing: when `onPrint` is supplied, `Print
+ * receipt` (or `Reprint receipt` from Sales History) drives the trusted
+ * `window.pos.printing.printReceipt(saleId)` path. A print failure always keeps
+ * saying the sale succeeded (`REQ-REC-005`) and offers Retry. A `VOIDED` sale
+ * shows a clear VOIDED banner both here and on the printed copy (`task §8`).
  *
- * Reused verbatim by Phase 2G Sales History → Sale Detail → View Receipt: the
- * same representation, the same component, the same trusted
- * `receipts:get-by-sale-id` path (`task §19`). When there is no "New Sale"
- * context (history), `onNewSale` is omitted and that button is not rendered.
+ * Reused verbatim by Sales History → Sale Detail → View / Reprint Receipt.
  */
 
 export interface ReceiptPreviewProps {
@@ -32,23 +30,70 @@ export interface ReceiptPreviewProps {
   readonly onBack: () => void;
   /** Omitted when there is no new-sale flow to return to (e.g. Sales History). */
   readonly onNewSale?: (() => void) | undefined;
+  /** Enables the print action. Omitted → the button is not shown. */
+  readonly onPrint?: (() => void) | undefined;
+  /** Current print attempt state; defaults to idle. */
+  readonly printState?: PrintState | undefined;
+  /** `Print receipt` (default) or `Reprint receipt` (Sales History). */
+  readonly printActionLabel?: string | undefined;
+}
+
+function PrintControls({
+  onPrint,
+  printState,
+  printActionLabel,
+}: {
+  onPrint?: (() => void) | undefined;
+  printState: PrintState;
+  printActionLabel: string;
+}) {
+  if (!onPrint) {
+    return null;
+  }
+  const busy = printState.phase === 'printing';
+  return (
+    <>
+      <button type="button" onClick={onPrint} disabled={busy}>
+        {busy ? 'Printing…' : printState.phase === 'failed' ? `Retry print` : printActionLabel}
+      </button>
+      {printState.phase === 'printed' && printState.result && (
+        <p className="products-notice" role="status">
+          {describePrintSuccess(printState.result)}
+        </p>
+      )}
+      {printState.phase === 'failed' && (
+        <p className="product-form-error" role="alert">
+          {PRINT_FAILURE_HEADLINE}
+          {printState.error ? ` ${printState.error}` : ''}
+        </p>
+      )}
+    </>
+  );
 }
 
 function Actions({
   onBack,
   onNewSale,
+  onPrint,
+  printState,
+  printActionLabel,
 }: {
   onBack: () => void;
   onNewSale?: (() => void) | undefined;
+  onPrint?: (() => void) | undefined;
+  printState: PrintState;
+  printActionLabel: string;
 }) {
   return (
     <div className="checkout-actions">
       <button type="button" onClick={onBack}>
         Back
       </button>
-      <button type="button" disabled title="Receipt printing arrives in a later version">
-        Print receipt (not available yet)
-      </button>
+      <PrintControls
+        onPrint={onPrint}
+        printState={printState}
+        printActionLabel={printActionLabel}
+      />
       {onNewSale && (
         <button type="button" onClick={onNewSale}>
           New Sale
@@ -65,12 +110,17 @@ export function ReceiptPreview({
   saleReceiptNumber,
   onBack,
   onNewSale,
+  onPrint,
+  printState = IDLE_PRINT,
+  printActionLabel = 'Print receipt',
 }: ReceiptPreviewProps) {
+  const actionProps = { onBack, onNewSale, onPrint, printState, printActionLabel };
+
   if (loading) {
     return (
       <section className="checkout-page">
         <p role="status">Loading receipt…</p>
-        <Actions onBack={onBack} onNewSale={onNewSale} />
+        <Actions {...actionProps} onPrint={undefined} />
       </section>
     );
   }
@@ -85,7 +135,7 @@ export function ReceiptPreview({
           <p>The receipt preview could not be loaded.</p>
           {error !== null && <p className="field-hint">{error}</p>}
         </section>
-        <Actions onBack={onBack} onNewSale={onNewSale} />
+        <Actions {...actionProps} onPrint={undefined} />
       </section>
     );
   }
@@ -104,6 +154,14 @@ export function ReceiptPreview({
               <p key={line}>{line}</p>
             ))}
         </header>
+
+        {view.voided && (
+          <section className="receipt-void-banner" role="alert">
+            <p className="receipt-void-label">{view.voided.bannerLabel}</p>
+            <p>This sale was voided on {view.voided.voidedAt}.</p>
+            <p>Reason: {view.voided.reason}</p>
+          </section>
+        )}
 
         <dl className="receipt-meta">
           {view.meta.map((row) => (
@@ -157,7 +215,7 @@ export function ReceiptPreview({
         {view.footer.trim() !== '' && <p className="receipt-footer">{view.footer}</p>}
       </article>
 
-      <Actions onBack={onBack} onNewSale={onNewSale} />
+      <Actions {...actionProps} />
     </section>
   );
 }

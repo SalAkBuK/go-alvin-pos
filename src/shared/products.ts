@@ -199,6 +199,27 @@ export const APP_ERROR_CODES = [
    * (`REQ-VOID-003`, `POS_WORKFLOWS.md §88` step 9, `TEST-VOID-010`).
    */
   'VOID_COMMIT_FAILED',
+  // ── Phase 2I: Physical Printing & Receipt Reprint ─────────────────────────
+  /**
+   * No receipt printer is selected in Settings, so a print/reprint cannot
+   * proceed. The completed sale is untouched — the user chooses a printer and
+   * retries (`REQ-PRINT-005`, `POS_WORKFLOWS.md §70`, `task §12`-`§15`).
+   */
+  'PRINTER_NOT_CONFIGURED',
+  /**
+   * A printer is selected but is not present in the current Windows enumeration
+   * (unplugged, removed, renamed). Print-specific and isolated — the sale, its
+   * payment, inventory, and export job are all unchanged (`REQ-REC-005`,
+   * `TEST-PRINT-002`, `TEST-PRINT-004`, `ACCEPT-007`).
+   */
+  'PRINTER_UNAVAILABLE',
+  /**
+   * The Electron/Windows print call rejected or reported failure after the
+   * document was built. Print-specific and isolated exactly as
+   * `PRINTER_UNAVAILABLE`. The raw driver/Electron reason is logged internally,
+   * never surfaced to the renderer (`task §15`-`§16`).
+   */
+  'PRINT_FAILED',
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
 
