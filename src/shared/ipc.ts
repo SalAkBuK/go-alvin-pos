@@ -26,7 +26,12 @@ import type {
 } from './checkout';
 import type { ReceiptRepresentation } from './receipt';
 import type { ReconciliationEntry, ResolveReconciliationInput } from './reconciliation';
-import type { SaleDetail, SalesHistoryEntry, SalesHistorySearch } from './salesHistory';
+import type {
+  SaleDetail,
+  SalesHistoryEntry,
+  SalesHistorySearch,
+  VoidSaleInput,
+} from './salesHistory';
 import type {
   BusinessConfig,
   TaxRateConfig,
@@ -125,6 +130,13 @@ export const IPC = {
   // `receipts:get-by-sale-id`.
   salesHistoryList: 'sales-history:list',
   salesHistoryGetById: 'sales-history:get-by-id',
+  // ── Phase 2H: Sale Void / Correction ──────────────────────────────────────
+  // The one-time `COMPLETED → VOIDED` transition for one sale, launched from the
+  // Sales History detail. One authoritative SQLite transaction (status + void
+  // fields + sync_version, reversing inventory movements, export-job
+  // advancement, `SALE_VOIDED` audit) or full rollback. Payload is only
+  // `{ saleId, reason }`; no SQL, no timestamp, no Clover/network call.
+  salesHistoryVoid: 'sales-history:void',
 
   // ── Phase 2D.1: Minimal tax configuration ──────────────────────────────────
   // The sales-tax rate only — NOT a generic settings surface. `tax-update` is
@@ -272,6 +284,17 @@ export interface PosApi {
      * `payments` / the export job). An unknown / malformed id is `SALE_NOT_FOUND`.
      */
     getById(saleId: string): Promise<IpcResult<SaleDetail>>;
+    /**
+     * Void one `COMPLETED` sale with a required staff reason (`REQ-VOID-001`-
+     * `REQ-VOID-008`; `POS_WORKFLOWS.md §88`-`§91`). One authoritative local
+     * transaction — status → `VOIDED` + void metadata + `sync_version + 1`,
+     * reversing inventory movements against current stock, the existing export
+     * job advanced to `PENDING` for the new revision, and a `SALE_VOIDED` audit
+     * event — or a full rollback. Rejects an already-voided sale
+     * (`SALE_ALREADY_VOIDED`). Makes no Clover / network call. Resolves with the
+     * freshly re-read authoritative {@link SaleDetail}.
+     */
+    voidSale(input: VoidSaleInput): Promise<IpcResult<SaleDetail>>;
   };
   readonly settings: {
     /** The sales-tax rate only — no generic settings access. */

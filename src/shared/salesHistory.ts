@@ -10,9 +10,13 @@
  * `sale_items`, `payments`, `google_sheet_export_jobs`) — the Sales History list,
  * receipt-number / customer / business-date search, and one sale's historical
  * detail (`REQ-HIST-001`-`REQ-HIST-004`; `POS_WORKFLOWS.md §50`-`§52`;
- * `DATA_MODEL.md §4`, `§11`-`§16`, `§44-49`). Void mutation, returns, Retry
- * Export, physical printing, and reporting are NOT here. "View Receipt" reuses
- * the existing `receipts:get-by-sale-id` path unchanged.
+ * `DATA_MODEL.md §4`, `§11`-`§16`, `§44-49`) — plus the Phase 2H one-time
+ * completed-sale **void** launched from that detail (`REQ-VOID-001`-`REQ-VOID-008`;
+ * `POS_WORKFLOWS.md §88`-`§91`; `ARCHITECTURE.md §42.1`; `DATA_MODEL.md §18`,
+ * `§63`). Returns, refunds, Retry Export, physical printing, and reporting are
+ * NOT here. "View Receipt" reuses the existing `receipts:get-by-sale-id` path
+ * unchanged; the void reuses the existing audit / inventory-movement / export-job
+ * infrastructure.
  *
  * The typed result envelope (`IpcResult` / `IpcError`) and error codes are
  * reused from `./products` — the shared cross-slice contract.
@@ -115,4 +119,39 @@ export interface SaleDetail {
   readonly totalCents: number;
   readonly paymentMethod: PaymentMethod;
   readonly exportStatus: SaleExportStatus | null;
+}
+
+// ── Phase 2H: Sale Void / Correction ────────────────────────────────────────
+
+/**
+ * Trimmed bounds for the required staff-entered void reason. The lower bound is
+ * "non-blank after trim" (the `sales` CHECK constraint also enforces
+ * `length(trim(void_reason)) > 0`, `DATA_MODEL.md §11`, `TEST-DB-015`); the upper
+ * bound mirrors the existing inventory-adjustment `REASON_MAX_LENGTH` (both are a
+ * required staff reason attached to an inventory-affecting correction) rather
+ * than inventing a new ceiling or a reason taxonomy (`task §9`).
+ */
+export const VOID_REASON_MAX_LENGTH = 500;
+
+/**
+ * The exact Clover warning a Card void must display and the cashier must
+ * explicitly acknowledge before the local void is submitted (`REQ-VOID-008`;
+ * `POS_WORKFLOWS.md §90`; `PRODUCT_SCOPE.md §33`). Verbatim canonical text — no
+ * Clover API call, refund, charge verification, or negative Card payment is ever
+ * made.
+ */
+export const CARD_VOID_CLOVER_WARNING =
+  'Voiding this POS sale does not refund or reverse the Clover payment. ' +
+  'Complete any required refund or reversal separately in Clover.';
+
+/**
+ * `sales-history:void` payload. The renderer sends ONLY the immutable Sale ID and
+ * the staff-entered reason; the trusted layer determines the void timestamp,
+ * re-verifies the sale is `COMPLETED`, and performs the whole authoritative void
+ * transaction. It never sends a timestamp, a sync version, inventory numbers, or
+ * any Clover data.
+ */
+export interface VoidSaleInput {
+  readonly saleId: string;
+  readonly reason: string;
 }

@@ -128,6 +128,16 @@ export const appErrors = {
     new AppError('RECEIPT_NOT_FOUND', 'That sale could not be found.'),
   saleNotFound: (): AppError =>
     new AppError('SALE_NOT_FOUND', 'That sale could not be found in Sales History.'),
+  saleAlreadyVoided: (): AppError =>
+    new AppError(
+      'SALE_ALREADY_VOIDED',
+      'This sale has already been voided. Its original void reason and timestamp are unchanged.',
+    ),
+  voidCommitFailed: (): AppError =>
+    new AppError(
+      'VOID_COMMIT_FAILED',
+      'The sale could not be voided because the local database could not be updated safely. Nothing was changed — the sale is still completed.',
+    ),
   receiptDataInconsistent: (): AppError =>
     new AppError(
       'RECEIPT_DATA_INCONSISTENT',

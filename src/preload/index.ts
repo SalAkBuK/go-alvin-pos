@@ -58,6 +58,7 @@ const api: PosApi = {
   salesHistory: {
     list: (search) => ipcRenderer.invoke(IPC.salesHistoryList, search),
     getById: (saleId) => ipcRenderer.invoke(IPC.salesHistoryGetById, saleId),
+    voidSale: (input) => ipcRenderer.invoke(IPC.salesHistoryVoid, input),
   },
   settings: {
     tax: {

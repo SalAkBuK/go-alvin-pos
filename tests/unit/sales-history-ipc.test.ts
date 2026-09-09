@@ -36,14 +36,19 @@ const untrustedEvent = () => ({ senderFrame: { url: 'https://evil.example/', par
 
 beforeEach(() => {
   handlers.clear();
-  registerSalesHistoryIpcHandlers({ logger, getDatabase: () => null, rendererEntry: entry });
+  registerSalesHistoryIpcHandlers({
+    logger,
+    getDatabase: () => null,
+    appVersion: 'test',
+    rendererEntry: entry,
+  });
 });
 afterEach(() => vi.clearAllMocks());
 
 describe('sales-history IPC registration', () => {
-  it('registers exactly sales-history:list and sales-history:get-by-id', () => {
+  it('registers exactly sales-history:list, :get-by-id and :void', () => {
     expect([...handlers.keys()].sort()).toEqual(
-      [IPC.salesHistoryList, IPC.salesHistoryGetById].sort(),
+      [IPC.salesHistoryList, IPC.salesHistoryGetById, IPC.salesHistoryVoid].sort(),
     );
   });
 
@@ -70,5 +75,15 @@ describe('sales-history IPC registration', () => {
     };
     expect(result.ok).toBe(false);
     expect(result.error.code).toBe('DATABASE_UNAVAILABLE');
+  });
+
+  it('void with no database returns a typed DATABASE_UNAVAILABLE result (no throw, no leak)', async () => {
+    const result = (await handlers.get(IPC.salesHistoryVoid)!(trustedEvent(), {
+      saleId: 's1',
+      reason: 'test',
+    })) as { ok: false; error: { code: string; message: string } };
+    expect(result.ok).toBe(false);
+    expect(result.error.code).toBe('DATABASE_UNAVAILABLE');
+    expect(result.error.message).not.toMatch(/sqlite|C:\\|UPDATE|BEGIN/i);
   });
 });

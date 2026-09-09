@@ -33,6 +33,7 @@ describe('IPC contract', () => {
         'receiptsGetBySaleId',
         'salesHistoryList',
         'salesHistoryGetById',
+        'salesHistoryVoid',
         'settingsTaxGet',
         'settingsTaxUpdate',
         'settingsBusinessGet',
@@ -92,7 +93,7 @@ describe('IPC contract', () => {
       checkout: ['review', 'completeCash', 'beginCard', 'completeCard', 'declineCard'],
       reconciliation: ['list', 'resolve'],
       receipts: ['getBySaleId'],
-      salesHistory: ['list', 'getById'],
+      salesHistory: ['list', 'getById', 'voidSale'],
       // `settings` exposes only the tax and business sub-objects — no generic setter.
       settings: ['tax.get', 'tax.update', 'business.get', 'business.update'],
     };

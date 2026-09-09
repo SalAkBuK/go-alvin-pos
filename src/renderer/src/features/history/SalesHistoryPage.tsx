@@ -9,22 +9,26 @@ import {
   toSalesHistoryRow,
   validateHistorySearchInput,
 } from './salesHistory';
+import { VoidSalePanel } from './VoidSalePanel';
 
 /**
- * Sales History area (`REQ-HIST-001`-`REQ-HIST-004`; `POS_WORKFLOWS.md §50`-`§52`;
- * `task §4`, `§32`-`§33`, `§36`).
+ * Sales History area (Phase 2G `REQ-HIST-001`-`REQ-HIST-004`, `POS_WORKFLOWS.md
+ * §50`-`§52`; Phase 2H void `REQ-VOID-001`-`REQ-VOID-008`, `POS_WORKFLOWS.md
+ * §88`-`§91`).
  *
- * A read-only screen: the list with receipt / customer / business-date search, a
- * historical sale detail, and "View Receipt" which reuses the existing
- * `window.pos.receipts.getBySaleId` path and the shared {@link ReceiptPreview}.
- * All data comes from local SQLite through the narrow `window.pos.salesHistory.*`
- * surface — the renderer never sees SQL and this screen never mutates anything.
- * There is no void, no reprint, and no Retry Export here.
+ * The list with receipt / customer / business-date search, a historical sale
+ * detail, "View Receipt" (reuses the existing `window.pos.receipts.getBySaleId`
+ * path + shared {@link ReceiptPreview}), and — for a `COMPLETED` sale — a
+ * one-time "Void Sale" that goes through the narrow `window.pos.salesHistory.void`
+ * capability. After a void the detail is reloaded from authoritative persisted
+ * state, never fabricated. All access is through `window.pos.salesHistory.*`; the
+ * renderer never sees SQL.
  */
 
 type View =
   | { readonly kind: 'list' }
   | { readonly kind: 'detail'; readonly saleId: string }
+  | { readonly kind: 'void'; readonly saleId: string }
   | { readonly kind: 'receipt'; readonly saleId: string; readonly receiptNumber: string };
 
 function pos() {
@@ -57,6 +61,10 @@ export function SalesHistoryPage() {
   const [detail, setDetail] = useState<SaleDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+
+  // Void state
+  const [voidSubmitting, setVoidSubmitting] = useState(false);
+  const [voidError, setVoidError] = useState<string | null>(null);
 
   // Receipt state (reuses the Phase 2E.1 receipt path)
   const [receipt, setReceipt] = useState<ReceiptRepresentation | null>(null);
@@ -100,6 +108,7 @@ export function SalesHistoryPage() {
     setView({ kind: 'detail', saleId });
     setDetail(null);
     setDetailError(null);
+    setVoidError(null);
     const api = pos();
     if (!api) {
       setDetailError('Sale details are unavailable in this context.');
@@ -134,6 +143,35 @@ export function SalesHistoryPage() {
     }
   }, []);
 
+  const startVoid = useCallback((saleId: string) => {
+    setVoidError(null);
+    setView({ kind: 'void', saleId });
+  }, []);
+
+  const confirmVoid = useCallback(
+    async (saleId: string, reason: string) => {
+      const api = pos();
+      if (!api) {
+        setVoidError('Voiding is unavailable in this context.');
+        return;
+      }
+      setVoidSubmitting(true);
+      setVoidError(null);
+      try {
+        // Resolves with the freshly re-read authoritative detail.
+        const refreshed = await unwrap(api.salesHistory.voidSale({ saleId, reason }));
+        setDetail(refreshed);
+        setView({ kind: 'detail', saleId });
+        void load(); // reflect the new VOIDED status in the list too
+      } catch (error) {
+        setVoidError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setVoidSubmitting(false);
+      }
+    },
+    [load],
+  );
+
   if (view.kind === 'receipt') {
     return (
       <ReceiptPreview
@@ -143,6 +181,32 @@ export function SalesHistoryPage() {
         saleReceiptNumber={view.receiptNumber}
         onBack={() => setView({ kind: 'detail', saleId: view.saleId })}
       />
+    );
+  }
+
+  if (view.kind === 'void') {
+    if (detail === null || detail.saleId !== view.saleId) {
+      return (
+        <section className="sale-detail">
+          <button type="button" onClick={() => setView({ kind: 'detail', saleId: view.saleId })}>
+            ← Back to sale
+          </button>
+          <p role="alert" className="product-form-error">
+            The sale to void is no longer loaded.
+          </p>
+        </section>
+      );
+    }
+    return (
+      <section className="sale-detail">
+        <VoidSalePanel
+          detail={detail}
+          submitting={voidSubmitting}
+          error={voidError}
+          onCancel={() => setView({ kind: 'detail', saleId: view.saleId })}
+          onConfirm={(reason) => void confirmVoid(view.saleId, reason)}
+        />
+      </section>
     );
   }
 
@@ -156,6 +220,11 @@ export function SalesHistoryPage() {
         onViewReceipt={() => {
           if (detail) {
             void openReceipt(detail.saleId, detail.receiptNumber);
+          }
+        }}
+        onVoid={() => {
+          if (detail) {
+            startVoid(detail.saleId);
           }
         }}
       />
@@ -247,9 +316,17 @@ interface SaleDetailViewProps {
   readonly error: string | null;
   readonly onBack: () => void;
   readonly onViewReceipt: () => void;
+  readonly onVoid: () => void;
 }
 
-function SaleDetailView({ detail, loading, error, onBack, onViewReceipt }: SaleDetailViewProps) {
+export function SaleDetailView({
+  detail,
+  loading,
+  error,
+  onBack,
+  onViewReceipt,
+  onVoid,
+}: SaleDetailViewProps) {
   return (
     <section className="sale-detail">
       <button type="button" onClick={onBack}>
@@ -264,7 +341,7 @@ function SaleDetailView({ detail, loading, error, onBack, onViewReceipt }: SaleD
       )}
 
       {!loading && error === null && detail !== null && (
-        <SaleDetailBody detail={detail} onViewReceipt={onViewReceipt} />
+        <SaleDetailBody detail={detail} onViewReceipt={onViewReceipt} onVoid={onVoid} />
       )}
     </section>
   );
@@ -273,9 +350,11 @@ function SaleDetailView({ detail, loading, error, onBack, onViewReceipt }: SaleD
 function SaleDetailBody({
   detail,
   onViewReceipt,
+  onVoid,
 }: {
   readonly detail: SaleDetail;
   readonly onViewReceipt: () => void;
+  readonly onVoid: () => void;
 }) {
   const view = toSaleDetailView(detail);
   return (
@@ -376,6 +455,11 @@ function SaleDetailBody({
         <button type="button" onClick={onViewReceipt}>
           View Receipt
         </button>
+        {!view.voided && (
+          <button type="button" className="void-sale-button" onClick={onVoid}>
+            Void Sale
+          </button>
+        )}
       </div>
     </>
   );

@@ -185,6 +185,20 @@ export const APP_ERROR_CODES = [
   // ── Phase 2G: Sales History + Transaction Detail ───────────────────────────
   /** No committed sale exists for the given Sale ID, so no history detail can be shown. */
   'SALE_NOT_FOUND',
+  // ── Phase 2H: Sale Void / Correction ──────────────────────────────────────
+  /**
+   * The sale is already `VOIDED` — the one-time `COMPLETED → VOIDED` transition
+   * has already happened. Rejected in the trusted transaction; no state changes
+   * (`REQ-VOID-004`, `POS_WORKFLOWS.md §91`, `TEST-VOID-006`).
+   */
+  'SALE_ALREADY_VOIDED',
+  /**
+   * The authoritative void transaction could not be committed to SQLite. It
+   * rolled back completely — the sale is still `COMPLETED`, inventory and the
+   * export job are unchanged, and no `VOID_REVERSAL` / `SALE_VOIDED` row exists
+   * (`REQ-VOID-003`, `POS_WORKFLOWS.md §88` step 9, `TEST-VOID-010`).
+   */
+  'VOID_COMMIT_FAILED',
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
 

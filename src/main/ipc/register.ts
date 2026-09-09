@@ -83,6 +83,7 @@ export function registerIpcHandlers(context: IpcContext): void {
   registerSalesHistoryIpcHandlers({
     logger: context.logger,
     getDatabase: context.getDatabase,
+    appVersion: context.appVersion,
   });
 
   registerSettingsIpcHandlers({
