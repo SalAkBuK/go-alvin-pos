@@ -161,6 +161,33 @@ export function SalesHistoryPage() {
     setPrintState(await runPrint((id) => api.printing.printReceipt(id), saleId));
   }, []);
 
+  // Manual "Retry Export" for a FAILED Google Sheets export job (`REQ-GSHEET-012`).
+  const [retryExportBusy, setRetryExportBusy] = useState(false);
+  const [retryExportNotice, setRetryExportNotice] = useState<string | null>(null);
+
+  const retryExport = useCallback(
+    async (saleId: string) => {
+      const api = pos();
+      if (!api) {
+        setRetryExportNotice('Retry Export is unavailable in this context.');
+        return;
+      }
+      setRetryExportBusy(true);
+      setRetryExportNotice(null);
+      try {
+        await unwrap(api.google.retryExport({ saleId }));
+        setDetail(await unwrap(api.salesHistory.getById(saleId)));
+        setRetryExportNotice('Export re-queued. It will retry in the background.');
+        void load();
+      } catch (error) {
+        setRetryExportNotice(error instanceof Error ? error.message : String(error));
+      } finally {
+        setRetryExportBusy(false);
+      }
+    },
+    [load],
+  );
+
   const startVoid = useCallback((saleId: string) => {
     setVoidError(null);
     setView({ kind: 'void', saleId });
@@ -250,6 +277,13 @@ export function SalesHistoryPage() {
             );
           }
         }}
+        onRetryExport={() => {
+          if (detail) {
+            void retryExport(detail.saleId);
+          }
+        }}
+        retryExportBusy={retryExportBusy}
+        retryExportNotice={retryExportNotice}
         onVoid={() => {
           if (detail) {
             startVoid(detail.saleId);
@@ -345,6 +379,9 @@ interface SaleDetailViewProps {
   readonly onBack: () => void;
   readonly onViewReceipt: () => void;
   readonly onReprint: () => void;
+  readonly onRetryExport: () => void;
+  readonly retryExportBusy: boolean;
+  readonly retryExportNotice: string | null;
   readonly onVoid: () => void;
 }
 
@@ -355,6 +392,9 @@ export function SaleDetailView({
   onBack,
   onViewReceipt,
   onReprint,
+  onRetryExport,
+  retryExportBusy,
+  retryExportNotice,
   onVoid,
 }: SaleDetailViewProps) {
   return (
@@ -375,6 +415,9 @@ export function SaleDetailView({
           detail={detail}
           onViewReceipt={onViewReceipt}
           onReprint={onReprint}
+          onRetryExport={onRetryExport}
+          retryExportBusy={retryExportBusy}
+          retryExportNotice={retryExportNotice}
           onVoid={onVoid}
         />
       )}
@@ -386,11 +429,17 @@ function SaleDetailBody({
   detail,
   onViewReceipt,
   onReprint,
+  onRetryExport,
+  retryExportBusy,
+  retryExportNotice,
   onVoid,
 }: {
   readonly detail: SaleDetail;
   readonly onViewReceipt: () => void;
   readonly onReprint: () => void;
+  readonly onRetryExport: () => void;
+  readonly retryExportBusy: boolean;
+  readonly retryExportNotice: string | null;
   readonly onVoid: () => void;
 }) {
   const view = toSaleDetailView(detail);
@@ -495,12 +544,22 @@ function SaleDetailBody({
         <button type="button" onClick={onReprint}>
           Reprint Receipt
         </button>
+        {detail.exportStatus === 'FAILED' && (
+          <button type="button" onClick={onRetryExport} disabled={retryExportBusy}>
+            {retryExportBusy ? 'Re-queuing…' : 'Retry Export'}
+          </button>
+        )}
         {!view.voided && (
           <button type="button" className="void-sale-button" onClick={onVoid}>
             Void Sale
           </button>
         )}
       </div>
+      {retryExportNotice && (
+        <p className="products-notice" role="status">
+          {retryExportNotice}
+        </p>
+      )}
     </>
   );
 }

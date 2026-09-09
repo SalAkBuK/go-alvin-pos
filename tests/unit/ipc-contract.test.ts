@@ -42,6 +42,11 @@ describe('IPC contract', () => {
         'printingGetConfig',
         'printingSelectPrinter',
         'printingPrintReceipt',
+        'googleGetConfig',
+        'googleUpdateConfig',
+        'googleConnect',
+        'googleDisconnect',
+        'googleRetryExport',
       ].sort(),
     );
   });
@@ -60,6 +65,7 @@ describe('IPC contract', () => {
       'sales-history',
       'settings',
       'printing',
+      'google',
     ];
     for (const name of Object.values(IPC)) {
       const namespace = name.split(':')[0];
@@ -103,12 +109,15 @@ describe('IPC contract', () => {
       settings: ['tax.get', 'tax.update', 'business.get', 'business.update'],
       // `printing` exposes only narrow capabilities — no generic settings/query surface.
       printing: ['listPrinters', 'getConfig', 'selectPrinter', 'printReceipt'],
+      // `google` exposes only narrow capabilities — no generic settings/query/HTTP surface.
+      google: ['getConfig', 'updateConfig', 'connect', 'disconnect', 'retryExport'],
     };
     expect(Object.keys(surface).sort()).toEqual([
       'app',
       'checkout',
       'customers',
       'diagnostics',
+      'google',
       'inventory',
       'printing',
       'products',

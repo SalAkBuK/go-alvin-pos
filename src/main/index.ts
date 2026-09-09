@@ -1,4 +1,5 @@
-import { app, BrowserWindow } from 'electron';
+import { join } from 'node:path';
+import { app, BrowserWindow, dialog } from 'electron';
 import { pinUserDataPath, resolveAppPaths } from './app/paths';
 import { Logger } from './app/logger';
 import { createMainWindow } from './app/window';
@@ -8,6 +9,13 @@ import { installWebContentsHardening } from './app/security';
 import { registerIpcHandlers } from './ipc/register';
 import { ProductionDatabase, DatabaseInitializationError } from './database/database';
 import { setDatabaseStatus } from './database/status';
+import { createElectronSecureCrypto } from './google/electronSafeStorage';
+import { createExportWorker } from './google/exportWorker';
+import type { ExportWorker } from './google/exportWorker';
+import { createGoogleConfigService } from './google/googleConfigService';
+import { createGoogleCredentialStore } from './google/googleCredentialStore';
+import { createServiceAccountAuthProvider } from './google/googleAuth';
+import { createSheetsTransport } from './google/sheetsTransport';
 
 /**
  * Electron main-process entry point (ARCHITECTURE.md Sections 5, 7, 38, 39, 42.4).
@@ -36,6 +44,32 @@ const logger = new Logger({
 
 let mainWindow: BrowserWindow | null = null;
 let productionDatabase: ProductionDatabase | null = null;
+let googleExportWorker: ExportWorker | null = null;
+
+/**
+ * Phase 2J Google wiring, shared by the IPC handlers and the background export
+ * worker. The encrypted service-account credential lives under `userData/secrets`
+ * — never in SQLite, never plaintext, never in the renderer.
+ */
+const googleCredentialStore = createGoogleCredentialStore({
+  filePath: join(paths.userData, 'secrets', 'google-service-account.enc'),
+  crypto: createElectronSecureCrypto(),
+});
+
+async function pickGoogleCredentialFile(): Promise<string | null> {
+  const options = {
+    title: 'Select the Google service-account JSON key',
+    properties: ['openFile' as const],
+    filters: [{ name: 'Service account key', extensions: ['json'] }],
+  };
+  const result = mainWindow
+    ? await dialog.showOpenDialog(mainWindow, options)
+    : await dialog.showOpenDialog(options);
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+  return result.filePaths[0] ?? null;
+}
 
 if (!app.requestSingleInstanceLock()) {
   // Losing instance: never open the database or touch the shared log file; exit.
@@ -58,9 +92,12 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
 
-  // Graceful shutdown: close the one authoritative connection exactly once,
-  // after all windows are gone and no application code can still be running.
+  // Graceful shutdown: stop the export worker (synchronous — stop scheduling
+  // work and abort our wait on the active request; an ambiguous in-flight job is
+  // left `EXPORTING` for the 5-minute startup stale recovery) BEFORE closing the
+  // one authoritative connection.
   app.on('will-quit', () => {
+    googleExportWorker?.stopSync();
     productionDatabase?.close();
   });
 
@@ -73,6 +110,11 @@ if (!app.requestSingleInstanceLock()) {
         paths,
         appVersion: app.getVersion(),
         getDatabase: () => productionDatabase,
+        google: {
+          credentialStore: googleCredentialStore,
+          pickCredentialFile: pickGoogleCredentialFile,
+          createAuthProvider: createServiceAccountAuthProvider,
+        },
       });
 
       // (2) Open the production database — only now that we own the instance.
@@ -88,6 +130,35 @@ if (!app.requestSingleInstanceLock()) {
           schemaVersion: productionDatabase.schemaVersion,
           failureCode: null,
         });
+
+        // (3) Google Sheets export worker — only after the DB is open. Reconcile
+        // any crash-interrupted credential change, recover stale EXPORTING jobs,
+        // then start the non-overlapping poll loop. Google latency/outage never
+        // touches checkout (`AGENTS.md` invariants 2 & 7).
+        const googleConfigService = createGoogleConfigService({
+          db: productionDatabase.connection,
+          appVersion: app.getVersion(),
+          credentialStore: googleCredentialStore,
+          pickCredentialFile: pickGoogleCredentialFile,
+          createAuthProvider: createServiceAccountAuthProvider,
+        });
+        try {
+          await googleConfigService.reconcileAtStartup();
+        } catch (reconcileError) {
+          logger.error('google', 'google.config.reconcile-failed', {
+            error:
+              reconcileError instanceof Error ? reconcileError.message : String(reconcileError),
+          });
+        }
+        googleExportWorker = createExportWorker({
+          db: productionDatabase.connection,
+          logger,
+          resolveContext: () => googleConfigService.resolveExportContext(),
+          createTransport: (ctx, signal) =>
+            createSheetsTransport({ spreadsheetId: ctx.spreadsheetId, auth: ctx.auth, signal }),
+        });
+        googleExportWorker.recoverStale();
+        googleExportWorker.start();
       } catch (error) {
         const failureCode =
           error instanceof DatabaseInitializationError ? error.code : 'DB_INIT_FAILED';

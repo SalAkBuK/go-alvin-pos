@@ -6,8 +6,14 @@ import type { AppPaths } from '../app/paths';
 import type { ProductionDatabase } from '../database/database';
 import { getDatabaseStatus } from '../database/status';
 import { runNativeSqliteCheck } from '../diagnostics/nativeSqliteCheck';
+import type { GoogleAuthProvider } from '../google/googleAuth';
+import type {
+  GoogleCredentialStore,
+  ServiceAccountCredential,
+} from '../google/googleCredentialStore';
 import { registerCheckoutIpcHandlers } from './checkoutIpc';
 import { registerCustomerIpcHandlers } from './customerIpc';
+import { registerGoogleIpcHandlers } from './googleIpc';
 import { registerPrintingIpcHandlers } from './printingIpc';
 import { registerProductIpcHandlers } from './productIpc';
 import { registerReconciliationIpcHandlers } from './reconciliationIpc';
@@ -28,6 +34,12 @@ export interface IpcContext {
   readonly appVersion: string;
   /** The one production database, or `null` while/if initialization has not succeeded. */
   readonly getDatabase: () => ProductionDatabase | null;
+  /** Phase 2J Google wiring — assembled in `index.ts` and shared with the export worker. */
+  readonly google: {
+    readonly credentialStore: GoogleCredentialStore;
+    readonly pickCredentialFile: () => Promise<string | null>;
+    readonly createAuthProvider: (credential: ServiceAccountCredential) => GoogleAuthProvider;
+  };
 }
 
 export function registerIpcHandlers(context: IpcContext): void {
@@ -96,5 +108,14 @@ export function registerIpcHandlers(context: IpcContext): void {
   registerPrintingIpcHandlers({
     logger: context.logger,
     getDatabase: context.getDatabase,
+  });
+
+  registerGoogleIpcHandlers({
+    logger: context.logger,
+    getDatabase: context.getDatabase,
+    appVersion: context.appVersion,
+    credentialStore: context.google.credentialStore,
+    pickCredentialFile: context.google.pickCredentialFile,
+    createAuthProvider: context.google.createAuthProvider,
   });
 }

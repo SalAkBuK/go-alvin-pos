@@ -104,6 +104,34 @@ if (existsSync(exePath)) {
   }
 }
 
+// (3b) the packaged runtime can load `google-auth-library` (Phase 2J). It is a
+// PURE-JS dependency (no `.node` binary), so it stays inside `app.asar` and is
+// not in `asarUnpack`; this just proves it resolves from the packaged runtime.
+if (existsSync(exePath)) {
+  const probe = [
+    "const path = require('path');",
+    "const gal = require(path.join(process.resourcesPath, 'app.asar', 'node_modules', 'google-auth-library'));",
+    "if (typeof gal.JWT !== 'function') { console.error('NO_JWT'); process.exit(4); }",
+    'const c = new gal.JWT({ email: "x@y.iam.gserviceaccount.com", key: "k", scopes: ["s"] });',
+    "if (typeof c.getAccessToken !== 'function') { console.error('NO_GETACCESSTOKEN'); process.exit(5); }",
+    "console.log('GOOGLE_AUTH_OK');",
+  ].join(' ');
+  try {
+    const out = execFileSync(exePath, ['-e', probe], {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      encoding: 'utf8',
+      timeout: 60_000,
+    });
+    if (/GOOGLE_AUTH_OK/.test(out)) {
+      pass('packaged Electron runtime loaded google-auth-library (JWT client)');
+    } else {
+      fail(`google-auth-library probe returned unexpected output: ${out.trim()}`);
+    }
+  } catch (error) {
+    fail(`packaged runtime could not load google-auth-library: ${error.stderr || error.message}`);
+  }
+}
+
 // (4) production CSP present in packaged renderer, before the bundle <script>
 try {
   const html = extractFile(asarPath, join('out', 'renderer', 'index.html')).toString('utf8');
@@ -187,10 +215,14 @@ try {
         fail(`renderer asset ${assetPath} references a native SQLite module`);
         bad += 1;
       }
+      if (/google-auth-library|gaxios|GoogleToken/.test(content)) {
+        fail(`renderer asset ${assetPath} references google-auth-library (main-process only)`);
+        bad += 1;
+      }
     }
     if (bad === 0) {
       pass(
-        `renderer bundle free of better-sqlite3 (${rendererAssets.length} JS/HTML asset(s) scanned)`,
+        `renderer bundle free of better-sqlite3 + google-auth-library (${rendererAssets.length} asset(s) scanned)`,
       );
     }
   }

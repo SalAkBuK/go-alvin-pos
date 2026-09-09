@@ -131,6 +131,9 @@ describe('<SaleDetailView /> — Void Sale action visibility (task §10)', () =>
         onBack={noop}
         onViewReceipt={noop}
         onReprint={noop}
+        onRetryExport={noop}
+        retryExportBusy={false}
+        retryExportNotice={null}
         onVoid={noop}
       />,
     );
@@ -151,6 +154,9 @@ describe('<SaleDetailView /> — Void Sale action visibility (task §10)', () =>
         onBack={noop}
         onViewReceipt={noop}
         onReprint={noop}
+        onRetryExport={noop}
+        retryExportBusy={false}
+        retryExportNotice={null}
         onVoid={noop}
       />,
     );

@@ -34,6 +34,8 @@ describe('renderer isolation', () => {
     ['node:child_process', /child_process/],
     ['electron ipcRenderer', /ipcRenderer/],
     ['a direct database import', /database\/(connection|database|migrationRunner)/],
+    ['google-auth-library', /google-auth-library/],
+    ['a main-process module', /from ['"].*\/main\//],
   ])('no renderer file imports %s', (_label, pattern) => {
     for (const file of rendererFiles) {
       expect(readFileSync(file, 'utf8')).not.toMatch(pattern);

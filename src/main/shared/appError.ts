@@ -158,4 +158,21 @@ export const appErrors = {
       'PRINT_FAILED',
       'The receipt could not be printed. The sale is saved — you can retry printing or reprint it later from Sales History.',
     ),
+  googleSecureStorageUnavailable: (): AppError =>
+    new AppError(
+      'GOOGLE_SECURE_STORAGE_UNAVAILABLE',
+      'Google Sheets credentials cannot be stored securely on this device.',
+    ),
+  googleCredentialInvalid: (detail?: string): AppError =>
+    new AppError(
+      'GOOGLE_CREDENTIAL_INVALID',
+      detail
+        ? `That file is not a valid Google service-account key: ${detail}`
+        : 'That file is not a valid Google service-account key.',
+    ),
+  googleNotConnected: (): AppError =>
+    new AppError(
+      'GOOGLE_NOT_CONNECTED',
+      'Connect a Google service account and set the spreadsheet before enabling export.',
+    ),
 } as const;

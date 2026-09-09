@@ -25,6 +25,12 @@ import type {
   DeclineCardCheckoutResult,
 } from './checkout';
 import type {
+  GoogleConfig,
+  GoogleConnectResult,
+  RetryExportInput,
+  UpdateGoogleConfigInput,
+} from './google';
+import type {
   PrinterConfig,
   PrinterDevice,
   PrintReceiptResult,
@@ -169,6 +175,19 @@ export const IPC = {
   printingGetConfig: 'printing:get-config',
   printingSelectPrinter: 'printing:select-printer',
   printingPrintReceipt: 'printing:print-receipt',
+
+  // ── Phase 2J: Google Sheets Export Worker ────────────────────────────────
+  // Five narrow capabilities. `get-config` is read-only; `update-config`
+  // persists ONLY the four non-secret `google_*` settings; `connect` opens a
+  // main-process file picker and stores an ENCRYPTED service-account key
+  // (nothing secret ever crosses back to the renderer); `disconnect` turns the
+  // integration off; `retry-export` moves one FAILED job back to PENDING by
+  // immutable Sale ID. No generic settings/query/HTTP surface.
+  googleGetConfig: 'google:get-config',
+  googleUpdateConfig: 'google:update-config',
+  googleConnect: 'google:connect',
+  googleDisconnect: 'google:disconnect',
+  googleRetryExport: 'google:retry-export',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -339,6 +358,35 @@ export interface PosApi {
      * `PRINT_FAILED` — a print failure is never a sale failure (`REQ-REC-005`).
      */
     printReceipt(saleId: string): Promise<IpcResult<PrintReceiptResult>>;
+  };
+  readonly google: {
+    /**
+     * Current non-secret Google Sheets configuration + derived `connected` /
+     * `configured` state + local export-queue counts. Never returns a key,
+     * token, or the encrypted blob.
+     */
+    getConfig(): Promise<IpcResult<GoogleConfig>>;
+    /**
+     * Persist the four non-secret fields (`enabled`, spreadsheet id, two sheet
+     * names) and write one `GOOGLE_CONFIGURATION_CHANGED` audit in the same
+     * transaction. Rejects `enabled: true` without a connected credential.
+     */
+    updateConfig(input: UpdateGoogleConfigInput): Promise<IpcResult<GoogleConfig>>;
+    /**
+     * Open a main-process file picker for a service-account JSON key, validate
+     * its shape, encrypt it with OS secure storage, and persist it atomically.
+     * The renderer never sees the JSON or the private key. Works offline.
+     */
+    connect(): Promise<IpcResult<GoogleConnectResult>>;
+    /** Turn the integration off and remove the stored credential. Pending jobs stay durable. */
+    disconnect(): Promise<IpcResult<GoogleConfig>>;
+    /**
+     * Manual "Retry Export" for a `FAILED` job (`REQ-GSHEET-012`): `FAILED →
+     * PENDING`, `attempt_count = 0`, `next_attempt_at = now`, `last_error =
+     * NULL`. Never touches the sale, payment, inventory, receipt number, or any
+     * sync version.
+     */
+    retryExport(input: RetryExportInput): Promise<IpcResult<GoogleConfig>>;
   };
   readonly settings: {
     /** The sales-tax rate only — no generic settings access. */

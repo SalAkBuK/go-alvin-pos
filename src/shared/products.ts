@@ -220,6 +220,26 @@ export const APP_ERROR_CODES = [
    * never surfaced to the renderer (`task §15`-`§16`).
    */
   'PRINT_FAILED',
+  // ── Phase 2J: Google Sheets Export Worker ────────────────────────────────
+  /**
+   * The OS secure-credential store (`safeStorage`) is unavailable, so a Google
+   * service-account credential cannot be stored without plaintext. V1 never
+   * falls back to plaintext — the user is told storage is unavailable
+   * (`DATA_MODEL.md §21`, `task §8`).
+   */
+  'GOOGLE_SECURE_STORAGE_UNAVAILABLE',
+  /**
+   * The selected file is not a well-formed Google **service-account** JSON key
+   * (`type !== "service_account"`, missing `client_email` / `private_key`, or a
+   * disallowed non-`googleapis.com` token endpoint). Nothing was stored
+   * (`REQ-GSHEET-013`, `task §3`).
+   */
+  'GOOGLE_CREDENTIAL_INVALID',
+  /**
+   * `enabled: true` was submitted without a connected credential and/or a
+   * spreadsheet id. Network processing needs both (`REQ-GSHEET-002`, `task §6`).
+   */
+  'GOOGLE_NOT_CONNECTED',
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
 
