@@ -1651,7 +1651,12 @@ Represented sale states become eligible and export idempotently by immutable Sal
 
 Expected:
 
-The Google Sheets row shows `VOIDED` and is never regressed back to `COMPLETED` by the stale response — the worker only marks a job `EXPORTED` when the version it wrote still equals the current `target_sync_version`, so the stale acknowledgment for version 1 is discarded rather than applied.
+- The stale `sync_version = 1` acknowledgment does not mark the job `EXPORTED` or current: the version it wrote (`1`) no longer equals `target_sync_version` (`2`), so the acknowledgment is discarded by the local export-job state machine and is not accepted as the current synchronized revision.
+- The job remains eligible for `sync_version = 2`.
+- A subsequent idempotent upsert for `target_sync_version = 2` converges the Google Sheets row to `VOIDED`.
+- Final state: `exported_sync_version = 2`, `target_sync_version = 2`, job `EXPORTED`, Google Sheets row = `VOIDED`.
+
+This test does not assert that the remote Google Sheets cell contents were never transiently `COMPLETED` during the adversarially reordered writes: V1 guarantees convergence to the current revision, not transient remote-byte ordering (`REQ-GSHEET-015`).
 
 ---
 
@@ -1661,7 +1666,7 @@ Force a sale's export job into `EXPORTING` (mid-request) and, at that exact mome
 
 Expected:
 
-The void transaction still succeeds locally (it never waits on network export); the job is requeued to the new `target_sync_version` as `PENDING`; when the in-flight request eventually resolves, it is treated as stale per `TEST-GSHEET-020` and does not mark the job `EXPORTED` for the old version.
+The void transaction still succeeds locally (it never waits on network export); the job is requeued to the new `target_sync_version = 2` as `PENDING`; when the original in-flight request eventually resolves it is treated as stale per `TEST-GSHEET-020` and cannot mark version `1` current or `EXPORTED`; a later idempotent upsert for `target_sync_version = 2` converges the Google Sheets row to `VOIDED` (`exported_sync_version = 2`).
 
 ---
 

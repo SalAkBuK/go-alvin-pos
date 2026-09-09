@@ -1200,7 +1200,13 @@ Any exported text field value beginning with `=`, `+`, `-`, or `@` must be neutr
 
 **Priority:** MUST
 
-An in-flight export request for an older sale revision must never be able to overwrite a Google Sheets row with an older state than what a newer request has already written, regardless of network response ordering. This is implemented through the `sync_version`/`target_sync_version`/`exported_sync_version` design in `DATA_MODEL.md` Sections 22–25: a worker may mark a job `EXPORTED` only if the version it just wrote still equals the current target version.
+V1 Google Sheets synchronization uses **convergence semantics**. The direct Google Sheets REST API provides no cross-request revision precondition / compare-and-set primitive for cell values, so V1 does not claim a mathematical guarantee that Google Sheet cell contents can never be transiently stale during an ambiguous or externally reordered network outcome. V1 instead guarantees, through the `sync_version` / `target_sync_version` / `exported_sync_version` design in `DATA_MODEL.md` Sections 22–25:
+
+- SQLite remains authoritative; the Google Sheet is a secondary exported copy.
+- An older export revision must never become the locally accepted / current synchronized revision after `target_sync_version` has advanced.
+- A stale success or failure acknowledgment must not finalize or regress the export job: a worker may mark a job `EXPORTED` — setting `exported_sync_version` to the revision it just wrote — only if that revision still equals the job's current `target_sync_version`; otherwise the acknowledgment is discarded and the job stays pending.
+- The job remains eligible for the newest `target_sync_version`.
+- Repeated idempotent upserts keyed by the immutable Sale ID must converge the Google Sheet row to the current `sales.sync_version`.
 
 ---
 
