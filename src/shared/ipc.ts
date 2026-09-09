@@ -26,6 +26,7 @@ import type {
 } from './checkout';
 import type { ReceiptRepresentation } from './receipt';
 import type { ReconciliationEntry, ResolveReconciliationInput } from './reconciliation';
+import type { SaleDetail, SalesHistoryEntry, SalesHistorySearch } from './salesHistory';
 import type {
   BusinessConfig,
   TaxRateConfig,
@@ -113,6 +114,17 @@ export const IPC = {
   // snapshots, addressed only by immutable Sale ID. Writes nothing. Physical
   // printing and reprint-from-history are NOT here.
   receiptsGetBySaleId: 'receipts:get-by-sale-id',
+
+  // ── Phase 2G: Sales History + Transaction Detail ───────────────────────────
+  // Read-only view model over committed local state (`sales` LEFT JOIN
+  // `google_sheet_export_jobs`, `sale_items`, `payments`). `list` applies
+  // receipt-number / customer-snapshot / business-date search in the trusted
+  // layer; `get-by-id` assembles one sale's historical detail from its
+  // snapshots. Writes nothing, emits no audit event, needs no network. There is
+  // still no generic query surface, and "View Receipt" reuses
+  // `receipts:get-by-sale-id`.
+  salesHistoryList: 'sales-history:list',
+  salesHistoryGetById: 'sales-history:get-by-id',
 
   // ── Phase 2D.1: Minimal tax configuration ──────────────────────────────────
   // The sales-tax rate only — NOT a generic settings surface. `tax-update` is
@@ -245,6 +257,21 @@ export interface PosApi {
      * only the immutable Sale ID; a sale that does not exist is `RECEIPT_NOT_FOUND`.
      */
     getBySaleId(saleId: string): Promise<IpcResult<ReceiptRepresentation>>;
+  };
+  readonly salesHistory: {
+    /**
+     * The Sales History list — newest completed sale first
+     * (`completed_at DESC`, `receipt_number DESC` tie-break). Optional receipt /
+     * customer text and a single business-date filter combine with AND; an empty
+     * result is a normal empty state, never an error. Local SQLite only.
+     */
+    list(search?: SalesHistorySearch): Promise<IpcResult<readonly SalesHistoryEntry[]>>;
+    /**
+     * One sale's full historical detail, addressed only by immutable Sale ID and
+     * assembled entirely from committed snapshots (`sales` / `sale_items` /
+     * `payments` / the export job). An unknown / malformed id is `SALE_NOT_FOUND`.
+     */
+    getById(saleId: string): Promise<IpcResult<SaleDetail>>;
   };
   readonly settings: {
     /** The sales-tax rate only — no generic settings access. */

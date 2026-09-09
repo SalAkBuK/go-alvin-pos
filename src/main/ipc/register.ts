@@ -10,6 +10,7 @@ import { registerCheckoutIpcHandlers } from './checkoutIpc';
 import { registerCustomerIpcHandlers } from './customerIpc';
 import { registerProductIpcHandlers } from './productIpc';
 import { registerReconciliationIpcHandlers } from './reconciliationIpc';
+import { registerSalesHistoryIpcHandlers } from './salesHistoryIpc';
 import { registerSettingsIpcHandlers } from './settingsIpc';
 
 /**
@@ -75,6 +76,11 @@ export function registerIpcHandlers(context: IpcContext): void {
   });
 
   registerReconciliationIpcHandlers({
+    logger: context.logger,
+    getDatabase: context.getDatabase,
+  });
+
+  registerSalesHistoryIpcHandlers({
     logger: context.logger,
     getDatabase: context.getDatabase,
   });

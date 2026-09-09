@@ -31,6 +31,8 @@ describe('IPC contract', () => {
         'reconciliationList',
         'reconciliationResolve',
         'receiptsGetBySaleId',
+        'salesHistoryList',
+        'salesHistoryGetById',
         'settingsTaxGet',
         'settingsTaxUpdate',
         'settingsBusinessGet',
@@ -50,6 +52,7 @@ describe('IPC contract', () => {
       'checkout',
       'reconciliation',
       'receipts',
+      'sales-history',
       'settings',
     ];
     for (const name of Object.values(IPC)) {
@@ -89,6 +92,7 @@ describe('IPC contract', () => {
       checkout: ['review', 'completeCash', 'beginCard', 'completeCard', 'declineCard'],
       reconciliation: ['list', 'resolve'],
       receipts: ['getBySaleId'],
+      salesHistory: ['list', 'getById'],
       // `settings` exposes only the tax and business sub-objects — no generic setter.
       settings: ['tax.get', 'tax.update', 'business.get', 'business.update'],
     };
@@ -101,6 +105,7 @@ describe('IPC contract', () => {
       'products',
       'receipts',
       'reconciliation',
+      'salesHistory',
       'settings',
     ]);
     for (const methods of Object.values(surface)) {

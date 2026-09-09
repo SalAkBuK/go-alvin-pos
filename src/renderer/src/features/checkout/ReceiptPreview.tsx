@@ -11,10 +11,16 @@ import { toReceiptView } from './receiptView';
  * added later without a redesign (`REQ-PRINT-003`). It consumes the trusted
  * {@link ReceiptRepresentation} only; it holds no receipt truth of its own.
  *
- * `Back` returns to the success screen without recreating an editable cart —
- * once committed, this is historical data. `Print receipt` stays unavailable.
- * A failed load still states the sale succeeded (`REQ-REC-005`,
- * `ARCHITECTURE.md §19`): a receipt-view failure never means the sale failed.
+ * `Back` returns to the success screen (or, from Sales History, to the sale
+ * detail) without recreating an editable cart — once committed, this is
+ * historical data. `Print receipt` stays unavailable. A failed load still states
+ * the sale succeeded (`REQ-REC-005`, `ARCHITECTURE.md §19`): a receipt-view
+ * failure never means the sale failed.
+ *
+ * Reused verbatim by Phase 2G Sales History → Sale Detail → View Receipt: the
+ * same representation, the same component, the same trusted
+ * `receipts:get-by-sale-id` path (`task §19`). When there is no "New Sale"
+ * context (history), `onNewSale` is omitted and that button is not rendered.
  */
 
 export interface ReceiptPreviewProps {
@@ -24,10 +30,17 @@ export interface ReceiptPreviewProps {
   /** From the committed sale result — shown in the failure state for reassurance. */
   readonly saleReceiptNumber: string;
   readonly onBack: () => void;
-  readonly onNewSale: () => void;
+  /** Omitted when there is no new-sale flow to return to (e.g. Sales History). */
+  readonly onNewSale?: (() => void) | undefined;
 }
 
-function Actions({ onBack, onNewSale }: { onBack: () => void; onNewSale: () => void }) {
+function Actions({
+  onBack,
+  onNewSale,
+}: {
+  onBack: () => void;
+  onNewSale?: (() => void) | undefined;
+}) {
   return (
     <div className="checkout-actions">
       <button type="button" onClick={onBack}>
@@ -36,9 +49,11 @@ function Actions({ onBack, onNewSale }: { onBack: () => void; onNewSale: () => v
       <button type="button" disabled title="Receipt printing arrives in a later version">
         Print receipt (not available yet)
       </button>
-      <button type="button" onClick={onNewSale}>
-        New Sale
-      </button>
+      {onNewSale && (
+        <button type="button" onClick={onNewSale}>
+          New Sale
+        </button>
+      )}
     </div>
   );
 }

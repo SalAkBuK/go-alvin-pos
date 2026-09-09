@@ -126,6 +126,8 @@ export const appErrors = {
     ),
   receiptNotFound: (): AppError =>
     new AppError('RECEIPT_NOT_FOUND', 'That sale could not be found.'),
+  saleNotFound: (): AppError =>
+    new AppError('SALE_NOT_FOUND', 'That sale could not be found in Sales History.'),
   receiptDataInconsistent: (): AppError =>
     new AppError(
       'RECEIPT_DATA_INCONSISTENT',

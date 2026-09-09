@@ -3,6 +3,7 @@ import type { AppInfo, DatabaseStatus } from '../../shared/ipc';
 import { BrandLogo } from './components/BrandLogo';
 import { CheckoutPage } from './features/checkout/CheckoutPage';
 import { CustomersPage } from './features/customers/CustomersPage';
+import { SalesHistoryPage } from './features/history/SalesHistoryPage';
 import { ProductsPage } from './features/products/ProductsPage';
 import { SettingsPage } from './features/settings/SettingsPage';
 
@@ -13,11 +14,12 @@ import { SettingsPage } from './features/settings/SettingsPage';
  * (Phase 2C), Checkout / New Sale (Phase 2D review + Phase 2E Cash completion +
  * Phase 2F manual Clover Card workflow), and a Settings area for the sales-tax
  * rate, business/receipt details (Phase 2D.1 / 2D.2), and the Card
- * Reconciliation Queue (Phase 2F). A small status line keeps the
- * database/runtime state visible. There is no sales history or reporting UI yet.
+ * Reconciliation Queue (Phase 2F). Sales History (Phase 2G) is a read-only list
+ * with historical transaction detail and View Receipt. A small status line keeps
+ * the database/runtime state visible. There is no reporting UI yet.
  */
 
-type Area = 'checkout' | 'products' | 'customers' | 'settings';
+type Area = 'checkout' | 'products' | 'customers' | 'history' | 'settings';
 
 interface ShellStatus {
   readonly info: AppInfo | null;
@@ -95,6 +97,13 @@ export function App() {
           </button>
           <button
             type="button"
+            aria-current={area === 'history'}
+            onClick={() => setArea('history')}
+          >
+            Sales History
+          </button>
+          <button
+            type="button"
             aria-current={area === 'settings'}
             onClick={() => setArea('settings')}
           >
@@ -118,6 +127,12 @@ export function App() {
         <>
           <h2>Customers</h2>
           <CustomersPage />
+        </>
+      )}
+      {area === 'history' && (
+        <>
+          <h2>Sales History</h2>
+          <SalesHistoryPage />
         </>
       )}
       {area === 'settings' && (

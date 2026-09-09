@@ -182,6 +182,9 @@ export const APP_ERROR_CODES = [
    * total). Read-only detection — the sale itself is never touched.
    */
   'RECEIPT_DATA_INCONSISTENT',
+  // ── Phase 2G: Sales History + Transaction Detail ───────────────────────────
+  /** No committed sale exists for the given Sale ID, so no history detail can be shown. */
+  'SALE_NOT_FOUND',
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
 
