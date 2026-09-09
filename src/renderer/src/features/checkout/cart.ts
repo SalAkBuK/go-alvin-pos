@@ -1,4 +1,5 @@
 import type {
+  BeginCardCheckoutRequest,
   CheckoutReview,
   CheckoutReviewRequest,
   CompleteCashSaleRequest,
@@ -302,6 +303,36 @@ export function toCompleteCashRequest(state: CartState): CompleteCashSaleRequest
   }
   if (state.review.paymentMethod !== 'CASH') {
     throw new Error('Only Cash sales can be completed in this version.');
+  }
+  return {
+    requestId: state.requestId,
+    reviewedFingerprint: state.review.fingerprint,
+    checkout: toReviewRequest(state),
+  };
+}
+
+/** True when a current Card review exists that the cashier may begin a Clover payment for. */
+export function canBeginCard(state: CartState): boolean {
+  return (
+    state.review !== null &&
+    state.requestId !== null &&
+    state.review.paymentMethod === 'CARD' &&
+    state.paymentMethod === 'CARD'
+  );
+}
+
+/**
+ * Shape the `checkout:begin-card` / `checkout:complete-card` / `decline-card`
+ * request from the current reviewed draft. Same reviewed intent, trusted
+ * fingerprint, and attempt id that Phase 1 Step A durably recorded — the id is
+ * never re-minted between Step A and completion (`DATA_MODEL.md §31`-`§34`).
+ */
+export function toCardCheckoutRequest(state: CartState): BeginCardCheckoutRequest {
+  if (state.review === null || state.requestId === null) {
+    throw new Error('Review the checkout before starting card payment.');
+  }
+  if (state.review.paymentMethod !== 'CARD') {
+    throw new Error('This checkout is not a Card sale.');
   }
   return {
     requestId: state.requestId,

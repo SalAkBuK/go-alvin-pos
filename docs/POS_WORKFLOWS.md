@@ -847,7 +847,7 @@ Cashier selects:
 ## Flow
 
 1. POS finalizes the checkout review and displays the final amount.
-2. Before the cashier is shown any instruction to use Clover, the trusted application layer generates the checkout request ID and fingerprint and durably commits Phase 1, Step A (`DATA_MODEL.md` Section 31): a `checkout_requests` row with the payment method (`CARD`), the reviewed total, and `status = PENDING_PAYMENT`. If this durable write fails, checkout stops here with a local-failure message and the cashier is **not** sent to Clover — no charge has been risked.
+2. Before the cashier is shown any instruction to use Clover, the trusted application layer generates the checkout request ID and fingerprint and durably commits Phase 1, Step A (`DATA_MODEL.md` Section 31): a `checkout_requests` row with the payment method (`CARD`), the reviewed total, and `status = PENDING_PAYMENT`. Step A first recomputes the checkout fingerprint from current authoritative state; if it no longer matches the reviewed fingerprint (a price or the tax rate changed since Checkout Review), Step A stops with `CHECKOUT_DRIFT` before any row is written and the cashier re-reviews — the Clover amount is therefore always the amount that passed Checkout Review. If instead the durable write fails, checkout stops here with a local-failure message and the cashier is **not** sent to Clover — no charge has been risked.
 3. Only now does the POS instruct the cashier to process that exact amount on the Clover terminal.
 4. Cashier enters/processes that amount on the Clover terminal.
 5. Customer pays through Clover.
@@ -946,7 +946,7 @@ BEGIN IMMEDIATE
 
 1. Compute the checkout fingerprint over the reviewed cart, customer, tax rate, and totals (`DATA_MODEL.md` Section 41B).
 2. Check checkout request ID; if it already exists with a different fingerprint, reject as a conflict.
-3. For a brand-new request, verify the store can complete a sale at all — business identity configured (Section 69), a tax rate configured, cart products active and in stock. If not, stop with the specific error and create **no** row (`DATA_MODEL.md` Section 31, Phase 1 Step A). Drift versus current values is not judged here.
+3. For a brand-new request, verify the store can complete a sale at all — business identity configured (Section 69), a tax rate configured, cart products active and in stock. If not, stop with the specific error and create **no** row (`DATA_MODEL.md` Section 31, Phase 1 Step A). For Cash, drift versus current values is not judged here. For Card, Step A additionally rejects with `CHECKOUT_DRIFT` — before writing `PENDING_PAYMENT`, before any Clover instruction — when the fingerprint recomputed from current state does not match the reviewed fingerprint; Phase 2 still revalidates afterward as the final gate.
 4. Insert (or reuse) the `checkout_requests` row with the payment method and intended total, and `status = SUBMITTED` (Cash) or `status = PENDING_PAYMENT` (Card, before Clover is invoked).
 
 ```text

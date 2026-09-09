@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 import { createCheckoutService } from '../../src/main/checkout/checkoutService';
 import { createProductService } from '../../src/main/products/productService';
 import { createSettingsService } from '../../src/main/settings/settingsService';
-import type { CompleteCashSaleRequest } from '../../src/shared/checkout';
+import type { BeginCardCheckoutRequest, CompleteCashSaleRequest } from '../../src/shared/checkout';
 import type { CreateProductInput } from '../../src/shared/products';
 
 /**
@@ -66,6 +66,25 @@ export function buildCashRequest(
   const checkout = {
     customerId: options.customerId ?? null,
     paymentMethod: 'CASH' as const,
+    lines: lines.map((l) => ({ ...l })),
+  };
+  const review = createCheckoutService({ db }).review(checkout);
+  return { requestId: randomUUID(), reviewedFingerprint: review.fingerprint, checkout };
+}
+
+/**
+ * Run a trusted review for the given intent with `paymentMethod = CARD` and
+ * return a ready `checkout:begin-card` / `checkout:complete-card` payload — a
+ * fresh `requestId`, the trusted fingerprint, and the echoed CARD intent.
+ */
+export function buildCardRequest(
+  db: Database.Database,
+  lines: readonly CartLineIntent[],
+  options: { readonly customerId?: string | null } = {},
+): BeginCardCheckoutRequest {
+  const checkout = {
+    customerId: options.customerId ?? null,
+    paymentMethod: 'CARD' as const,
     lines: lines.map((l) => ({ ...l })),
   };
   const review = createCheckoutService({ db }).review(checkout);

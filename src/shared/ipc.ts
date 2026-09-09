@@ -14,12 +14,18 @@
  */
 
 import type {
+  BeginCardCheckoutRequest,
+  BeginCardCheckoutResult,
   CheckoutReview,
   CheckoutReviewRequest,
+  CompleteCardCheckoutRequest,
   CompleteCashSaleRequest,
   CompletedSaleResult,
+  DeclineCardCheckoutRequest,
+  DeclineCardCheckoutResult,
 } from './checkout';
 import type { ReceiptRepresentation } from './receipt';
+import type { ReconciliationEntry, ResolveReconciliationInput } from './reconciliation';
 import type {
   BusinessConfig,
   TaxRateConfig,
@@ -87,9 +93,20 @@ export const IPC = {
 
   // ── Phase 2E: Cash sale completion ─────────────────────────────────────────
   // The authoritative Cash sale transaction (Phase 1 durable request + Phase 2
-  // sale). Cash only — there is deliberately no Card completion channel and no
-  // generic `checkout:complete`.
+  // sale). Cash only.
   checkoutCompleteCash: 'checkout:complete-cash',
+
+  // ── Phase 2F: Manual Clover Card workflow + reconciliation ─────────────────
+  // Three narrow Card capabilities and two reconciliation-queue capabilities.
+  // There is still no generic `checkout:complete`. `begin-card` durably commits
+  // Phase 1 Step A (PENDING_PAYMENT) before the cashier is sent to Clover;
+  // `complete-card` runs Phase 1 Step B (approval confirmation) + the shared
+  // Phase 2 sale transaction; `decline-card` records an explicit Clover decline.
+  checkoutBeginCard: 'checkout:begin-card',
+  checkoutCompleteCard: 'checkout:complete-card',
+  checkoutDeclineCard: 'checkout:decline-card',
+  reconciliationList: 'reconciliation:list',
+  reconciliationResolve: 'reconciliation:resolve',
 
   // ── Phase 2E.1: Receipt representation & preview ───────────────────────────
   // Read-only assembly of one committed sale's receipt from its transaction-time
@@ -189,6 +206,36 @@ export interface PosApi {
      * `CHECKOUT_DRIFT` if authoritative state changed since review.
      */
     completeCash(request: CompleteCashSaleRequest): Promise<IpcResult<CompletedSaleResult>>;
+    /**
+     * Phase 1 Step A for a reviewed *Card* checkout: durably commit a
+     * `PENDING_PAYMENT` checkout request (payment method, intended total) and
+     * return the trusted amount to process on Clover. Nothing is charged; the
+     * renderer must not show any Clover instruction until this resolves `ok`.
+     */
+    beginCard(request: BeginCardCheckoutRequest): Promise<IpcResult<BeginCardCheckoutResult>>;
+    /**
+     * The cashier confirmed Clover approved (or is retrying a local save after a
+     * commit failure). Commits Phase 1 Step B if still pending, then the shared
+     * authoritative Phase 2 sale transaction. A failure after approval resolves
+     * with `CARD_LOCAL_COMMIT_FAILURE` — the cashier must be warned about the
+     * possible Clover charge, never told to simply try again.
+     */
+    completeCard(request: CompleteCardCheckoutRequest): Promise<IpcResult<CompletedSaleResult>>;
+    /**
+     * "Payment Declined / Cancel": best-effort terminal update of the same
+     * pending Card request to `COMMIT_FAILED` / `CLOVER_DECLINED`. No sale, no
+     * inventory change; the cart stays for the next attempt.
+     */
+    declineCard(request: DeclineCardCheckoutRequest): Promise<IpcResult<DeclineCardCheckoutResult>>;
+  };
+  readonly reconciliation: {
+    /** Unresolved Card incidents only (`DATA_MODEL.md §31B`). Read-only. */
+    list(): Promise<IpcResult<readonly ReconciliationEntry[]>>;
+    /**
+     * Mark one incident resolved with a required note. Records only that a
+     * person reconciled it — never creates, edits, or backdates a sale.
+     */
+    resolve(input: ResolveReconciliationInput): Promise<IpcResult<ReconciliationEntry>>;
   };
   readonly receipts: {
     /**

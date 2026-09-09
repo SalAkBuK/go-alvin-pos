@@ -139,3 +139,70 @@ export interface CompletedSaleResult {
    */
   readonly alreadyCompleted: boolean;
 }
+
+// ── Phase 2F: Manual Clover Card workflow ───────────────────────────────────
+
+/**
+ * `checkout:begin-card` payload — Phase 1 Step A for a reviewed Card checkout
+ * (`DATA_MODEL.md §31`, `§31A`; `POS_WORKFLOWS.md §30`; `REQ-RECONCILE-001`).
+ *
+ * Identical shape to {@link CompleteCashSaleRequest} but `checkout.paymentMethod`
+ * MUST be `CARD`. The trusted layer durably commits a `PENDING_PAYMENT`
+ * `checkout_requests` row **before** returning — only then may the renderer show
+ * the Clover instruction. It never sends an amount; `intendedTotalCents` comes
+ * back from the trusted recalculation.
+ */
+export interface BeginCardCheckoutRequest {
+  readonly requestId: string;
+  readonly reviewedFingerprint: string;
+  readonly checkout: CheckoutReviewRequest;
+}
+
+/**
+ * Result of a committed Phase 1 Step A (or an idempotent replay of one). The
+ * renderer shows "Process $<intendedTotalCents> on Clover" using ONLY this
+ * trusted amount.
+ *
+ *  - `stage = 'awaiting_clover'` — a fresh `PENDING_PAYMENT` row is on record
+ *    (or a still-pending one was replayed); ask the cashier for the Clover result.
+ *  - `stage = 'approved'` — Step B already committed for this request
+ *    (`SUBMITTED`); the renderer should proceed straight to `complete-card`.
+ *  - `stage = 'completed'` — the sale already exists for this request; treat it
+ *    as an idempotent success.
+ */
+export interface BeginCardCheckoutResult {
+  readonly requestId: string;
+  readonly intendedTotalCents: number;
+  readonly stage: 'awaiting_clover' | 'approved' | 'completed';
+  /** Present only when `stage = 'completed'`. */
+  readonly completed: CompletedSaleResult | null;
+}
+
+/**
+ * `checkout:complete-card` payload — the cashier confirmed Clover approved (or
+ * is retrying a local save after a commit failure). The trusted layer commits
+ * Phase 1 Step B (only if the row is still `PENDING_PAYMENT`) in its own
+ * transaction, then attempts the authoritative Phase 2 sale transaction. Same
+ * `requestId` from `begin-card`; never a new one.
+ */
+export interface CompleteCardCheckoutRequest {
+  readonly requestId: string;
+  readonly reviewedFingerprint: string;
+  readonly checkout: CheckoutReviewRequest;
+}
+
+/**
+ * `checkout:decline-card` payload — the cashier chose "Payment Declined /
+ * Cancel". The trusted layer best-effort marks the same `PENDING_PAYMENT` row
+ * `COMMIT_FAILED` / `CLOVER_DECLINED` (`POS_WORKFLOWS.md §31`). Not a
+ * reconciliation incident.
+ */
+export interface DeclineCardCheckoutRequest {
+  readonly requestId: string;
+  readonly reviewedFingerprint: string;
+}
+
+export interface DeclineCardCheckoutResult {
+  readonly requestId: string;
+  readonly declined: true;
+}

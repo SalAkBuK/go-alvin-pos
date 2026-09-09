@@ -44,6 +44,13 @@ const api: PosApi = {
   checkout: {
     review: (request) => ipcRenderer.invoke(IPC.checkoutReview, request),
     completeCash: (request) => ipcRenderer.invoke(IPC.checkoutCompleteCash, request),
+    beginCard: (request) => ipcRenderer.invoke(IPC.checkoutBeginCard, request),
+    completeCard: (request) => ipcRenderer.invoke(IPC.checkoutCompleteCard, request),
+    declineCard: (request) => ipcRenderer.invoke(IPC.checkoutDeclineCard, request),
+  },
+  reconciliation: {
+    list: () => ipcRenderer.invoke(IPC.reconciliationList),
+    resolve: (input) => ipcRenderer.invoke(IPC.reconciliationResolve, input),
   },
   receipts: {
     getBySaleId: (saleId) => ipcRenderer.invoke(IPC.receiptsGetBySaleId, saleId),

@@ -161,6 +161,18 @@ export const APP_ERROR_CODES = [
   'SALE_COMMIT_FAILED',
   /** The checkout request exists but is not in a state Cash Phase 2 can act on. */
   'CHECKOUT_REQUEST_INVALID',
+  // ── Phase 2F: Manual Clover Card workflow + reconciliation ─────────────────
+  /**
+   * A Card checkout attempt could not be saved locally *after* the cashier
+   * confirmed Clover approval — either the Phase 1 Step B confirmation write
+   * failed, or the authoritative Phase 2 sale transaction rolled back. The
+   * canonical Priority-0 reconciliation category (`DATA_MODEL.md §31A`,
+   * `§36A`; `SUPPORT_DIAGNOSTICS.md §42`). The `checkout_requests.failure_code`
+   * still records the *specific* underlying reason (`SALE_COMMIT_FAILED`,
+   * `CHECKOUT_DRIFT`, …); this code is the renderer-facing incident category so
+   * the cashier is shown the Clover-review warning rather than "try again".
+   */
+  'CARD_LOCAL_COMMIT_FAILURE',
   // ── Phase 2E.1: Receipt representation & preview ───────────────────────────
   /** No committed sale exists for the given Sale ID, so no receipt can be generated. */
   'RECEIPT_NOT_FOUND',

@@ -11,6 +11,7 @@ import type { AppErrorCode, IpcResult, ProductRecord } from '../../../../shared/
 import type { ReceiptRepresentation } from '../../../../shared/receipt';
 import {
   addProduct,
+  canBeginCard,
   canCompleteCash,
   cartPreview,
   clearCart,
@@ -24,11 +25,15 @@ import {
   setPaymentMethod,
   setQuantity,
   setSoldPrice,
+  toCardCheckoutRequest,
   toCompleteCashRequest,
   toReviewRequest,
   withReview,
 } from './cart';
 import type { CartState } from './cart';
+import { IDLE_CARD_ATTEMPT, interpretBeginResult, isCardLocalCommitFailure } from './cardCheckout';
+import type { CardAttempt } from './cardCheckout';
+import { CardPaymentPanel } from './CardPaymentPanel';
 import { isRetryableCommitFailure, requiresReReview } from './checkoutCompletion';
 import { ReceiptPreview } from './ReceiptPreview';
 import { SaleSuccess } from './SaleSuccess';
@@ -44,7 +49,11 @@ import { SaleSuccess } from './SaleSuccess';
  *
  * Phase 2E adds a real Cash `Complete sale` action (enabled only after a current
  * Cash review), Create Customer During Checkout, a Clear-cart confirmation, and
- * the sale-success screen. Card completion is deliberately still unavailable.
+ * the sale-success screen. Phase 2F adds the manual Clover Card workflow: a
+ * reviewed Card checkout progresses through explicit UI states
+ * (`begin card payment` → Clover instruction → Approved / Declined → success or
+ * a critical local-commit-failure warning); see {@link CardPaymentPanel} and
+ * `cardCheckout.ts`.
  */
 
 function pos() {
@@ -82,6 +91,7 @@ export function CheckoutPage() {
   const [reviewing, setReviewing] = useState(false);
   const [completing, setCompleting] = useState(false);
   const [saleResult, setSaleResult] = useState<CompletedSaleResult | null>(null);
+  const [cardAttempt, setCardAttempt] = useState<CardAttempt>(IDLE_CARD_ATTEMPT);
 
   // Post-sale receipt preview (Phase 2E.1) — reachable only from the success
   // screen, retrieved by the committed Sale ID, never from the checkout cart.
@@ -256,6 +266,7 @@ export function CheckoutPage() {
   const resetForNewSale = useCallback(() => {
     setCart(clearCart());
     setSaleResult(null);
+    setCardAttempt(IDLE_CARD_ATTEMPT);
     setShowReceipt(false);
     setReceipt(null);
     setReceiptError(null);
@@ -373,10 +384,143 @@ export function CheckoutPage() {
     }
   }, [cart, completing, saleResult]);
 
+  /**
+   * Phase 1 Step B + the shared Phase 2 sale transaction for a Card checkout.
+   * Reached from "Payment Approved", from "Retry local save", or immediately
+   * after `begin-card` reports the request was already approved. Any failure
+   * after the cashier confirmed Clover approval is a possible-charge incident:
+   * show the critical warning, never a plain "try again" (`POS_WORKFLOWS.md
+   * §35A`; task `§17`, `§24`).
+   */
+  const completeCardAttempt = useCallback(
+    async (requestId: string, intendedTotalCents: number, retry: boolean) => {
+      const api = pos();
+      if (!api) {
+        setError('Checkout is unavailable in this context.');
+        return;
+      }
+      setCardAttempt({ phase: 'recording', requestId, intendedTotalCents, retry });
+      setError(null);
+      setNotice(null);
+      try {
+        const result = await unwrap(api.checkout.completeCard(toCardCheckoutRequest(cart)));
+        setCardAttempt(IDLE_CARD_ATTEMPT);
+        setSaleResult(result);
+      } catch (err) {
+        // The cashier already confirmed "Payment Approved", so ANY failure here
+        // — the canonical CARD_LOCAL_COMMIT_FAILURE, or anything unexpected —
+        // means a possible real charge with no local sale: show the critical
+        // Clover-review warning, never an ordinary "try again".
+        const message =
+          err instanceof IpcResultError && isCardLocalCommitFailure(err.code)
+            ? err.message
+            : err instanceof Error
+              ? `The card sale could not be saved locally: ${err.message}`
+              : 'The card sale could not be saved locally.';
+        setCardAttempt({ phase: 'local_failure', requestId, intendedTotalCents, message });
+      }
+    },
+    [cart],
+  );
+
+  const onBeginCard = useCallback(async () => {
+    if (completing || saleResult !== null || cardAttempt.phase !== 'idle') {
+      return;
+    }
+    const api = pos();
+    if (!api) {
+      setError('Checkout is unavailable in this context.');
+      return;
+    }
+    let request;
+    try {
+      request = toCardCheckoutRequest(cart);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    setCardAttempt({ phase: 'beginning' });
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await unwrap(api.checkout.beginCard(request));
+      const outcome = interpretBeginResult(result);
+      if (outcome.kind === 'completed') {
+        setCardAttempt(IDLE_CARD_ATTEMPT);
+        setSaleResult(outcome.result);
+      } else if (outcome.kind === 'approved') {
+        await completeCardAttempt(outcome.requestId, outcome.intendedTotalCents, false);
+      } else {
+        setCardAttempt(outcome.attempt);
+      }
+    } catch (err) {
+      // Phase 1 Step A did not commit → the cashier is NOT sent to Clover and
+      // no Clover instruction is shown (`REQ-RECONCILE-001`; TEST-CARD-005A).
+      setCardAttempt(IDLE_CARD_ATTEMPT);
+      if (err instanceof IpcResultError && requiresReReview(err.code)) {
+        setCart((current) => clearReview(current));
+        setError(`${err.message} The cart is still here — Review it again to continue.`);
+      } else {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    }
+  }, [cart, completing, saleResult, cardAttempt.phase, completeCardAttempt]);
+
+  const onCardApproved = useCallback(() => {
+    if (cardAttempt.phase !== 'awaiting_clover') {
+      return;
+    }
+    void completeCardAttempt(cardAttempt.requestId, cardAttempt.intendedTotalCents, false);
+  }, [cardAttempt, completeCardAttempt]);
+
+  const onRetryLocalSave = useCallback(() => {
+    if (cardAttempt.phase !== 'local_failure') {
+      return;
+    }
+    void completeCardAttempt(cardAttempt.requestId, cardAttempt.intendedTotalCents, true);
+  }, [cardAttempt, completeCardAttempt]);
+
+  const onCardDeclined = useCallback(async () => {
+    if (cardAttempt.phase !== 'awaiting_clover' || cart.review === null) {
+      return;
+    }
+    const { requestId, intendedTotalCents } = cardAttempt;
+    const fingerprint = cart.review.fingerprint;
+    setCardAttempt({ phase: 'declining', requestId, intendedTotalCents });
+    const api = pos();
+    if (api) {
+      try {
+        await unwrap(api.checkout.declineCard({ requestId, reviewedFingerprint: fingerprint }));
+      } catch {
+        /* Best-effort per `POS_WORKFLOWS.md §31`; the cart still becomes editable. */
+      }
+    }
+    setCardAttempt(IDLE_CARD_ATTEMPT);
+    // The declined request id is spent — a fresh Review mints a new one for the
+    // next attempt (another card, Cash, or a changed cart).
+    setCart((current) => clearReview(current));
+    setNotice(
+      'Card payment declined. The cart is still here — Review again to try another card or switch to Cash.',
+    );
+  }, [cardAttempt, cart.review]);
+
+  const onAbandonCardFailure = useCallback(() => {
+    resetForNewSale();
+    setNotice(
+      'This card attempt was left for reconciliation. Open Settings → Reconciliation Queue to resolve it.',
+    );
+  }, [resetForNewSale]);
+
   const review: CheckoutReview | null = cart.review;
   const canReview =
-    cart.lines.length > 0 && previewErrors.length === 0 && !reviewing && !saleResult;
+    cart.lines.length > 0 &&
+    previewErrors.length === 0 &&
+    !reviewing &&
+    !saleResult &&
+    cardAttempt.phase === 'idle';
   const cashReady = canCompleteCash(cart) && !completing && !saleResult;
+  const cardReady =
+    canBeginCard(cart) && !completing && !saleResult && cardAttempt.phase === 'idle';
 
   if (saleResult) {
     if (showReceipt) {
@@ -396,6 +540,18 @@ export function CheckoutPage() {
         result={saleResult}
         onViewReceipt={() => void onViewReceipt()}
         onNewSale={resetForNewSale}
+      />
+    );
+  }
+
+  if (cardAttempt.phase !== 'idle') {
+    return (
+      <CardPaymentPanel
+        attempt={cardAttempt}
+        onApproved={onCardApproved}
+        onDeclined={() => void onCardDeclined()}
+        onRetryLocalSave={onRetryLocalSave}
+        onAbandon={onAbandonCardFailure}
       />
     );
   }
@@ -634,7 +790,8 @@ export function CheckoutPage() {
             </label>
           ))}
           <p className="field-hint">
-            Cash sales complete here. Card checkout arrives in a later version.
+            Cash sales complete here. Card sales are processed on the Clover terminal — choose Card,
+            then <strong>Begin card payment</strong> after reviewing.
           </p>
         </section>
       </div>
@@ -677,22 +834,30 @@ export function CheckoutPage() {
         <button type="button" onClick={() => void runReview()} disabled={!canReview}>
           {reviewing ? 'Reviewing…' : 'Review checkout'}
         </button>
-        {review && review.paymentMethod === 'CASH' ? (
+        {review && review.paymentMethod === 'CASH' && (
           <button type="button" onClick={() => void onCompleteCash()} disabled={!cashReady}>
             {completing ? 'Completing…' : 'Complete sale (cash)'}
           </button>
-        ) : (
-          <button type="button" disabled title="Card checkout arrives in a later version">
-            Complete sale (card — not available yet)
+        )}
+        {review && review.paymentMethod === 'CARD' && (
+          <button type="button" onClick={() => void onBeginCard()} disabled={!cardReady}>
+            Begin card payment
           </button>
         )}
       </div>
 
       {review && (
         <section className="checkout-review" role="status">
-          <h4>Checkout reviewed{review.paymentMethod === 'CASH' ? ' — ready to complete' : ''}</h4>
+          <h4>
+            Checkout reviewed
+            {review.paymentMethod === 'CASH' ? ' — ready to complete' : ' — ready for card payment'}
+          </h4>
           {review.paymentMethod === 'CARD' && (
-            <p>Card completion is not available yet. No sale has been recorded.</p>
+            <p>
+              Choose <strong>Begin card payment</strong> to record this checkout and process{' '}
+              {formatCents(review.totalCents)} on the Clover terminal. No sale has been recorded
+              yet.
+            </p>
           )}
           <dl className="checkout-totals">
             <div>

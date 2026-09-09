@@ -2595,7 +2595,7 @@ BEGIN IMMEDIATE
    - For **Cash**, `status = SUBMITTED` immediately — there is no external payment step to await.
    - For **Card**, `status = PENDING_PAYMENT` — `clover_approved_confirmed_at` is left `NULL`; the POS does not yet know, and must not imply, whether Clover will approve anything.
 
-Drift between the reviewed values and current authoritative state is **not** judged in Step A — that is Phase 2's single authoritative gate (Phase 2 step 5, Section 41B). Step A only refuses to create a row when a sale plainly cannot be completed at all.
+For **Cash**, drift between the reviewed values and current authoritative state is **not** judged in Step A — Phase 2 is the single authoritative gate (Phase 2 step 5, Section 41B), and Step A only refuses to create a row when a sale plainly cannot be completed at all. For **Card**, Step A additionally performs one pre-payment check: the fingerprint recomputed from current authoritative state must equal the reviewed `request_fingerprint`. If it does not (a price or the tax rate changed since Checkout Review), Step A rejects with `CHECKOUT_DRIFT` and creates **no** row, *before* any Clover instruction is shown — so the POS never instructs Clover to charge an amount the cashier did not review, and `request_fingerprint` and `intended_total_cents` on a written row always describe the same reviewed transaction. This pre-payment safety check does **not** replace Phase 2 revalidation, which still runs after Clover approval as the final authoritative drift gate before sale commit.
 
 ```text
 COMMIT
@@ -2885,7 +2885,7 @@ Yes
 
 Purpose:
 
-The final total the cashier reviewed and, for Card, the amount that will be processed on Clover. Recorded at Phase 1, Step A — before the cashier is sent to Clover — so it is available even if Clover approval is never confirmed or Phase 2 never produces a `sales` row.
+The final total the cashier reviewed and, for Card, the amount that will be processed on Clover. Recorded at Phase 1, Step A — before the cashier is sent to Clover — so it is available even if Clover approval is never confirmed or Phase 2 never produces a `sales` row. For Card these are the same value: Step A rejects the attempt (Section 31; `CHECKOUT_DRIFT`) if the reviewed fingerprint no longer matches current authoritative state, so `intended_total_cents` is only ever recorded when the current recalculated total *is* the reviewed total.
 
 ---
 
@@ -3498,7 +3498,7 @@ Lines with identical tuples (the same product added twice at the same price and 
 
 At Phase 2 (Section 31), the trusted application layer independently recalculates every one of these values from current authoritative state: current product `is_active`/`quantity_on_hand`, the currently configured `tax_rate_bps`, and the submitted line prices — canonically ordered the same way before comparison. If any recalculated authoritative value differs from the value captured in the reviewed fingerprint above — including a configured tax-rate change between review and submission, a product archived or price-changed after the cart was built, or a stock level that has since changed — Phase 2 rejects the attempt with a "checkout details changed, please review again" error rather than silently committing different financial values. The cashier must re-review the cart (a new fingerprint is computed) before retrying.
 
-For Card payments this rule is strict: the `total_cents` the cashier actually processed on Clover (`checkout_requests.intended_total_cents`) must equal the authoritative recalculated `sales.total_cents` exactly, or Phase 2 is rejected rather than committing a sale for a different amount than was charged.
+For Card payments this rule is strict: the `total_cents` the cashier actually processed on Clover (`checkout_requests.intended_total_cents`) must equal the authoritative recalculated `sales.total_cents` exactly, or Phase 2 is rejected rather than committing a sale for a different amount than was charged. For Card, this fingerprint equality is additionally enforced once **before** payment, at Phase 1 Step A (Section 31): if the fingerprint recomputed from current state does not match the reviewed fingerprint, Step A rejects with `CHECKOUT_DRIFT` before writing `PENDING_PAYMENT` or showing any Clover instruction, so the cashier is never told to process an amount Checkout Review did not show. The Phase 2 check above still runs afterward as the final gate.
 
 ---
 

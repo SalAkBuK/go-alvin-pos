@@ -47,17 +47,27 @@ beforeEach(() => {
 afterEach(() => vi.clearAllMocks());
 
 describe('checkout IPC registration', () => {
-  it('registers exactly checkout:review, checkout:complete-cash, and receipts:get-by-sale-id', () => {
+  it('registers exactly review, complete-cash, begin/complete/decline-card, and receipts:get-by-sale-id', () => {
     expect([...handlers.keys()].sort()).toEqual(
-      [IPC.checkoutCompleteCash, IPC.checkoutReview, IPC.receiptsGetBySaleId].sort(),
+      [
+        IPC.checkoutReview,
+        IPC.checkoutCompleteCash,
+        IPC.checkoutBeginCard,
+        IPC.checkoutCompleteCard,
+        IPC.checkoutDeclineCard,
+        IPC.receiptsGetBySaleId,
+      ].sort(),
     );
   });
 
-  it('defines no Card completion / generic complete channel', () => {
+  it('defines the narrow Card capabilities but no generic complete channel', () => {
     for (const channel of handlers.keys()) {
-      expect(channel).not.toMatch(/card|clover|pending/i);
       expect(channel).not.toBe('checkout:complete');
+      expect(channel).not.toMatch(/clover|:complete$/i);
     }
+    expect(handlers.has('checkout:begin-card')).toBe(true);
+    expect(handlers.has('checkout:complete-card')).toBe(true);
+    expect(handlers.has('checkout:decline-card')).toBe(true);
   });
 
   it('a trusted receipt request with no database returns a typed DATABASE_UNAVAILABLE result (no throw)', async () => {
@@ -93,6 +103,29 @@ describe('checkout IPC registration', () => {
       reviewedFingerprint: 'a'.repeat(64),
       checkout: { customerId: null, paymentMethod: 'CASH', lines: [] },
     })) as { ok: false; error: { code: string; message: string } };
+    expect(result.ok).toBe(false);
+    expect(result.error.code).toBe('DATABASE_UNAVAILABLE');
+  });
+
+  it.each([IPC.checkoutBeginCard, IPC.checkoutCompleteCard] as const)(
+    '%s with no database returns a typed DATABASE_UNAVAILABLE result (no throw)',
+    async (channel) => {
+      const result = (await handlers.get(channel)!(trustedEvent(), {
+        requestId: 'r1',
+        reviewedFingerprint: 'a'.repeat(64),
+        checkout: { customerId: null, paymentMethod: 'CARD', lines: [] },
+      })) as { ok: false; error: { code: string; message: string } };
+      expect(result.ok).toBe(false);
+      expect(result.error.code).toBe('DATABASE_UNAVAILABLE');
+      expect(result.error.message).not.toMatch(/sqlite|C:\\|SELECT/i);
+    },
+  );
+
+  it('decline-card with no database returns a typed DATABASE_UNAVAILABLE result (no throw)', async () => {
+    const result = (await handlers.get(IPC.checkoutDeclineCard)!(trustedEvent(), {
+      requestId: 'r1',
+      reviewedFingerprint: 'a'.repeat(64),
+    })) as { ok: false; error: { code: string } };
     expect(result.ok).toBe(false);
     expect(result.error.code).toBe('DATABASE_UNAVAILABLE');
   });

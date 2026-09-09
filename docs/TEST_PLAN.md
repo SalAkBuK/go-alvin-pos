@@ -1184,6 +1184,24 @@ The entry becomes `resolution_status = RESOLVED` with the required note; no sale
 
 ---
 
+## TEST-CARD-008 — Pre-Payment Fingerprint Check Before Clover Is Invoked
+
+1. Complete Checkout Review for a Card sale at a known total (e.g. `$595.38`).
+2. Before `begin-card` runs, change authoritative state so the reviewed fingerprint no longer matches — raise the product's listed price, or change the configured `tax_rate_bps`.
+3. Run `begin-card` with the original reviewed fingerprint.
+
+Expected:
+
+- `begin-card` is rejected with `CHECKOUT_DRIFT`.
+- **No** `checkout_requests` row is created for the attempt.
+- The cashier is never shown a Clover instruction / amount; no sale, payment, inventory, or export effect occurs; the cart, customer, and payment choice are retained and the stale review must be re-run. This is not a reconciliation entry — no card was processed.
+
+If instead there is **no** drift (`begin-card` immediately follows Review), the `PENDING_PAYMENT` row is written with `request_fingerprint == reviewedFingerprint` and `intended_total_cents` equal to the reviewed total, and that same value is what `begin-card` returns and what the Clover instruction shows.
+
+This pre-payment check does not replace Phase 2 revalidation: drift that first appears **after** Step A (between `begin-card` and Phase 2, e.g. `TEST-IDEMP-007`) is still detected by Phase 2 after Clover approval and handled as a Card reconciliation incident.
+
+---
+
 # 17. Barcode Tests
 
 ## TEST-SCAN-001 — Known Barcode
@@ -4027,7 +4045,7 @@ This matrix supersedes the prior partial matrix (which covered only Void/Audit/E
 | `REQ-SALE-011` | `TEST-CART-001` |
 | `REQ-SALE-012` | `TEST-CART-006`, `TEST-IDEMP-008` |
 | `REQ-SALE-013` | `TEST-CART-007`, `TEST-CART-008`, `TEST-CART-009` |
-| `REQ-SALE-014` | `TEST-IDEMP-006`, `TEST-IDEMP-007`, `TEST-IDEMP-008` |
+| `REQ-SALE-014` | `TEST-IDEMP-006`, `TEST-IDEMP-007`, `TEST-IDEMP-008`, `TEST-CARD-008` |
 | `REQ-RECNO-001` | `TEST-RECNO-001` |
 | `REQ-RECNO-002` | `TEST-RECNO-002` |
 | `REQ-RECNO-003` | `TEST-RECNO-004` |
@@ -4042,7 +4060,7 @@ This matrix supersedes the prior partial matrix (which covered only Void/Audit/E
 | `REQ-PAY-003` | `TEST-CARD-004` |
 | `REQ-PAY-004` | `TEST-CARD-003` |
 | `REQ-PAY-005` | `TEST-DB-012` |
-| `REQ-RECONCILE-001` | `TEST-CARD-005A`, `TEST-CARD-005` |
+| `REQ-RECONCILE-001` | `TEST-CARD-005A`, `TEST-CARD-005`, `TEST-CARD-008` |
 | `REQ-RECONCILE-002` | `TEST-CARD-005`, `TEST-CARD-005B` |
 | `REQ-RECONCILE-003` | `TEST-CARD-005` |
 | `REQ-RECONCILE-004` | `TEST-CARD-007`, `TEST-CARD-005C` |

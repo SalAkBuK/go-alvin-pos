@@ -9,6 +9,7 @@ import { runNativeSqliteCheck } from '../diagnostics/nativeSqliteCheck';
 import { registerCheckoutIpcHandlers } from './checkoutIpc';
 import { registerCustomerIpcHandlers } from './customerIpc';
 import { registerProductIpcHandlers } from './productIpc';
+import { registerReconciliationIpcHandlers } from './reconciliationIpc';
 import { registerSettingsIpcHandlers } from './settingsIpc';
 
 /**
@@ -71,6 +72,11 @@ export function registerIpcHandlers(context: IpcContext): void {
     logger: context.logger,
     getDatabase: context.getDatabase,
     appVersion: context.appVersion,
+  });
+
+  registerReconciliationIpcHandlers({
+    logger: context.logger,
+    getDatabase: context.getDatabase,
   });
 
   registerSettingsIpcHandlers({

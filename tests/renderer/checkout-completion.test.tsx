@@ -207,9 +207,9 @@ describe('CheckoutPage static markup', () => {
     const html = renderToStaticMarkup(<CheckoutPage />);
     expect(html).toContain('Review checkout');
     expect(html).toContain('Clear cart');
-    // Card fallback button is present but disabled; there is no bare Cash button.
-    expect(html).toContain('not available yet');
+    // No completion control renders before a review (Cash or Card).
     expect(html).toContain('disabled');
-    expect(html).not.toMatch(/>\s*Complete sale \(cash\)\s*</);
+    expect(html).not.toMatch(/<button[^>]*>\s*Complete sale \(cash\)\s*<\/button>/);
+    expect(html).not.toMatch(/<button[^>]*>\s*Begin card payment\s*<\/button>/);
   });
 });

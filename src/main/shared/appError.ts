@@ -109,6 +109,21 @@ export const appErrors = {
       'CHECKOUT_REQUEST_INVALID',
       'This checkout can no longer be completed. Start a new sale.',
     ),
+  cardLocalCommitFailure: (requestId: string): AppError =>
+    new AppError(
+      'CARD_LOCAL_COMMIT_FAILURE',
+      [
+        'Local sale could not be saved.',
+        '',
+        'If you already saw "Approved" on Clover, that charge may still exist.',
+        'DO NOT RUN THE CARD AGAIN.',
+        '',
+        'Check this transaction in Clover directly. If it was charged and you',
+        'cannot complete the local sale, void or refund it manually in Clover.',
+        '',
+        `This attempt was recorded for reconciliation: ${requestId}`,
+      ].join('\n'),
+    ),
   receiptNotFound: (): AppError =>
     new AppError('RECEIPT_NOT_FOUND', 'That sale could not be found.'),
   receiptDataInconsistent: (): AppError =>

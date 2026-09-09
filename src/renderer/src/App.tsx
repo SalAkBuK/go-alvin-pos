@@ -10,11 +10,11 @@ import { SettingsPage } from './features/settings/SettingsPage';
  * Application shell.
  *
  * Implemented business areas: Products + Inventory (Phase 2B), Customers
- * (Phase 2C), Checkout / New Sale (Phase 2D review + Phase 2E Cash completion),
- * and a Settings area for the sales-tax rate and business/receipt details
- * (Phase 2D.1 / 2D.2). A small status line keeps the database/runtime state
- * visible. There is no sales history or reporting UI yet, and Card checkout is
- * not available.
+ * (Phase 2C), Checkout / New Sale (Phase 2D review + Phase 2E Cash completion +
+ * Phase 2F manual Clover Card workflow), and a Settings area for the sales-tax
+ * rate, business/receipt details (Phase 2D.1 / 2D.2), and the Card
+ * Reconciliation Queue (Phase 2F). A small status line keeps the
+ * database/runtime state visible. There is no sales history or reporting UI yet.
  */
 
 type Area = 'checkout' | 'products' | 'customers' | 'settings';

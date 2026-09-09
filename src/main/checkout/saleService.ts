@@ -1,27 +1,15 @@
-import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { CompletedSaleResult } from '../../shared/checkout';
-import type { AppErrorCode } from '../../shared/products';
-import { appendAuditEvent } from '../audit/appendAuditEvent';
-import { readCurrentQuantity, setProductQuantity } from '../products/productRepository';
-import { insertMovement } from '../inventory/inventoryRepository';
 import { readBusinessConfig } from '../settings/settingsService';
 import { AppError, appErrors, isAppError } from '../shared/appError';
-import { aggregateQuantityByProduct, recalculateCheckout } from './checkoutRecalculation';
+import { recalculateCheckout } from './checkoutRecalculation';
 import {
   findCheckoutRequest,
   insertSubmittedCashRequest,
   markCheckoutRequestCommitFailed,
-  markCheckoutRequestCompleted,
 } from './checkoutRequestRepository';
-import {
-  allocateReceiptNumber,
-  insertExportJob,
-  insertPayment,
-  insertSale,
-  insertSaleItem,
-  readCompletedSaleSummary,
-} from './saleRepository';
+import { readCompletedSaleSummary } from './saleRepository';
+import { RECORDABLE_PHASE2_FAILURE_CODES, runSalePhase2 } from './salePhase2';
 import { validateCompleteCashSale } from './saleValidation';
 import type { ValidatedCompleteCashSale } from './saleValidation';
 
@@ -40,12 +28,13 @@ import type { ValidatedCompleteCashSale } from './saleValidation';
  *    idempotency key, rejects a request whose preconditions are already broken
  *    at submission, and durably records the `checkout_requests` row as
  *    `SUBMITTED`. Cash has no Step B (no external payment confirmation).
- *  - **Phase 2** — the authoritative `BEGIN IMMEDIATE` sale transaction: the
- *    single authoritative drift gate (`§41B`), plus the receipt number, sale,
- *    sale items, payment, inventory deduction, SALE movements, the durable
- *    `PENDING` Google export job, the `SALE_COMPLETED` (and any `PRICE_OVERRIDE`)
- *    audit events, and the `checkout_requests` → `COMPLETED` transition, all
- *    together or not at all.
+ *  - **Phase 2** — the authoritative `BEGIN IMMEDIATE` sale transaction, now
+ *    shared with Card completion in {@link runSalePhase2}: the single
+ *    authoritative drift gate (`§41B`), plus the receipt number, sale, sale
+ *    items, payment, inventory deduction, SALE movements, the durable `PENDING`
+ *    Google export job, the `SALE_COMPLETED` (and any `PRICE_OVERRIDE`) audit
+ *    events, and the `checkout_requests` → `COMPLETED` transition, all together
+ *    or not at all.
  *
  * Any Phase 2 attempt that begins from an eligible request and rolls back — an
  * unexpected/storage failure OR a trusted revalidation rejection (drift, stock,
@@ -58,31 +47,11 @@ import type { ValidatedCompleteCashSale } from './saleValidation';
  * retry is next. `SUBMITTED` means "currently eligible for Phase 2"; a request
  * rejected in Phase 2 does not linger there. For Cash a `COMMIT_FAILED` row is
  * terminal/retry evidence only — it is not an external-payment reconciliation
- * case (that stays Card-specific: `DATA_MODEL.md §31A`-`§31B`). Card,
- * `PENDING_PAYMENT`, the reconciliation queue, receipt printing, and the export
- * worker are NOT here.
+ * case (that stays Card-specific: `DATA_MODEL.md §31A`-`§31B`). Card Phase 1
+ * (`PENDING_PAYMENT`, Step B), `checkout:complete-card`, the reconciliation
+ * queue, receipt printing, and the export worker are NOT here — this service
+ * remains the Cash entrypoint only.
  */
-
-/**
- * Typed Phase 2 rejections that mean "the authoritative sale transaction began
- * from an eligible request and rolled back with nothing written". Each is
- * recorded on the `checkout_requests` row as `COMMIT_FAILED` with itself as the
- * stable `failure_code` (`DATA_MODEL.md §31`, `§33`; `SUPPORT_DIAGNOSTICS.md
- * §42`), then re-thrown unchanged. `CHECKOUT_REQUEST_INVALID` and
- * `IDEMPOTENCY_CONFLICT` are deliberately excluded: they mean the request was
- * not in an eligible state, so its status must not be rewritten.
- */
-const RECORDABLE_PHASE2_FAILURE_CODES: ReadonlySet<AppErrorCode> = new Set<AppErrorCode>([
-  'CHECKOUT_DRIFT',
-  'INSUFFICIENT_STOCK',
-  'PRODUCT_ARCHIVED',
-  'PRODUCT_NOT_FOUND',
-  'CUSTOMER_NOT_FOUND',
-  'TAX_RATE_NOT_CONFIGURED',
-  'BUSINESS_NOT_CONFIGURED',
-  'CHECKOUT_TOTAL_EXCEEDED',
-  'VALIDATION',
-]);
 
 export interface SaleServiceDeps {
   readonly db: Database.Database;
@@ -97,16 +66,6 @@ export interface SaleService {
 
 type Phase1Result =
   { readonly kind: 'ready' } | { readonly kind: 'completed'; readonly saleId: string };
-
-type Phase2Result = { readonly saleId: string; readonly alreadyCompleted: boolean };
-
-interface PriceOverride {
-  readonly productId: string;
-  readonly productName: string;
-  readonly listedPriceCents: number;
-  readonly soldPriceCents: number;
-  readonly quantity: number;
-}
 
 export function createSaleService(deps: SaleServiceDeps): SaleService {
   const { db, appVersion } = deps;
@@ -201,181 +160,6 @@ export function createSaleService(deps: SaleServiceDeps): SaleService {
       .immediate();
   }
 
-  /** Phase 2 — the authoritative sale transaction. */
-  function runPhase2(payload: ValidatedCompleteCashSale, occurredAt: string): Phase2Result {
-    const { requestId, checkout } = payload;
-    return db
-      .transaction((): Phase2Result => {
-        const row = findCheckoutRequest(db, requestId);
-        if (!row) {
-          throw new Error('checkout_requests row missing at Phase 2');
-        }
-        if (row.status === 'COMPLETED') {
-          return { saleId: row.sale_id as string, alreadyCompleted: true };
-        }
-        if (row.status !== 'SUBMITTED' && row.status !== 'COMMIT_FAILED') {
-          throw appErrors.checkoutRequestInvalid();
-        }
-
-        const recalc = recalculateCheckout(db, checkout);
-        if (recalc.fingerprint !== row.request_fingerprint) {
-          throw appErrors.checkoutDrift();
-        }
-
-        const business = readBusinessConfig(db);
-        if (!business.configured) {
-          throw appErrors.businessNotConfigured();
-        }
-
-        const customer = recalc.customer;
-        const saleId = randomUUID();
-        const receipt = allocateReceiptNumber(db, occurredAt);
-
-        insertSale(db, {
-          id: saleId,
-          receiptNumber: receipt.receiptNumber,
-          customerId: customer ? customer.id : null,
-          customerNameSnapshot: customer ? customer.name : null,
-          customerPhoneSnapshot: customer ? customer.phone : null,
-          businessNameSnapshot: business.businessName,
-          businessAddressSnapshot: business.businessAddress,
-          businessPhoneSnapshot: business.businessPhone,
-          receiptDisclaimerSnapshot: business.receiptDisclaimer,
-          receiptFooterSnapshot: business.receiptFooter,
-          subtotalCents: recalc.totals.subtotalCents,
-          discountCents: recalc.totals.discountCents,
-          taxableAmountCents: recalc.totals.taxableAmountCents,
-          taxRateBps: recalc.totals.taxRateBps,
-          taxCents: recalc.totals.taxCents,
-          totalCents: recalc.totals.totalCents,
-          paymentMethodSnapshot: 'CASH',
-          // `created_at` = when checkout began: the Phase 1 request row's own
-          // commit-time timestamp — the earliest trusted, durable instant for
-          // this checkout (the pre-submission draft cart is not persisted).
-          // `completed_at` = this Phase 2 instant (`DATA_MODEL.md §4`).
-          createdAt: row.created_at,
-          completedAt: occurredAt,
-        });
-
-        const overrides: PriceOverride[] = [];
-        for (const { product, canonical } of recalc.orderedLines) {
-          const listed = canonical.listedPriceCents;
-          const sold = canonical.soldPriceCents;
-          const quantity = canonical.quantity;
-          insertSaleItem(db, {
-            id: randomUUID(),
-            saleId,
-            productId: product.id,
-            productNameSnapshot: product.name,
-            brandSnapshot: product.brand,
-            modelSnapshot: product.model,
-            conditionSnapshot: product.condition,
-            skuSnapshot: product.sku,
-            barcodeSnapshot: product.barcode,
-            listedPriceCents: listed,
-            soldPriceCents: sold,
-            discountCents: Math.max(0, listed - sold) * quantity,
-            quantity,
-            lineSubtotalCents: listed * quantity,
-            lineTotalCents: sold * quantity,
-            createdAt: occurredAt,
-          });
-          if (sold !== listed) {
-            overrides.push({
-              productId: product.id,
-              productName: product.name,
-              listedPriceCents: listed,
-              soldPriceCents: sold,
-              quantity,
-            });
-          }
-        }
-
-        insertPayment(db, {
-          id: randomUUID(),
-          saleId,
-          method: 'CASH',
-          amountCents: recalc.totals.totalCents,
-          createdAt: occurredAt,
-        });
-
-        // One quantity update + one SALE movement per product; duplicate cart
-        // lines are aggregated for the deduction only (`§41A`).
-        for (const { product, quantity } of aggregateQuantityByProduct(
-          recalc.orderedLines,
-        ).values()) {
-          const before = readCurrentQuantity(db, product.id);
-          if (before === null) {
-            throw appErrors.productNotFound();
-          }
-          const after = before - quantity;
-          if (after < 0) {
-            throw appErrors.insufficientStock(product.name, before);
-          }
-          setProductQuantity(db, product.id, after, occurredAt);
-          insertMovement(db, {
-            id: randomUUID(),
-            productId: product.id,
-            saleId,
-            movementType: 'SALE',
-            reversesMovementId: null,
-            quantityChange: -quantity,
-            quantityBefore: before,
-            quantityAfter: after,
-            // The SALE movement_type + non-null sale_id are the reason it
-            // changed; no free-text reason is synthesised (`§17`).
-            reason: null,
-            createdAt: occurredAt,
-          });
-        }
-
-        insertExportJob(db, { id: randomUUID(), saleId, createdAt: occurredAt });
-
-        appendAuditEvent(db, {
-          eventType: 'SALE_COMPLETED',
-          occurredAt,
-          actorType: 'USER',
-          outcome: 'SUCCESS',
-          appVersion,
-          subjectType: 'SALE',
-          subjectId: saleId,
-          correlationId: requestId,
-          details: {
-            receiptNumber: receipt.receiptNumber,
-            totalCents: recalc.totals.totalCents,
-            paymentMethod: 'CASH',
-            lineCount: recalc.orderedLines.length,
-            customerAttached: customer !== null,
-            taxRateBps: recalc.totals.taxRateBps,
-            taxCents: recalc.totals.taxCents,
-          },
-        });
-
-        if (overrides.length > 0) {
-          // One PRICE_OVERRIDE event per sale, listing every overridden line
-          // unambiguously — canon fixes no cardinality, so the narrowest
-          // representation that loses nothing is used. A line whose sold price
-          // differs from listed *in either direction* is an override (`§21`,
-          // `§41`); this is not the same as `discount_cents > 0`.
-          appendAuditEvent(db, {
-            eventType: 'PRICE_OVERRIDE',
-            occurredAt,
-            actorType: 'USER',
-            outcome: 'SUCCESS',
-            appVersion,
-            subjectType: 'SALE',
-            subjectId: saleId,
-            correlationId: requestId,
-            details: { receiptNumber: receipt.receiptNumber, overrides },
-          });
-        }
-
-        markCheckoutRequestCompleted(db, { requestId, saleId, completedAt: occurredAt });
-        return { saleId, alreadyCompleted: false };
-      })
-      .immediate();
-  }
-
   return {
     completeCashSale(raw: unknown): CompletedSaleResult {
       const payload = validateCompleteCashSale(raw);
@@ -404,9 +188,15 @@ export function createSaleService(deps: SaleServiceDeps): SaleService {
       // legitimately eligible for this Phase 2 attempt. Any rollback below is
       // therefore recorded on that same row, never on an unrelated one.
       const occurredAt = now();
-      let result: Phase2Result;
+      let result: { readonly saleId: string; readonly alreadyCompleted: boolean };
       try {
-        result = runPhase2(payload, occurredAt);
+        result = runSalePhase2(db, {
+          requestId: payload.requestId,
+          checkout: payload.checkout,
+          paymentMethod: 'CASH',
+          appVersion,
+          occurredAt,
+        });
       } catch (error) {
         if (isAppError(error)) {
           // A trusted, typed Phase 2 rejection: the authoritative transaction

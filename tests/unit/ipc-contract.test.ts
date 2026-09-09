@@ -3,7 +3,7 @@ import { IPC } from '../../src/shared/ipc';
 import type { PosApi } from '../../src/shared/ipc';
 
 describe('IPC contract', () => {
-  it('exposes exactly the foundation, diagnostic, product/inventory, customer, checkout-review, receipt, and settings (tax + business) channels', () => {
+  it('exposes exactly the foundation, diagnostic, product/inventory, customer, checkout (review + cash + card), reconciliation, receipt, and settings (tax + business) channels', () => {
     expect(Object.keys(IPC).sort()).toEqual(
       [
         'appInfo',
@@ -25,6 +25,11 @@ describe('IPC contract', () => {
         'customersPurchaseHistory',
         'checkoutReview',
         'checkoutCompleteCash',
+        'checkoutBeginCard',
+        'checkoutCompleteCard',
+        'checkoutDeclineCard',
+        'reconciliationList',
+        'reconciliationResolve',
         'receiptsGetBySaleId',
         'settingsTaxGet',
         'settingsTaxUpdate',
@@ -43,6 +48,7 @@ describe('IPC contract', () => {
       'inventory',
       'customers',
       'checkout',
+      'reconciliation',
       'receipts',
       'settings',
     ];
@@ -80,7 +86,8 @@ describe('IPC contract', () => {
       products: ['create', 'update', 'archive', 'list', 'search', 'findByBarcode'],
       inventory: ['adjust', 'movements'],
       customers: ['create', 'update', 'list', 'search', 'get', 'purchaseHistory'],
-      checkout: ['review', 'completeCash'],
+      checkout: ['review', 'completeCash', 'beginCard', 'completeCard', 'declineCard'],
+      reconciliation: ['list', 'resolve'],
       receipts: ['getBySaleId'],
       // `settings` exposes only the tax and business sub-objects — no generic setter.
       settings: ['tax.get', 'tax.update', 'business.get', 'business.update'],
@@ -93,6 +100,7 @@ describe('IPC contract', () => {
       'inventory',
       'products',
       'receipts',
+      'reconciliation',
       'settings',
     ]);
     for (const methods of Object.values(surface)) {

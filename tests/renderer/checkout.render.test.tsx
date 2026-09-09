@@ -55,7 +55,7 @@ describe('checkout screen renders on the shell', () => {
     expect(html).toContain('New Sale');
   });
 
-  it('CheckoutPage shows the canonical review fields and no working Complete Sale', () => {
+  it('CheckoutPage shows the canonical review fields and no completion control before a review', () => {
     const html = renderToStaticMarkup(<CheckoutPage />);
     for (const label of [
       'Subtotal',
@@ -70,10 +70,11 @@ describe('checkout screen renders on the shell', () => {
     ]) {
       expect(html).toContain(label);
     }
-    // A completion control may exist but must be clearly unavailable.
-    expect(html).toContain('not available yet');
+    // Neither the Cash nor the Card completion control renders until a review
+    // exists — the empty cart only offers Clear cart + Review checkout.
+    expect(html).not.toMatch(/<button[^>]*>\s*Complete sale \(cash\)\s*<\/button>/);
+    expect(html).not.toMatch(/<button[^>]*>\s*Begin card payment\s*<\/button>/);
     expect(html).toContain('disabled');
-    expect(html).not.toMatch(/>\s*Complete sale\s*</); // no bare enabled "Complete sale" button
   });
 });
 
