@@ -33,6 +33,7 @@ import type {
 } from './printing';
 import type { ReceiptRepresentation } from './receipt';
 import type { ReconciliationEntry, ResolveReconciliationInput } from './reconciliation';
+import type { DailyReport, DailyReportInput } from './reports';
 import type {
   SaleDetail,
   SalesHistoryEntry,
@@ -137,6 +138,15 @@ export const IPC = {
   // `receipts:get-by-sale-id`.
   salesHistoryList: 'sales-history:list',
   salesHistoryGetById: 'sales-history:get-by-id',
+
+  // ── Phase 2K: Daily Reports ───────────────────────────────────────────────
+  // One read-only capability. `daily` recomputes a single business day's totals
+  // live from local `sales` snapshots (`REQ-REPORT-001`-`REQ-REPORT-009`,
+  // `POS_WORKFLOWS.md §53`-`§55`). Payload is only an optional `{ businessDate }`
+  // (`YYYY-MM-DD`, current business day when omitted) — no SQL, no range, no
+  // column, no ordering. Writes nothing, emits no audit event, never queries
+  // Google Sheets.
+  reportsDaily: 'reports:daily',
   // ── Phase 2H: Sale Void / Correction ──────────────────────────────────────
   // The one-time `COMPLETED → VOIDED` transition for one sale, launched from the
   // Sales History detail. One authoritative SQLite transaction (status + void
@@ -333,6 +343,19 @@ export interface PosApi {
      * freshly re-read authoritative {@link SaleDetail}.
      */
     voidSale(input: VoidSaleInput): Promise<IpcResult<SaleDetail>>;
+  };
+  readonly reports: {
+    /**
+     * One business day's Daily Report (`REQ-REPORT-001`-`REQ-REPORT-009`;
+     * `POS_WORKFLOWS.md §53`-`§55`), recomputed live from local `sales`
+     * snapshots. Pass `{ businessDate: 'YYYY-MM-DD' }` for a specific day, or
+     * omit / `{}` for the current business day (resolved in the trusted layer
+     * from the configured `business_timezone`, not the browser clock). Revenue
+     * totals and the completed count exclude `VOIDED` sales; voided sales are
+     * returned as a separate count for the same original business date. Google
+     * Sheets is never queried; a malformed date is `VALIDATION`.
+     */
+    daily(input?: DailyReportInput): Promise<IpcResult<DailyReport>>;
   };
   readonly printing: {
     /**

@@ -14,6 +14,7 @@ import { registerGoogleIpcHandlers } from './googleIpc';
 import { registerPrintingIpcHandlers } from './printingIpc';
 import { registerProductIpcHandlers } from './productIpc';
 import { registerReconciliationIpcHandlers } from './reconciliationIpc';
+import { registerReportsIpcHandlers } from './reportsIpc';
 import { registerSalesHistoryIpcHandlers } from './salesHistoryIpc';
 import { registerSettingsIpcHandlers } from './settingsIpc';
 
@@ -98,6 +99,11 @@ export function registerIpcHandlers(context: IpcContext): void {
     logger: context.logger,
     getDatabase: context.getDatabase,
     appVersion: context.appVersion,
+  });
+
+  registerReportsIpcHandlers({
+    logger: context.logger,
+    getDatabase: context.getDatabase,
   });
 
   registerSettingsIpcHandlers({

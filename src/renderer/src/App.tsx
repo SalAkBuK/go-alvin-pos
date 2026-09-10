@@ -5,6 +5,7 @@ import { CheckoutPage } from './features/checkout/CheckoutPage';
 import { CustomersPage } from './features/customers/CustomersPage';
 import { SalesHistoryPage } from './features/history/SalesHistoryPage';
 import { ProductsPage } from './features/products/ProductsPage';
+import { DailyReportPage } from './features/reports/DailyReportPage';
 import { SettingsPage } from './features/settings/SettingsPage';
 
 /**
@@ -15,11 +16,12 @@ import { SettingsPage } from './features/settings/SettingsPage';
  * Phase 2F manual Clover Card workflow), and a Settings area for the sales-tax
  * rate, business/receipt details (Phase 2D.1 / 2D.2), and the Card
  * Reconciliation Queue (Phase 2F). Sales History (Phase 2G) is a read-only list
- * with historical transaction detail and View Receipt. A small status line keeps
- * the database/runtime state visible. There is no reporting UI yet.
+ * with historical transaction detail and View Receipt. Reports (Phase 2K) is a
+ * read-only Daily Report recomputed from local SQLite for a selected business
+ * day. A small status line keeps the database/runtime state visible.
  */
 
-type Area = 'checkout' | 'products' | 'customers' | 'history' | 'settings';
+type Area = 'checkout' | 'products' | 'customers' | 'history' | 'reports' | 'settings';
 
 interface ShellStatus {
   readonly info: AppInfo | null;
@@ -104,6 +106,13 @@ export function App() {
           </button>
           <button
             type="button"
+            aria-current={area === 'reports'}
+            onClick={() => setArea('reports')}
+          >
+            Reports
+          </button>
+          <button
+            type="button"
             aria-current={area === 'settings'}
             onClick={() => setArea('settings')}
           >
@@ -133,6 +142,12 @@ export function App() {
         <>
           <h2>Sales History</h2>
           <SalesHistoryPage />
+        </>
+      )}
+      {area === 'reports' && (
+        <>
+          <h2>Reports</h2>
+          <DailyReportPage />
         </>
       )}
       {area === 'settings' && (

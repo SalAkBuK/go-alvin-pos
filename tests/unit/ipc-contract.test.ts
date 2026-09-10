@@ -34,6 +34,7 @@ describe('IPC contract', () => {
         'salesHistoryList',
         'salesHistoryGetById',
         'salesHistoryVoid',
+        'reportsDaily',
         'settingsTaxGet',
         'settingsTaxUpdate',
         'settingsBusinessGet',
@@ -65,6 +66,7 @@ describe('IPC contract', () => {
       'reconciliation',
       'receipts',
       'sales-history',
+      'reports',
       'settings',
       'printing',
       'google',
@@ -107,6 +109,8 @@ describe('IPC contract', () => {
       reconciliation: ['list', 'resolve'],
       receipts: ['getBySaleId'],
       salesHistory: ['list', 'getById', 'voidSale'],
+      // `reports` exposes only the read-only Daily Report — no generic query surface.
+      reports: ['daily'],
       // `settings` exposes only the tax and business sub-objects — no generic setter.
       settings: ['tax.get', 'tax.update', 'business.get', 'business.update'],
       // `printing` exposes only narrow capabilities — no generic settings/query surface.
@@ -133,6 +137,7 @@ describe('IPC contract', () => {
       'products',
       'receipts',
       'reconciliation',
+      'reports',
       'salesHistory',
       'settings',
     ]);
