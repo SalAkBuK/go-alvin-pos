@@ -56,7 +56,9 @@ Responsibilities:
 - Printing
 - Secure local configuration
 - IPC communication
-- Google Sheets integration
+- Google Sheets integration, including the desktop OAuth flow (external system
+  browser + temporary `localhost` loopback listener) and encrypted refresh-token
+  storage (Section 27)
 - V1 application update capability
 - Windows packaging
 
@@ -124,7 +126,13 @@ These three settings (no forced native rebuild, `asarUnpack` for the native modu
 
 ## External Reporting
 
-**Google Sheets API**
+**Google Sheets API** — writes sale/void rows to the application's own spreadsheet.
+
+**Google Drive API** — used only to create that spreadsheet and to re-locate it
+after an ambiguous creation outcome. It runs under the **same least-privilege
+`https://www.googleapis.com/auth/drive.file` OAuth scope** as the Sheets calls
+(per-file access to files this application created); it does not add or widen any
+scope (Section 27).
 
 Google Sheets is a secondary export destination.
 
@@ -574,7 +582,7 @@ The actual network export happens later.
 
 This creates an important guarantee:
 
-> Every committed sale has a durable local export job. When Google Sheets is disabled, network work remains paused; enabling it later makes represented sale state eligible for export.
+> Every committed sale has a durable local export job. When Google Sheets is disabled, not connected, or connected but not yet ready to sync (no Google account, or the spreadsheet/worksheets are not yet provisioned — Section 27.5), network work remains paused; becoming ready and enabled later makes represented sale state eligible for export.
 
 ---
 
@@ -833,16 +841,198 @@ Both worksheets reference the same immutable internal Sale ID.
 
 # 27. Google Authentication
 
-Google API credentials must only be accessible from the trusted application layer.
+## 27.1 Model
 
-They must never be:
+V1 authenticates to Google with a **desktop OAuth 2.0 authorization-code flow**,
+not a service account. The store owner connects their own normal Google account;
+the application never uses, imports, or asks the client for a service account,
+a service-account key file, a service-account email, domain-wide delegation, or a
+manually shared spreadsheet.
 
-- Embedded in React bundles
-- Stored inside Git
-- Printed in logs
-- Returned through IPC unnecessarily
+- The Google OAuth client is of type **Desktop app** (an installed/native
+  application, not a web-server client). The **developer** owns and configures
+  this OAuth client in Google Cloud; the client machine never supplies it.
+- Authorization uses the user's **external system browser**. The Google
+  sign-in/consent page is **never** rendered inside an Electron
+  `BrowserWindow`, `<webview>`, or any embedded browser surface.
+- The flow uses **PKCE**, a cryptographically random `state` value that is
+  verified on the callback, and a **loopback redirect** bound only to
+  `localhost` / `127.0.0.1` on an ephemeral port — never `0.0.0.0` or any
+  externally reachable interface.
+- The temporary loopback listener exists only for one authorization attempt and
+  is shut down after success, denial, error, or timeout.
 
-The exact Google authentication approach will be finalized before Google Sheets implementation.
+## 27.2 Failure handling
+
+The flow must handle, as **Google-configuration failures only** (they never
+touch SQLite sale capability, inventory, receipts, or reporting, and never
+discard durable export jobs):
+
+- the user closes the browser or denies access;
+- the callback never arrives (timeout);
+- `state` mismatch on the callback;
+- token exchange failure;
+- the loopback port/listener cannot be opened;
+- the application shuts down mid-authorization.
+
+## 27.3 Scopes (least privilege)
+
+- **`https://www.googleapis.com/auth/drive.file`** — the only business-data
+  scope. It grants per-file access limited to files this application creates
+  (its own spreadsheet). The broad `https://www.googleapis.com/auth/drive` and
+  `https://www.googleapis.com/auth/spreadsheets` scopes are **not** requested.
+- **`openid`** and **`email`** — identity, used only to show which account is
+  connected. `profile` is not requested unless implementation later proves it
+  necessary.
+
+The connected-account email is **display metadata only**. A durable unique
+Google-user identifier, if one is retained, is the OpenID Connect **`sub`**
+claim, never the email address.
+
+## 27.4 Token storage
+
+- The **OAuth refresh token** is the sensitive long-lived credential. It is held
+  only in the trusted main process, encrypted with the operating-system
+  secure-storage mechanism (`safeStorage`), in a local encrypted credential
+  wrapper under the pinned `userData` directory, outside the SQLite database.
+  There is **no plaintext fallback**; if secure storage is unavailable the
+  application says so and does not connect.
+- The credential wrapper preserves the crash-consistency model already defined
+  for this integration: a monotonic credential generation/version paired with an
+  active-generation marker in local settings, so a crash between writing the
+  encrypted file and committing local configuration is detectable and
+  reconcilable on the next launch. **"Connected"** means a usable encrypted
+  OAuth credential exists and matches the locally active credential
+  generation/configuration.
+- The wrapper may hold only the minimum needed for safe operation: credential
+  generation/version, the refresh token, the Google `sub` if retained, and the
+  account email for display. Access tokens are short-lived runtime values and
+  are not persisted beyond what safe operation requires.
+- These must **never** be stored in SQLite, returned to the renderer, written to
+  logs, included in support bundles, or committed to Git: the refresh token, any
+  access token, the authorization code, the PKCE verifier (`code_verifier`), the
+  ID token, and raw OAuth token responses. Central redaction
+  (`SUPPORT_DIAGNOSTICS.md §14`, `§16`, `§54`) covers all of them. The account
+  email is not logged by default.
+- The developer OAuth client configuration (the downloaded "Desktop app" JSON)
+  is a **developer/build artifact**, not a client setup artifact: it is never
+  shown in Settings, returned to the renderer, or logged. An installed desktop
+  OAuth app is a **public client** — its client-configuration value cannot be
+  assumed to remain confidential and must not be treated as equivalent to a
+  refresh token or a private key. The exact mechanism for shipping the developer
+  OAuth client configuration in the packaged application is a bounded
+  implementation decision to be locked during Google-integration implementation;
+  this document does not define a production build-secret system.
+
+## 27.5 Spreadsheet provisioning and ambiguous-outcome recovery
+
+After OAuth succeeds, the application creates and configures **its own**
+spreadsheet in the owner's Google account (working name `Go Phones POS Sales`;
+may incorporate the canonical fixed business name) with the canonical `Sales`
+and `Sale Items` worksheets (`DATA_MODEL.md §26`). The spreadsheet ID is stored
+as **non-secret local configuration** once it is obtained (created or adopted —
+§27.5.1). The client never enters a spreadsheet ID or a worksheet name during
+normal setup.
+
+Provisioning must be safe under an **ambiguous creation outcome** — Google
+creates the spreadsheet but the application loses the response before it learns
+the spreadsheet ID, then the user retries or restarts. A naive
+`create → lost response → create again` flow is prohibited because it would
+leave multiple `Go Phones POS Sales` spreadsheets in the account. A robust V1
+design **cannot** be Sheets-API-only: the Sheets API offers no way to enumerate
+a previously created spreadsheet, so an orphaned spreadsheet from a lost
+response would be undiscoverable and a retry would duplicate it.
+
+### 27.5.1 Locked V1 provisioning mechanism
+
+V1 provisioning is **not** an implementation choice between the Drive API and the
+Sheets API. It is locked as follows. The Google Drive API is enabled as another
+API used under the **same `drive.file` scope** — it does not widen authorization.
+
+**Local provisioning token.** Before any create attempt, the application
+generates (or loads, if a prior attempt already generated one) a **durable local
+provisioning/idempotency token** and persists it to local configuration. The
+same token is reused across every retry and restart until provisioning
+completes.
+
+**Spreadsheet creation — one authoritative request.** The spreadsheet is
+created with a **single Google Drive `files.create` request** that carries, in
+that same request:
+
+- the spreadsheet display name;
+- MIME type `application/vnd.google-apps.spreadsheet`;
+- app-private `appProperties` containing **both** a stable Go Phones POS
+  integration marker **and** the durable provisioning token.
+
+The Sheets `spreadsheets.create` call **must not** be used as the normal
+provisioning path, and the pattern "create the spreadsheet, then attach
+`appProperties` in a later `files.update`" is **prohibited**: if the create
+succeeds but its response is lost before the separate tagging request succeeds,
+the account is left with an **untagged orphan** that the recovery lookup cannot
+find. The identifying `appProperties` must therefore be written by the same
+authoritative `files.create` that brings the spreadsheet into existence.
+
+**Ambiguous-create recovery.** The provisioning sequence is:
+
+1. Generate or load the durable local provisioning token.
+2. Search Drive with `files.list`, restricted under the existing `drive.file`
+   authorization, for a Google-Sheets-MIME file whose `appProperties` carry the
+   expected integration marker **and** this provisioning token.
+3. **Exactly one** valid match → adopt its file ID.
+4. **No match** → issue the single `files.create` (name + Sheets MIME type +
+   `appProperties`) described above.
+5. **Create response lost or otherwise ambiguous** → do **not** immediately
+   create again; repeat the `files.list` recovery lookup (step 2) with the same
+   durable token.
+6. Adopt the matching spreadsheet once it becomes discoverable.
+7. **More than one** valid match (an abnormal condition) → **stop provisioning**,
+   surface a safe diagnostic / not-ready configuration state, and do **not**
+   guess which spreadsheet is authoritative or delete any remote spreadsheet.
+   V1 defines no automatic selection among multiple matches.
+
+**Worksheet convergence (idempotent).** After a spreadsheet ID is obtained or
+adopted, the application uses the **Sheets API** to inspect and converge the
+structure to the canonical `Sales` and `Sale Items` worksheets
+(`DATA_MODEL.md §26`):
+
+- inspect existing worksheet titles/IDs first;
+- create a canonical worksheet only if it is missing;
+- reuse an existing canonical worksheet;
+- never blindly add a second worksheet in the same canonical role after an
+  ambiguous response — re-inspect instead;
+- verify the final canonical structure (both worksheets present with the
+  required columns) before the integration is declared **Ready to sync**.
+
+If a specific required Drive or Sheets call is proven against live Google to need
+a broader scope than `drive.file`, that is an explicit escalation decision —
+never a silent scope change. What remains subject to live verification is only
+the concrete request/response detail, not the mechanism above.
+
+## 27.6 Boundary rules
+
+Google OAuth credentials and configuration must only be accessible from the
+trusted application layer. They must never be embedded in React bundles, stored
+in Git, printed in logs, or returned through IPC unnecessarily. Authorization,
+token exchange, token refresh, spreadsheet provisioning, and the loopback
+listener all run in the Electron main process.
+
+Opening the connected spreadsheet ("Open Spreadsheet") and the OAuth consent
+page both use the **external system browser**; neither is a manual step the user
+must perform without the application initiating it.
+
+## 27.7 Production readiness
+
+- Development may use Google's "Testing" OAuth publishing state with explicit
+  test users.
+- A production release must use an OAuth configuration published/verified
+  according to Google's requirements for the requested scopes.
+- The production release must not depend on the developer remaining signed in;
+  each store connects its own normal Google account.
+- While the authorization remains valid, normal operation must not require
+  repeated sign-in — the stored refresh token keeps background export working
+  across restarts.
+
+This document does not otherwise specify Google Cloud project deployment.
 
 ---
 
@@ -1480,7 +1670,9 @@ Logs must not contain:
 
 - Raw passwords
 - Google secrets
-- Authentication tokens
+- Authentication tokens, including OAuth refresh/access tokens, the
+  authorization code, the PKCE verifier, ID tokens, and raw OAuth token
+  responses
 - Sensitive credentials
 
 Logging full customer information should also be avoided unless necessary for debugging.
@@ -1500,13 +1692,16 @@ Receipt footer
 Receipt disclaimer
 Selected printer
 Google Sheets enabled
-Spreadsheet ID
-Worksheet configuration
 ```
+
+The Google **spreadsheet ID** and the canonical **worksheet names** are managed
+automatically by the application after the owner connects a Google account
+(Section 27); they are not entered by the client during normal setup. They may
+still exist internally as validated non-secret local configuration.
 
 Settings should be stored locally in an appropriate trusted location or database table.
 
-Secrets and ordinary business settings should not necessarily use the same storage mechanism.
+Secrets and ordinary business settings should not necessarily use the same storage mechanism. The OAuth refresh token is a secret and is never an ordinary settings row (Section 27.4, `DATA_MODEL.md §21`).
 
 ---
 

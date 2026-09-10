@@ -42,7 +42,7 @@ The first production version must allow the store to:
 13. Continue completing sales while the internet is unavailable.
 14. Store business data locally on the POS computer.
 15. Support local backup without making internet connectivity a requirement for checkout.
-16. Export completed sales to a configured Google Sheet when internet connectivity is available.
+16. Connect the store owner's own Google account with a one-click desktop OAuth flow and export completed sales to the application's own Google spreadsheet when internet connectivity is available.
 17. Queue Google Sheets exports while offline and automatically retry them later without creating duplicate records.
 18. Clear an unfinished checkout and void an accidentally completed sale without deleting its history.
 19. Maintain a durable audit trail for important business and system actions.
@@ -70,7 +70,11 @@ Example:
 
 `GoPhonesPOS-Setup.exe`
 
-The application should not require the user to open a browser manually.
+The application should not require the user to open a browser manually. Where a
+browser is needed — connecting a Google account, or opening the configured
+spreadsheet — the application opens the system browser itself (`Section 22.8`,
+`ARCHITECTURE.md §27`); it never embeds a third-party sign-in page in an
+application window.
 
 ---
 
@@ -83,7 +87,9 @@ The intended architecture is:
 * TypeScript
 * SQLite
 * Local-first data architecture
-* Google Sheets API for secondary sales export
+* Google Sheets API for secondary sales export, plus the Google Drive API used
+  only to create and re-locate the application's own spreadsheet under the same
+  least-privilege `drive.file` OAuth scope (`ARCHITECTURE.md §27`)
 
 SQLite will act as the primary local operational database.
 
@@ -733,27 +739,114 @@ A manual Retry Export action may be provided for failed exports.
 
 ---
 
-## 22.8 Google Authentication and Credentials
+## 22.8 Google Account Connection and Credentials
 
-Google Sheets integration must be configurable.
+V1 connects to Google with a **desktop Google OAuth flow**. The store owner —
+a small retailer, not an IT administrator — connects their own normal Google
+account with one action. The client never opens Google Cloud Console, creates
+an OAuth client or a service account, downloads or imports a credential file,
+copies a service-account email, manually shares a sheet with a
+`…iam.gserviceaccount.com` address, pastes a spreadsheet ID, or types worksheet
+names during normal setup. The developer owns and configures the Google OAuth
+application.
 
-Configuration may include:
+### Connecting
 
-* Enable/disable Google Sheets export
-* Target Spreadsheet ID
-* Sales worksheet
-* Sale Items worksheet
-* Google API authentication
-* Last successful synchronization time
+From `Settings → Google Sheets`, `Connect Google Account`:
 
-Google credentials must:
+1. Go Phones POS opens the owner's normal system browser to Google's standard
+   account chooser and consent screen. Google's sign-in is **never** shown
+   inside an application window.
+2. The owner signs into or selects their normal Google account and grants the
+   limited permissions.
+3. Authorization returns to Go Phones POS through a temporary loopback callback
+   bound only to `localhost` / `127.0.0.1` on an ephemeral port, which is closed
+   after success, failure, or timeout.
+4. Go Phones POS securely stores the long-lived OAuth credential needed for
+   background access and, when appropriate, creates and configures its own
+   dedicated sales spreadsheet with the canonical `Sales` and `Sale Items`
+   worksheets (`22.8.1`).
+5. Export becomes ready without the client entering IDs or worksheet names.
 
-* Never be hard-coded in React components
-* Never be committed to Git
-* Never be exposed to the renderer unnecessarily
-* Be handled through the Electron/main-process integration layer or another secure local mechanism
+Failure of any step (browser closed, access denied, callback lost, `state`
+mismatch, token exchange failure, loopback listener failure, shutdown during
+authorization) is a Google-configuration failure only and never affects local
+sale capability or durable export jobs.
 
-The exact Google authentication method should be defined during architecture/design before implementation.
+### Permissions requested
+
+* `https://www.googleapis.com/auth/drive.file` — per-file access limited to the
+  spreadsheet the application creates. The broad `.../auth/drive` and
+  `.../auth/spreadsheets` scopes are not requested.
+* `openid` and `email` — used only to display which account is connected. The
+  email is display metadata; any retained stable account identifier is the
+  OpenID Connect `sub` claim, not the email.
+
+### Credential handling
+
+The sensitive long-lived credential is the OAuth **refresh token**. It is held
+only in the trusted Electron main process, encrypted with the operating-system
+secure-storage mechanism, in a local encrypted credential wrapper outside the
+SQLite database, with **no plaintext fallback**. The refresh token, access
+tokens, the authorization code, the PKCE verifier, ID tokens, and raw OAuth
+responses are never stored in SQLite, exposed to the renderer, logged, included
+in support bundles, or committed to Git. Full technical model in
+`ARCHITECTURE.md §27`; storage in `DATA_MODEL.md §21`.
+
+### Settings surface
+
+Normal Settings shows only human-facing state: the connected account email, the
+spreadsheet name, an `Open Spreadsheet` action (opens in the system browser),
+sync status, and `Disconnect Google Account`. `Enable/disable Google Sheets
+export` and `Last successful synchronization time` remain. The spreadsheet ID
+and worksheet names are managed automatically and may still exist internally as
+validated non-secret local configuration.
+
+### 22.8.1 Spreadsheet provisioning
+
+After OAuth succeeds the application creates its own spreadsheet in the owner's
+Google account (working name `Go Phones POS Sales`) containing the canonical
+`Sales` and `Sale Items` worksheets. The spreadsheet ID is stored as non-secret
+local configuration once creation succeeds.
+
+The V1 mechanism is fixed, not an implementation choice (`ARCHITECTURE.md §27.5.1`):
+
+- a durable local provisioning token is generated **before** any create attempt;
+- the application first searches Drive (`files.list`, under the existing
+  `drive.file` authorization) for a spreadsheet already tagged with the Go
+  Phones POS marker and this token, and adopts it if found;
+- otherwise it creates the spreadsheet with **one** Google Drive `files.create`
+  request carrying the name, the Google Sheets MIME type, and the app-private
+  `appProperties` (marker + token) **in that same request** — never a Sheets
+  `spreadsheets.create` followed by a separate tagging call;
+- if a create response is lost, the application re-runs the Drive lookup with
+  the same token instead of creating again, and adopts the spreadsheet once it
+  is discoverable;
+- if more than one tagged spreadsheet is ever found, provisioning stops in a
+  safe not-ready state rather than guessing which is authoritative;
+- canonical worksheets are then created/verified idempotently via the Sheets
+  API on the adopted or created spreadsheet.
+
+The Google Drive API is used under the same `drive.file` scope with no scope
+change.
+
+### 22.8.2 Setup state
+
+Google connection and spreadsheet provisioning are secondary capabilities with
+three conceptual states — **Disconnected**, **Connected / setup incomplete**
+(account connected and credential stored, spreadsheet not yet configured), and
+**Ready to sync**. In `Connected / setup incomplete` the application offers
+`Retry Setup`, the owner does not have to reconnect their account, and the
+export worker performs no spreadsheet writes while durable export jobs stay
+queued. The application does not report Google Sheets as ready until the
+spreadsheet and both canonical worksheets are actually configured. None of these
+states affect local sales, inventory, payments, receipts, or reporting.
+
+### Boundary rules
+
+Google credentials must never be hard-coded in React components, committed to
+Git, or exposed to the renderer, and are handled only through the trusted
+main-process integration layer.
 
 ---
 

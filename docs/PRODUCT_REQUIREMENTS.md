@@ -1068,7 +1068,7 @@ Locally committed sales must survive a computer restart without internet access.
 
 **Priority:** MUST
 
-Every committed sale must have exactly one durable local export job identified by the immutable Sale ID. Network delivery must remain paused while Google Sheets export is disabled or unconfigured.
+Every committed sale must have exactly one durable local export job identified by the immutable Sale ID. Network delivery must remain paused while Google Sheets export is disabled, not connected, or connected but not yet ready to sync (`REQ-GSHEET-018`).
 
 ---
 
@@ -1076,7 +1076,7 @@ Every committed sale must have exactly one durable local export job identified b
 
 **Priority:** MUST
 
-The sale's durable local export job must be created inside the same SQLite transaction as the sale. Network delivery to Google Sheets must occur only after that transaction commits successfully and only while the integration is enabled and configured.
+The sale's durable local export job must be created inside the same SQLite transaction as the sale. Network delivery to Google Sheets must occur only after that transaction commits successfully and only while the integration is enabled, connected, and ready to sync (`REQ-GSHEET-018`).
 
 ---
 
@@ -1120,7 +1120,7 @@ Pending export jobs must survive:
 
 **Priority:** MUST
 
-Pending exports must automatically retry after connectivity becomes available while the integration is enabled and configured.
+Pending exports must automatically retry after connectivity becomes available while the integration is enabled, connected, and ready to sync (`REQ-GSHEET-018`).
 
 ---
 
@@ -1182,9 +1182,22 @@ A failed export should provide a manual retry operation.
 
 **Priority:** MUST
 
-Google API credentials must never be hard-coded into renderer/frontend source code.
+V1 authenticates to Google with a desktop OAuth flow (`REQ-GSHEET-016`). The
+sensitive long-lived credential is the OAuth **refresh token**.
 
-Credentials must never be committed to Git.
+- Google credentials must never be hard-coded into renderer/frontend source
+  code, committed to Git, or included in renderer bundles.
+- The refresh token must be stored only in the trusted main process, encrypted
+  with the operating-system secure-storage mechanism, outside the SQLite
+  database, with no plaintext fallback.
+- The refresh token, access tokens, the authorization code, the PKCE verifier,
+  ID tokens, and raw OAuth token responses must never be written to logs,
+  included in support bundles, returned to the renderer, or exported to Google
+  Sheets. Centralized redaction must cover all of them.
+- The developer's OAuth client configuration is a build artifact, not a
+  client-entered value, and must never be shown in Settings or logged. An
+  installed desktop OAuth client is a public client; its configuration value
+  must not be treated as equivalent to a refresh token or private key.
 
 ---
 
@@ -1207,6 +1220,131 @@ V1 Google Sheets synchronization uses **convergence semantics**. The direct Goog
 - A stale success or failure acknowledgment must not finalize or regress the export job: a worker may mark a job `EXPORTED` — setting `exported_sync_version` to the revision it just wrote — only if that revision still equals the job's current `target_sync_version`; otherwise the acknowledgment is discarded and the job stays pending.
 - The job remains eligible for the newest `target_sync_version`.
 - Repeated idempotent upserts keyed by the immutable Sale ID must converge the Google Sheet row to the current `sales.sync_version`.
+
+---
+
+## REQ-GSHEET-016 — Desktop OAuth Account Connection
+
+**Priority:** MUST
+
+V1 connects to Google with a **desktop (installed-app) OAuth 2.0
+authorization-code flow**, not a service account. The store owner connects their
+own Google account; the client is never required to use Google Cloud Console,
+create an OAuth client or service account, import a credential file, copy a
+service-account email, manually share a spreadsheet, or paste a spreadsheet ID
+or worksheet name during normal setup. The developer owns the OAuth client.
+
+The flow must:
+
+- use the user's **external system browser** — the Google sign-in/consent page
+  must never be rendered inside an application `BrowserWindow`, `<webview>`, or
+  other embedded browser;
+- use **PKCE**;
+- use a cryptographically random OAuth `state` value and verify it on the
+  callback;
+- use a redirect on **`localhost` / `127.0.0.1` only, on an ephemeral port** —
+  never a wildcard/all-interfaces bind;
+- run a temporary callback listener that is shut down after success, denial,
+  error, or timeout;
+- handle browser-closed, access-denied, callback-never-arrives, `state`
+  mismatch, token-exchange failure, loopback listener failure, and
+  shutdown-during-authorization as **Google-configuration failures only** —
+  never affecting local sale capability, inventory, receipts, reporting, or
+  durable export jobs.
+
+Scopes are limited to `https://www.googleapis.com/auth/drive.file` for business
+data plus `openid` and `email` for showing the connected account. Broader Drive
+or Sheets scopes must not be requested. The connected-account email is display
+metadata only; any retained stable identifier is the OpenID Connect `sub` claim.
+
+---
+
+## REQ-GSHEET-017 — Automatic Spreadsheet Provisioning
+
+**Priority:** MUST
+
+Normal first-time setup must not require an existing spreadsheet. After OAuth
+succeeds, the application creates and configures its **own** spreadsheet in the
+owner's Google account, with the canonical `Sales` and `Sale Items` worksheets
+(`DATA_MODEL.md §26`), and stores the resulting spreadsheet ID as non-secret
+local configuration once creation succeeds. The client does not enter a
+spreadsheet ID or worksheet names.
+
+Provisioning must be safe under an **ambiguous creation outcome** (Google
+creates the spreadsheet but the response is lost before the application learns
+its ID, then the user retries or restarts): the application must not create
+duplicate spreadsheets.
+
+The V1 provisioning mechanism is **fixed** (`ARCHITECTURE.md §27.5.1`), not an
+implementation choice:
+
+- a durable local provisioning/idempotency token is generated and persisted
+  **before** any create attempt and reused across every retry/restart;
+- the spreadsheet is created with a **single Google Drive `files.create`
+  request** carrying the display name, MIME type
+  `application/vnd.google-apps.spreadsheet`, and app-private `appProperties`
+  holding a stable Go Phones POS integration marker **and** the provisioning
+  token — all in that one request. Sheets `spreadsheets.create`, and
+  "create then attach `appProperties` separately", must not be used as the
+  provisioning path;
+- before creating, and again after any lost/ambiguous create response, the
+  application searches Drive (`files.list`, restricted under the existing
+  `drive.file` authorization) for a Sheets-MIME file whose `appProperties`
+  carry the marker and this token, and **adopts** the single match instead of
+  creating again;
+- if more than one match is ever found, provisioning stops in a safe not-ready
+  state; the application must not delete remote spreadsheets or guess which is
+  authoritative;
+- canonical worksheets are then created/verified **idempotently** via the Sheets
+  API (inspect first, create only if missing, reuse if present, never
+  double-add a canonical role after an ambiguous response), and the final
+  structure is verified before **Ready to sync**.
+
+The Google Drive API is enabled as another API under the **same `drive.file`
+scope** with no scope change. The user must be able to open the configured
+spreadsheet from the POS with an explicit action that uses the system browser.
+
+---
+
+## REQ-GSHEET-018 — Connection and Setup State
+
+**Priority:** MUST
+
+The integration has three conceptual states — **Disconnected**,
+**Connected / setup incomplete**, and **Ready to sync**. If OAuth succeeds and
+the credential is stored but spreadsheet provisioning fails:
+
+- the Google account remains connected; the owner must not have to reconnect it
+  solely because provisioning failed;
+- local sales, inventory, payments, receipts, and reporting are unaffected;
+- the export worker performs no spreadsheet writes; existing durable export jobs
+  remain queued;
+- the UI offers a `Retry Setup` action;
+- the application must not report Google Sheets as ready until the spreadsheet
+  and both canonical worksheets are actually configured.
+
+Network export delivery (`REQ-GSHEET-001`, `REQ-GSHEET-006`) is paused unless the
+integration is **enabled, connected, and ready to sync**.
+
+---
+
+## REQ-GSHEET-019 — Local Disconnect Without Network Dependency
+
+**Priority:** MUST
+
+`Disconnect Google Account` must:
+
+- disable export;
+- invalidate the active OAuth credential locally and make the refresh token
+  immediately unusable by the export worker;
+- commit the local configuration change and its audit event atomically;
+- perform best-effort deletion of the encrypted credential wrapper afterward.
+
+Remote Google token revocation may be attempted as a secondary network action,
+but **successful remote revocation must not be required** for local disconnect
+to succeed. A Google outage, revocation failure, or absent internet connection
+must not prevent local disconnect. Network access must not be part of the local
+configuration transaction.
 
 ---
 

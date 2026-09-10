@@ -1974,7 +1974,20 @@ google_sales_sheet_name
 google_sale_items_sheet_name
 ```
 
-Secrets must not necessarily be stored in this table.
+`google_spreadsheet_id`, `google_sales_sheet_name`, and `google_sale_items_sheet_name`
+are **managed automatically** by the application after the owner connects a
+Google account (`ARCHITECTURE.md §27.5.1`), not entered by the client. The
+integration additionally keeps non-secret internal bookkeeping — for example a
+credential generation/version, an active-generation marker, a setup-state value,
+the connected-account email for display, and a **durable spreadsheet
+provisioning/idempotency token** (generated before the first spreadsheet
+`files.create` and reused across retries/restarts, `ARCHITECTURE.md §27.5.1`) —
+as validated local settings or a structured equivalent. This list is a minimum,
+not an exhaustive schema.
+
+Secrets must not be stored in this table. The Google OAuth refresh token is a
+secret and lives only in the encrypted credential wrapper (Section 21), never as
+a settings row.
 
 ---
 
@@ -2008,22 +2021,38 @@ must not modify existing `sales.tax_rate_bps`.
 
 Credentials such as:
 
-- Google API tokens
-- OAuth refresh tokens
-- Private keys
+- OAuth refresh tokens (the sensitive long-lived Google credential in V1)
+- OAuth access tokens, authorization codes, PKCE verifiers, ID tokens, raw OAuth
+  token responses
+- Google API tokens and private keys generally
 - Shared application authentication secrets
 
-should not be stored as ordinary plaintext settings.
+must not be stored as ordinary plaintext settings.
 
-The exact secure storage method will be decided during implementation.
+## Google OAuth credential
 
-Potential Windows/Electron mechanisms may include OS-protected credential storage or encrypted local storage.
+The Google refresh token is held only in the trusted Electron main process,
+encrypted with the operating-system secure-storage mechanism (`safeStorage`), in
+a local **encrypted credential wrapper** file under the pinned `userData`
+directory — never in the SQLite `settings` table. There is no plaintext
+fallback: if secure storage is unavailable, the account is simply not connected.
+
+The wrapper holds only the minimum needed for safe operation — a monotonic
+credential generation/version, the refresh token, the Google OpenID Connect
+`sub` claim if retained, and the account email for display. The wrapper is
+paired with non-secret local bookkeeping (an active credential
+generation/version marker) so a crash between writing the encrypted file and
+committing local configuration is detectable and reconcilable on the next launch
+(`ARCHITECTURE.md §27.4`). Access tokens are short-lived runtime values and are
+not persisted beyond what safe operation requires.
 
 Secrets must never be:
 
+- Stored in the SQLite database.
+- Returned to the renderer process.
 - Committed to Git.
 - Included in renderer bundles.
-- Printed in logs.
+- Printed in logs or included in support bundles.
 - Exported to Google Sheets.
 
 ---
@@ -2402,6 +2431,15 @@ For a void, the exporter updates the existing sale row identified by Sale ID to 
 ---
 
 # 26. Google Sheets Logical Schema
+
+The spreadsheet is **created and owned by the application** in the connected
+Google account via a single Google Drive `files.create` request that also
+attaches an app-private `appProperties` tag (Go Phones POS marker + provisioning
+token — `ARCHITECTURE.md §27.5.1`). It is identified locally by a stored
+non-secret spreadsheet ID and contains the two canonical worksheets below,
+created and verified idempotently through the Sheets API. The column
+definitions, keys, ordering, formula neutralization, one-way direction, and
+upsert/convergence behavior are unchanged by the connection model.
 
 ## Sales Worksheet
 
@@ -3178,6 +3216,13 @@ UPDATE_INSTALLED
 CARD_LOCAL_COMMIT_FAILURE
 AUTH_CREDENTIAL_CHANGED
 ```
+
+`GOOGLE_CONFIGURATION_CHANGED` is the single event type for all Google
+integration configuration changes, including OAuth account connect, disconnect,
+re-authorization / credential replacement, enable/disable, and spreadsheet
+provisioning/reconfiguration (`ARCHITECTURE.md §27`, `POS_WORKFLOWS.md §71`–`§72`).
+No new audit event type is introduced for OAuth. Its `details_json` must contain
+no OAuth secrets, tokens, authorization codes, or PKCE verifiers.
 
 ```text
 id       TEXT    PRIMARY KEY

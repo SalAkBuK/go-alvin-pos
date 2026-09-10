@@ -1360,14 +1360,16 @@ Google API request fails.
 Possible causes:
 
 - No internet
-- OAuth problem
+- OAuth problem (expired or revoked refresh token, consent withdrawn in the
+  Google account)
 - Rate limit
-- Spreadsheet permissions
+- Spreadsheet permissions, or the spreadsheet was deleted
 - Temporary Google outage
 
 ## Expected Behavior
 
-Local sale remains unchanged.
+Local sale remains unchanged. Local sales, inventory, receipts, and reporting
+continue to work regardless of the Google failure.
 
 Export job records:
 
@@ -1376,7 +1378,9 @@ Export job records:
 - Last attempt
 - Sanitized error
 
-The job remains available for future retry.
+The job remains available for future retry. A revoked or expired credential
+surfaces as a connection warning (`SUPPORT_DIAGNOSTICS.md §30`) and prompts
+re-authorization; durable export jobs are retained and are not deleted.
 
 ---
 
@@ -1863,45 +1867,126 @@ Changing printer does not modify receipt data.
 
 ---
 
-# 71. Google Sheets Configuration Workflow
+# 71. Connect Google Account Workflow
 
 ## Trigger
 
-User enables Google Sheets export.
-
-## Configuration May Include
-
-- Authorized Google account / credential mechanism
-- Spreadsheet ID
-- Sales worksheet name
-- Sale Items worksheet name
+From `Settings → Google Sheets`, the owner selects `Connect Google Account`.
+The client never opens Google Cloud Console, creates an OAuth client or a
+service account, imports a credential file, copies a service-account email,
+shares a spreadsheet manually, or types a spreadsheet ID or worksheet name.
 
 ## Expected Behavior
 
-1. Validate configuration.
-2. Securely store required credentials.
-3. Save non-secret settings and a durable configuration-change audit event atomically.
-4. Test integration where appropriate.
-5. Enable export worker.
+### Authorization (desktop OAuth — `ARCHITECTURE.md §27`)
 
-If setup fails, local POS remains usable.
+1. The application starts a temporary callback listener bound only to
+   `localhost` / `127.0.0.1` on an ephemeral port, with a random `state` value
+   and a PKCE challenge.
+2. The application opens the owner's **system browser** to Google's standard
+   account-chooser / consent screen (scopes: `drive.file`, `openid`, `email`).
+   The consent page is never shown inside an application window.
+3. The owner signs in and grants access. Google redirects to the loopback
+   listener with an authorization code.
+4. The application verifies `state`, exchanges the code (with the PKCE verifier)
+   for tokens, and shuts the listener down.
+5. If secure storage is available, the application encrypts and stores the
+   refresh token in the credential wrapper, then commits the local
+   configuration change (active credential generation/version, connected-account
+   email for display) and a `GOOGLE_CONFIGURATION_CHANGED` audit event
+   atomically. There is no plaintext fallback.
+
+If the browser is closed, access is denied, the callback never arrives, `state`
+does not match, token exchange fails, the listener cannot be opened, or the
+application shuts down mid-flow, the attempt fails cleanly as a
+Google-configuration failure: no credential is stored, local sales are
+unaffected, and durable export jobs are untouched.
+
+### Spreadsheet provisioning (`ARCHITECTURE.md §27.5.1`, `REQ-GSHEET-017`)
+
+6. The application generates or loads a **durable local provisioning token**
+   (persisted to local configuration, reused on every retry/restart).
+7. It searches Drive (`files.list`, under the existing `drive.file`
+   authorization) for a Google-Sheets-MIME file whose app-private
+   `appProperties` carry the Go Phones POS integration marker **and** this
+   token.
+   - **Exactly one match** → adopt that spreadsheet ID (skip to step 9).
+   - **More than one match** → stop provisioning, surface a safe not-ready
+     diagnostic state, do not delete anything or guess which is authoritative.
+   - **No match** → step 8.
+8. It creates the spreadsheet with a **single Google Drive `files.create`
+   request** carrying, together: the display name (`Go Phones POS Sales`), MIME
+   type `application/vnd.google-apps.spreadsheet`, and the app-private
+   `appProperties` (marker + provisioning token). It does **not** use Sheets
+   `spreadsheets.create`, and does **not** tag the spreadsheet in a separate
+   later request. If the create response is lost or ambiguous, it does **not**
+   create again — it repeats step 7 with the same token and adopts the
+   spreadsheet once discoverable.
+9. It stores the spreadsheet ID as non-secret local configuration, then uses the
+   **Sheets API** to converge the canonical `Sales` and `Sale Items` worksheets
+   idempotently: inspect existing worksheet titles/IDs first, create a canonical
+   worksheet only if missing, reuse an existing one, never double-add a
+   canonical role after an ambiguous response, and verify both worksheets and
+   their required columns.
+10. Only after that verification is the integration **Ready to sync** and the
+    export worker resumes eligible jobs. If any provisioning step fails, the
+    state is **Connected / setup incomplete**: the account stays connected,
+    `Retry Setup` is offered (reusing the same durable token), the worker makes
+    no spreadsheet writes, and durable export jobs stay queued.
+
+The application must not report Google Sheets as ready until the spreadsheet and
+both worksheets are verified. If any step fails, the local POS remains fully
+usable.
+
+### Re-authorization / replacement
+
+Re-running `Connect Google Account` while already connected replaces the active
+credential (new generation/version) under the same atomic
+commit + `GOOGLE_CONFIGURATION_CHANGED` audit; the existing spreadsheet
+configuration is retained.
 
 ---
 
-# 72. Disable Google Sheets Workflow
+# 72. Disable / Disconnect Google Sheets Workflow
 
-## Trigger
+## Disable export
 
-User disables Google Sheets export.
+**Trigger:** the owner turns off `Enable Google Sheets export`.
 
 Expected:
 
 - Checkout remains fully functional.
 - Every committed sale still receives one durable export job.
-- Network export attempts stop while integration is disabled; jobs needing synchronization remain `PENDING`.
-- Existing local sales remain unchanged.
+- Network export attempts stop while the integration is disabled; jobs needing
+  synchronization remain `PENDING`.
+- Existing local sales and the stored Google connection/spreadsheet
+  configuration remain unchanged.
 - Existing pending jobs must not be silently deleted.
-- Enabling the integration makes represented sale states eligible for idempotent export.
+- Re-enabling (while connected and ready to sync) makes represented sale states
+  eligible for idempotent export.
+
+## Disconnect Google Account
+
+**Trigger:** the owner selects `Disconnect Google Account` (`REQ-GSHEET-019`).
+
+Expected, as one local transaction:
+
+1. Export is disabled.
+2. The active OAuth credential is invalidated locally — the refresh token is
+   immediately unusable by the export worker.
+3. The local configuration change and a `GOOGLE_CONFIGURATION_CHANGED` audit
+   event commit atomically.
+
+Then, best-effort and outside that transaction:
+
+4. The encrypted credential wrapper file is deleted.
+5. Remote Google token revocation may be attempted.
+
+Successful remote revocation is **not required** for disconnect to succeed. A
+Google outage, revocation failure, or absent internet must not block disconnect.
+Network access is never part of the local configuration transaction. Existing
+durable export jobs are retained (not deleted) and resume only after the account
+is reconnected and ready to sync.
 
 ---
 

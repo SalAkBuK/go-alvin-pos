@@ -390,6 +390,8 @@ Logs must never contain:
 - Password hashes unless absolutely necessary for debugging, which should generally be avoided
 - Google access tokens
 - Google refresh tokens
+- OAuth authorization codes, PKCE verifiers (`code_verifier`), ID tokens, and raw OAuth token responses
+- The developer OAuth client configuration
 - API private keys
 - OAuth secrets
 - Card numbers
@@ -439,6 +441,9 @@ Examples:
 Authorization
 access_token
 refresh_token
+authorization code
+code_verifier
+id_token
 password
 client_secret
 private_key
@@ -613,7 +618,8 @@ Before support-bundle generation:
 - Secrets must be redacted.
 - Customer PII should be minimized.
 - Payment data must be excluded.
-- OAuth tokens must be excluded.
+- OAuth tokens must be excluded — refresh tokens, access tokens, authorization codes, PKCE verifiers, ID tokens, raw token responses, and the developer OAuth client configuration.
+- The encrypted Google credential wrapper file must not be included.
 - Database credentials/secrets must be excluded.
 - Raw card information must never be collected.
 
@@ -710,11 +716,16 @@ V1 default cadence/retention (`ARCHITECTURE.md` Section 49A): automatic backups 
 Possible diagnostics:
 
 - Integration enabled
-- Authentication available
+- Google account connected (and which account, by display email)
+- Setup state: disconnected / connected but setup incomplete / ready to sync
+- Authentication valid (refresh token usable) or needs re-authorization
 - Last successful export
 - Pending count
 - Failed count
 - Oldest pending export age
+
+A not-connected, setup-incomplete, or re-authorization-needed state is a
+secondary warning only and never implies local sales failed.
 
 Example:
 
@@ -1186,9 +1197,9 @@ update.failed
 
 ---
 
-# 54. Google Export Diagnostics
+# 54. Google Export and Connection Diagnostics
 
-Useful events:
+Useful export events:
 
 ```text
 google.export.queued
@@ -1198,9 +1209,24 @@ google.export.retry_scheduled
 google.export.failed
 ```
 
-Use Sale ID/export job ID.
+Useful connection/setup events:
 
-Do not log OAuth tokens or full sensitive request payloads.
+```text
+google.oauth.authorization_started
+google.oauth.authorization_succeeded
+google.oauth.authorization_failed
+google.account.disconnected
+google.spreadsheet.provisioned
+google.spreadsheet.adopted_existing
+google.spreadsheet.setup_failed
+```
+
+Use Sale ID / export job ID for export events and the display account email (not
+by default) or a non-secret reason code for connection events.
+
+Do not log OAuth tokens, authorization codes, PKCE verifiers, ID tokens, the raw
+OAuth token response, the developer OAuth client configuration, or full
+sensitive request payloads.
 
 ---
 

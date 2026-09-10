@@ -1431,6 +1431,21 @@ Export queue remains consistent.
 
 # 20. Google Sheets Tests
 
+V1 authenticates to Google with a desktop OAuth flow and creates its own
+spreadsheet (`ARCHITECTURE.md §27`, `REQ-GSHEET-016`–`REQ-GSHEET-019`).
+Automated tests exercise the state machine, storage, redaction, and idempotency
+against in-memory / fake OAuth and Google API layers. Behavior against the real
+Google authorization server and Sheets/Drive APIs — including whether every
+required call succeeds under the `drive.file` scope alone — remains **LIVE GOOGLE
+VERIFICATION PENDING** until run against a real Google account and spreadsheet,
+in the same way physical printing is covered by `HW-PRINT-*`.
+
+The export-engine tests `TEST-GSHEET-001` through `TEST-GSHEET-025` remain valid
+unchanged; the connection model does not alter the durable one-job-per-sale
+lifecycle, retry/backoff, stale recovery, `target_sync_version` invariant,
+convergence semantics, Sale-ID / Sale-Item-ID keys, formula neutralization, RAW
+writes, or SQLite authority.
+
 ## TEST-GSHEET-001 — Successful Export
 
 Complete online sale.
@@ -1518,14 +1533,15 @@ Pending job eventually exports exactly once.
 
 ## TEST-GSHEET-009 — API Authentication Failure
 
-Use invalid/expired credentials.
+Simulate an expired/revoked OAuth credential (token refresh rejected by Google).
 
 Expected:
 
 - Local sale succeeds.
 - Export does not.
-- Error stored safely.
-- No secret logged.
+- Error stored safely; the integration surfaces a re-authorization warning.
+- Durable export jobs are retained.
+- No secret (token, code, verifier) logged.
 
 ---
 
@@ -1707,6 +1723,328 @@ Create a customer name and a product name each beginning with `=`, `+`, `-`, and
 Expected:
 
 Every such value is written to the Sheet neutralized (e.g., leading apostrophe) so it renders as literal text and is never interpreted as a formula by a spreadsheet application.
+
+---
+
+## TEST-GSHEET-026 — Connect Launches System-Browser Authorization
+
+Select `Connect Google Account`.
+
+Expected:
+
+The authorization URL (Google account chooser / consent, scopes `drive.file`,
+`openid`, `email`) is opened in the external system browser. No Google
+sign-in/consent page is loaded in any application `BrowserWindow` or `<webview>`.
+
+---
+
+## TEST-GSHEET-027 — OAuth Uses PKCE
+
+Inspect the authorization request and token exchange.
+
+Expected:
+
+The authorization request carries a PKCE `code_challenge` (S256); the token
+exchange sends the matching `code_verifier`. No client secret is relied upon as
+a confidential value.
+
+---
+
+## TEST-GSHEET-028 — OAuth State Mismatch Rejected
+
+Deliver a loopback callback whose `state` does not match the value issued for the
+attempt.
+
+Expected:
+
+The callback is rejected, no authorization code is exchanged, no credential is
+stored, and the attempt ends as a Google-configuration failure.
+
+---
+
+## TEST-GSHEET-029 — Loopback Callback Is localhost-Only
+
+Inspect the temporary callback listener.
+
+Expected:
+
+It binds only `127.0.0.1` / `localhost` on an ephemeral port — never `0.0.0.0`
+or another interface. A request arriving from a non-loopback address is not
+honored.
+
+---
+
+## TEST-GSHEET-030 — Listener Closes After Success
+
+Complete a successful authorization.
+
+Expected:
+
+The temporary callback listener is closed and its port released immediately
+after the code is received.
+
+---
+
+## TEST-GSHEET-031 — Listener Closes After Denial / Error / Timeout
+
+Separately: user denies consent; token exchange fails; the callback never
+arrives within the timeout.
+
+Expected:
+
+In every case the listener is closed, no credential is stored, and local sales
+are unaffected.
+
+---
+
+## TEST-GSHEET-032 — Refresh Token Encrypted Through safeStorage
+
+Connect successfully, then inspect the persisted credential representation.
+
+Expected:
+
+The refresh token exists only inside the encrypted credential wrapper file under
+`userData` (operating-system `safeStorage`), never in the SQLite database and
+never in plaintext on disk.
+
+---
+
+## TEST-GSHEET-033 — No Plaintext Fallback
+
+Make operating-system secure storage unavailable, then attempt to connect.
+
+Expected:
+
+Connection does not complete, nothing is written in plaintext, and the UI states
+that secure storage is unavailable.
+
+---
+
+## TEST-GSHEET-034 — Renderer Never Receives OAuth Credential Material
+
+Inspect every value crossing IPC to the renderer during and after connect.
+
+Expected:
+
+No refresh token, access token, authorization code, PKCE verifier, ID token, raw
+token response, or developer OAuth client configuration is ever sent to the
+renderer. At most a display email, connection/setup state, and non-secret
+spreadsheet metadata are exposed.
+
+---
+
+## TEST-GSHEET-035 — Tokens and Code Absent From Logs
+
+Exercise a full connect, a token refresh, and a failed authorization while
+capturing logs.
+
+Expected:
+
+Logs contain no refresh/access token, authorization code, PKCE verifier, ID
+token, raw token response, or `Authorization` header.
+
+---
+
+## TEST-GSHEET-036 — Disconnect Invalidates Locally While Offline
+
+With no internet, select `Disconnect Google Account`.
+
+Expected:
+
+Export is disabled, the active credential is invalidated locally and is
+immediately unusable by the worker, and the local configuration change plus its
+`GOOGLE_CONFIGURATION_CHANGED` audit commit atomically — without any successful
+network revocation. Best-effort credential-file deletion and remote revocation
+may be attempted but are not required.
+
+---
+
+## TEST-GSHEET-037 — Google Connection Failure Never Blocks Checkout
+
+With authorization failing (or no internet), complete cash and card sales.
+
+Expected:
+
+All sales commit locally and print; each gets its one durable export job; no
+checkout is delayed or blocked by the Google connection state.
+
+---
+
+## TEST-GSHEET-038 — Connected but Spreadsheet Setup Failed Is Recoverable
+
+Force spreadsheet provisioning to fail after OAuth succeeds and the credential is
+stored.
+
+Expected:
+
+State is `Connected / setup incomplete`: the account stays connected, `Retry
+Setup` is offered, the worker makes no spreadsheet writes, durable export jobs
+stay queued, and Google Sheets is not reported as ready. `Retry Setup` later
+completes provisioning without re-authorizing the account.
+
+---
+
+## TEST-GSHEET-039 — Spreadsheet Created With One Tagged Drive `files.create`
+
+Connect for the first time with provisioning available, capturing the sequence
+of Google API calls and local configuration writes.
+
+Expected:
+
+- A durable local provisioning/idempotency token is generated **and persisted to
+  local configuration before** any create attempt.
+- A Drive `files.list` lookup (restricted under the `drive.file` authorization,
+  filtering on the Go Phones POS `appProperties` marker + this token) is issued
+  **before** any create call.
+- With no existing match, the spreadsheet is created by a **single Drive
+  `files.create` request** whose body carries, together: the display name, MIME
+  type `application/vnd.google-apps.spreadsheet`, and app-private `appProperties`
+  holding the marker **and** the provisioning token.
+- Sheets `spreadsheets.create` is **never** called, and no separate
+  `files.update` (or any later request) is used to attach the `appProperties`.
+- The spreadsheet ID is stored as non-secret local configuration; the user
+  supplies no spreadsheet.
+
+---
+
+## TEST-GSHEET-040 — Canonical Worksheets Converged Idempotently
+
+After a spreadsheet ID is obtained, and again on a re-run of provisioning
+(`Retry Setup`) against the same spreadsheet, inspect the Sheets API calls and
+the resulting structure.
+
+Expected:
+
+- Existing worksheet titles/IDs are inspected **before** any worksheet is
+  created.
+- A canonical worksheet (`Sales`, `Sale Items`) is created only when missing;
+  an existing canonical worksheet is reused, not duplicated.
+- After an ambiguous add-worksheet response the application re-inspects rather
+  than blindly adding a second worksheet in the same canonical role; a re-run
+  never yields a duplicate `Sales` or `Sale Items` tab.
+- Both worksheets exist with the `DATA_MODEL.md §26` columns and are verified
+  before the integration is declared `Ready to sync`; if verification fails the
+  state stays `Connected / setup incomplete`.
+
+---
+
+## TEST-GSHEET-041 — Client Enters No Spreadsheet ID or Worksheet Names
+
+Walk the normal setup UI.
+
+Expected:
+
+There is no required field for a spreadsheet ID, a Sales worksheet name, or a
+Sale Items worksheet name in the normal flow.
+
+---
+
+## TEST-GSHEET-042 — Open Spreadsheet Uses System Browser
+
+Select `Open Spreadsheet`.
+
+Expected:
+
+The configured spreadsheet opens in the external system browser, not in an
+application window.
+
+---
+
+## TEST-GSHEET-043 — Revoked / Invalid Refresh Token Leaves Sales Safe
+
+After connecting, revoke access in the Google account (or corrupt the stored
+token), then complete sales and run the worker.
+
+Expected:
+
+Local sales, inventory, receipts, and reporting are unaffected; export jobs
+remain durable and retryable; the integration shows a re-authorization warning;
+no secret is logged.
+
+---
+
+## TEST-GSHEET-044 — Restart Preserves a Valid Encrypted Connection
+
+Connect, reach `Ready to sync`, restart the application.
+
+Expected:
+
+The connection and spreadsheet configuration are restored from the encrypted
+wrapper and local settings; the worker resumes without re-authorization.
+
+---
+
+## TEST-GSHEET-045 — Credential Corruption / Generation Mismatch → Not Ready
+
+Corrupt the encrypted wrapper, or leave its generation/version disagreeing with
+the locally active marker.
+
+Expected:
+
+The integration resolves to a disconnected / not-ready state (never a false
+"connected"); local sales are unaffected; the user can reconnect.
+
+---
+
+## TEST-GSHEET-046 — Export Engine Regression Under OAuth
+
+Re-run `TEST-GSHEET-001` … `TEST-GSHEET-025` with the OAuth connection model and
+an app-created spreadsheet.
+
+Expected:
+
+All pass unchanged — the durable one-job-per-sale lifecycle, retry/backoff,
+stale `EXPORTING` recovery, `target_sync_version` invariant, convergence
+semantics, Sale-ID / Sale-Item-ID upserts, void convergence, duplicate-remote-ID
+tolerance, formula neutralization, and RAW writes are unaffected.
+
+---
+
+## TEST-GSHEET-047 — Ambiguous Spreadsheet Creation, Then Retry
+
+Simulate: the application issues the tagged `files.create`, Google creates the
+spreadsheet, the response is lost. The user retries setup.
+
+Expected:
+
+- The retry does **not** immediately issue another `files.create`.
+- It re-runs the Drive `files.list` lookup with the **same durable provisioning
+  token** and adopts the already-created spreadsheet's ID.
+- Exactly one `Go Phones POS Sales` spreadsheet exists; no duplicate is created.
+- Because the identifying `appProperties` were written by the original
+  `files.create`, the spreadsheet is discoverable with no separate tagging step.
+
+---
+
+## TEST-GSHEET-048 — Ambiguous Spreadsheet Creation, Then Restart
+
+As `TEST-GSHEET-047` but the application restarts (rather than an in-session
+retry) before it learned the spreadsheet ID.
+
+Expected:
+
+The provisioning token, persisted before the create, survives the restart. On
+restart provisioning resumes, the `files.list` lookup with that token finds the
+existing tagged spreadsheet, and it is adopted. No duplicate spreadsheet is
+created; the integration reaches `Ready to sync` after worksheet verification.
+
+---
+
+## TEST-GSHEET-049 — Multiple Provisioning-Token Matches → Safe Not-Ready
+
+Simulate an abnormal condition in which the Drive `files.list` lookup returns
+**more than one** spreadsheet carrying the Go Phones POS marker and the current
+provisioning token.
+
+Expected:
+
+- Provisioning **stops**; the integration does not reach `Ready to sync`.
+- The application surfaces a safe diagnostic / configuration state
+  (`SUPPORT_DIAGNOSTICS.md §30`).
+- No remote spreadsheet is deleted, and none is silently selected as
+  authoritative; V1 defines no automatic selection among multiple matches.
+- Local sales, inventory, receipts, and reporting are unaffected; durable export
+  jobs stay queued.
 
 ---
 
@@ -2536,11 +2874,13 @@ Rejected safely.
 
 ## TEST-SEC-005 — Google Secrets in Renderer
 
-Inspect renderer bundle.
+Inspect renderer bundle and all runtime IPC traffic to the renderer.
 
 Expected:
 
-No Google secret or token.
+No Google secret or token — no OAuth refresh/access token, authorization code,
+PKCE verifier, ID token, raw token response, or developer OAuth client
+configuration.
 
 ---
 
@@ -2556,11 +2896,13 @@ No committed secrets.
 
 ## TEST-SEC-007 — Secrets in Logs
 
-Trigger Google/authentication errors.
+Trigger Google OAuth authorization failures, token-refresh failures, and
+export errors.
 
 Expected:
 
-Logs contain no credentials or tokens.
+Logs contain no credentials or tokens — no refresh/access token, authorization
+code, PKCE verifier, ID token, raw OAuth response, or `Authorization` header.
 
 ---
 
@@ -3869,11 +4211,11 @@ These tests validate `REQ-AUDIT-*`.
 
 ## TEST-AUDIT-001 — Required Business and System Actions
 
-Complete and void a sale, override a price, adjust inventory, change tax/business/Google settings, run successful and failed backups, execute a migration, and install an update.
+Complete and void a sale, override a price, adjust inventory, change tax/business settings, connect and disconnect a Google account, run successful and failed backups, execute a migration, and install an update.
 
 Expected:
 
-Each required action produces an appropriately typed durable local audit event with outcome and safe context.
+Each required action produces an appropriately typed durable local audit event with outcome and safe context. Google account connect, disconnect, re-authorization, and spreadsheet provisioning all use the single `GOOGLE_CONFIGURATION_CHANGED` type and carry no OAuth secrets in their details.
 
 ---
 
@@ -4119,9 +4461,13 @@ This matrix supersedes the prior partial matrix (which covered only Void/Audit/E
 | `REQ-GSHEET-009` | `TEST-GSHEET-002` |
 | `REQ-GSHEET-010` | `TEST-GSHEET-003` |
 | `REQ-GSHEET-011` | `TEST-HIST-005` |
-| `REQ-GSHEET-013` | `TEST-SEC-005` |
+| `REQ-GSHEET-013` | `TEST-SEC-005`, `TEST-SEC-007`, `TEST-GSHEET-032`, `TEST-GSHEET-034`, `TEST-GSHEET-035` |
 | `REQ-GSHEET-014` | `TEST-GSHEET-025` |
 | `REQ-GSHEET-015` | `TEST-GSHEET-020`, `TEST-GSHEET-021` |
+| `REQ-GSHEET-016` | `TEST-GSHEET-026` through `TEST-GSHEET-035`, `TEST-GSHEET-037` |
+| `REQ-GSHEET-017` | `TEST-GSHEET-039`, `TEST-GSHEET-040`, `TEST-GSHEET-041`, `TEST-GSHEET-042`, `TEST-GSHEET-047`, `TEST-GSHEET-048`, `TEST-GSHEET-049` |
+| `REQ-GSHEET-018` | `TEST-GSHEET-038`, `TEST-GSHEET-040`, `TEST-GSHEET-044`, `TEST-GSHEET-045`, `TEST-GSHEET-049` |
+| `REQ-GSHEET-019` | `TEST-GSHEET-036` |
 | `REQ-DB-001` | `TEST-DB-001` |
 | `REQ-DB-002` | `TEST-DB-001`, `TEST-DB-002` |
 | `REQ-DB-003` | `TEST-ATOMIC-001` |
@@ -4154,7 +4500,7 @@ This matrix supersedes the prior partial matrix (which covered only Void/Audit/E
 | `REQ-SEC-002` | `TEST-SEC-002` |
 | `REQ-SEC-003` | `TEST-SEC-004`, `TEST-CART-009` |
 | `REQ-SEC-004` | `TEST-SEC-006` |
-| `REQ-SEC-005` | `TEST-SEC-003` |
+| `REQ-SEC-005` | `TEST-SEC-003`, `TEST-GSHEET-027`, `TEST-GSHEET-029` |
 | `REQ-REL-001` | `TEST-DB-001`, `ACCEPT-004` |
 | `REQ-REL-002` | `TEST-CRASH-001` |
 | `REQ-REL-003` | `TEST-IDEMP-001` |
