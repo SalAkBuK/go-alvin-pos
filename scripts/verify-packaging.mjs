@@ -104,16 +104,18 @@ if (existsSync(exePath)) {
   }
 }
 
-// (3b) the packaged runtime can load `google-auth-library` (Phase 2J). It is a
-// PURE-JS dependency (no `.node` binary), so it stays inside `app.asar` and is
-// not in `asarUnpack`; this just proves it resolves from the packaged runtime.
+// (3b) the packaged runtime can load `google-auth-library` (Phase 2J.1 desktop
+// OAuth). It is a PURE-JS dependency (no `.node` binary), so it stays inside
+// `app.asar` and is not in `asarUnpack`; this just proves it resolves from the
+// packaged runtime and exposes the installed-app OAuth client.
 if (existsSync(exePath)) {
   const probe = [
     "const path = require('path');",
     "const gal = require(path.join(process.resourcesPath, 'app.asar', 'node_modules', 'google-auth-library'));",
-    "if (typeof gal.JWT !== 'function') { console.error('NO_JWT'); process.exit(4); }",
-    'const c = new gal.JWT({ email: "x@y.iam.gserviceaccount.com", key: "k", scopes: ["s"] });',
-    "if (typeof c.getAccessToken !== 'function') { console.error('NO_GETACCESSTOKEN'); process.exit(5); }",
+    "if (typeof gal.OAuth2Client !== 'function') { console.error('NO_OAUTH2CLIENT'); process.exit(4); }",
+    "if (!gal.CodeChallengeMethod || !gal.CodeChallengeMethod.S256) { console.error('NO_PKCE'); process.exit(5); }",
+    "const c = new gal.OAuth2Client({ clientId: 'id', clientSecret: 'secret' });",
+    "if (typeof c.generateAuthUrl !== 'function' || typeof c.getToken !== 'function' || typeof c.verifyIdToken !== 'function') { console.error('NO_OAUTH_METHODS'); process.exit(6); }",
     "console.log('GOOGLE_AUTH_OK');",
   ].join(' ');
   try {
@@ -123,7 +125,7 @@ if (existsSync(exePath)) {
       timeout: 60_000,
     });
     if (/GOOGLE_AUTH_OK/.test(out)) {
-      pass('packaged Electron runtime loaded google-auth-library (JWT client)');
+      pass('packaged Electron runtime loaded google-auth-library (OAuth2Client + PKCE)');
     } else {
       fail(`google-auth-library probe returned unexpected output: ${out.trim()}`);
     }

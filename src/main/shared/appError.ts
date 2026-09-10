@@ -161,18 +161,32 @@ export const appErrors = {
   googleSecureStorageUnavailable: (): AppError =>
     new AppError(
       'GOOGLE_SECURE_STORAGE_UNAVAILABLE',
-      'Google Sheets credentials cannot be stored securely on this device.',
+      'Your Google account cannot be connected because this device cannot store the connection securely.',
     ),
-  googleCredentialInvalid: (detail?: string): AppError =>
+  googleOAuthNotConfigured: (): AppError =>
+    new AppError(
+      'GOOGLE_OAUTH_NOT_CONFIGURED',
+      'Google connection is not available in this build of Go Phones POS.',
+    ),
+  googleAuthorizationFailed: (detail?: string): AppError =>
+    new AppError(
+      'GOOGLE_AUTHORIZATION_FAILED',
+      detail
+        ? `Your Google account could not be connected: ${detail}.`
+        : 'Your Google account could not be connected.',
+    ),
+  googleCredentialInvalid: (): AppError =>
     new AppError(
       'GOOGLE_CREDENTIAL_INVALID',
-      detail
-        ? `That file is not a valid Google service-account key: ${detail}`
-        : 'That file is not a valid Google service-account key.',
+      'The stored Google connection is no longer valid. Connect your Google account again.',
     ),
   googleNotConnected: (): AppError =>
+    new AppError('GOOGLE_NOT_CONNECTED', 'Connect a Google account first.'),
+  googleSpreadsheetNotReady: (): AppError =>
+    new AppError('GOOGLE_SPREADSHEET_NOT_READY', 'The Google sales spreadsheet is not set up yet.'),
+  googleAuthorizationInProgress: (): AppError =>
     new AppError(
-      'GOOGLE_NOT_CONNECTED',
-      'Connect a Google service account and set the spreadsheet before enabling export.',
+      'GOOGLE_AUTHORIZATION_IN_PROGRESS',
+      'A Google sign-in is already in progress. Finish or close it first.',
     ),
 } as const;

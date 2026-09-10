@@ -63,8 +63,10 @@ const api: PosApi = {
   },
   google: {
     getConfig: () => ipcRenderer.invoke(IPC.googleGetConfig),
-    updateConfig: (input) => ipcRenderer.invoke(IPC.googleUpdateConfig, input),
     connect: () => ipcRenderer.invoke(IPC.googleConnect),
+    retrySetup: () => ipcRenderer.invoke(IPC.googleRetrySetup),
+    setEnabled: (input) => ipcRenderer.invoke(IPC.googleSetEnabled, input),
+    openSpreadsheet: () => ipcRenderer.invoke(IPC.googleOpenSpreadsheet),
     disconnect: () => ipcRenderer.invoke(IPC.googleDisconnect),
     retryExport: (input) => ipcRenderer.invoke(IPC.googleRetryExport, input),
   },

@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import type { Logger } from '../app/logger';
 import { writeLastSuccessfulSync } from '../settings/googleSettingsRepository';
-import type { GoogleAuthProvider } from './googleAuth';
+import type { GoogleAuthProvider } from './googleAuthProvider';
 import {
   claimNextJob,
   markExported,
@@ -40,6 +40,8 @@ export interface ExportContext {
   readonly saleItemsSheetName: string;
   readonly businessTimezone: string;
   readonly auth: GoogleAuthProvider;
+  /** Active OAuth credential generation this context was resolved for (auth-health attribution). */
+  readonly credentialGeneration: number;
 }
 
 export interface ExportWorkerDeps {
@@ -53,6 +55,25 @@ export interface ExportWorkerDeps {
   readonly resolveContext: () => Promise<ExportContext | null>;
   /** Build a per-attempt transport bound to the abort signal (a fake in tests). */
   readonly createTransport: (ctx: ExportContext, signal: AbortSignal) => SheetsTransport;
+  /**
+   * Report the current generation's Google auth health after a definite export
+   * outcome (`Correction A`): `'auth-failure'` on a definite `AUTH` failure,
+   * `'ok'` after a successful authenticated Sheets write. Never called for an
+   * `unknownOutcome`.
+   */
+  readonly reportAuthHealth?: (result: 'auth-failure' | 'ok', credentialGeneration: number) => void;
+  /**
+   * A definite structural failure of the configured spreadsheet target was
+   * established (confirmed on the job's normal retry, `REQ-GSHEET-020`). The job
+   * failure is already recorded per the normal rules before this fires; the
+   * handler invalidates `google_spreadsheet_id` and moves the integration to
+   * `Connected / setup incomplete`. The worker never creates a replacement.
+   */
+  readonly onStructuralTargetFailure?: (
+    spreadsheetId: string,
+    kind: 'NOT_FOUND' | 'PERMISSION',
+    credentialGeneration: number,
+  ) => void;
   readonly now?: () => string;
   readonly pollIntervalMs?: number;
   readonly requestTimeoutMs?: number;
@@ -130,6 +151,10 @@ export function createExportWorker(deps: ExportWorkerDeps): ExportWorker {
           upsertLog,
         );
 
+        // The upserts above are successful authenticated Sheets operations —
+        // clear any stale current-generation auth-health flag (`Correction A`).
+        deps.reportAuthHealth?.('ok', ctx.credentialGeneration);
+
         const finalized = markExported(db, { id: job.id, writtenVersion: written, now: now() });
         if (finalized === 1) {
           const syncedAt = now();
@@ -167,6 +192,38 @@ export function createExportWorker(deps: ExportWorkerDeps): ExportWorker {
           now: now(),
           sanitizedError: toLastError(classified.category, classified.message),
         });
+
+        // Current-generation auth health (`Correction A`): a definite AUTH
+        // failure marks the active credential generation as needing
+        // re-authorization. Historical job evidence is never rewritten.
+        if (classified.category === 'AUTH') {
+          deps.reportAuthHealth?.('auth-failure', ctx.credentialGeneration);
+        }
+
+        // Structural spreadsheet-target failure (`REQ-GSHEET-020`): only a
+        // definite, machine-readable not-found / permission result, and only
+        // after it is confirmed on the job's normal retry (attempt ≥ 2) so a
+        // single transient blip is never misclassified. The job keeps its
+        // failure/retry evidence; the target is then invalidated.
+        if (
+          classified.structuralTarget &&
+          (classified.category === 'NOT_FOUND' || classified.category === 'PERMISSION') &&
+          result.changed > 0 &&
+          result.attemptCount >= 2
+        ) {
+          logger.warn('export', 'google.export.structural_target_failure', {
+            saleId: job.saleId,
+            exportJobId: job.id,
+            category: classified.category,
+            httpStatus: classified.httpStatus,
+          });
+          deps.onStructuralTargetFailure?.(
+            ctx.spreadsheetId,
+            classified.category,
+            ctx.credentialGeneration,
+          );
+        }
+
         if (result.changed === 0) {
           logger.info('export', 'google.export.stale_acknowledgment_discarded', {
             saleId: job.saleId,

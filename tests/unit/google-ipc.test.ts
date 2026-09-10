@@ -15,7 +15,6 @@ import { registerGoogleIpcHandlers } from '../../src/main/ipc/googleIpc';
 import { IPC } from '../../src/shared/ipc';
 import type { Logger } from '../../src/main/app/logger';
 import type { RendererEntry } from '../../src/main/app/rendererEntry';
-import { fakeAuthProvider, fakeCredentialStore } from '../helpers/google';
 
 const entry: RendererEntry = {
   devServerUrl: 'http://localhost:5173',
@@ -37,8 +36,10 @@ const untrustedEvent = () => ({ senderFrame: { url: 'https://evil.example/', par
 
 const CHANNELS = [
   IPC.googleGetConfig,
-  IPC.googleUpdateConfig,
   IPC.googleConnect,
+  IPC.googleRetrySetup,
+  IPC.googleSetEnabled,
+  IPC.googleOpenSpreadsheet,
   IPC.googleDisconnect,
   IPC.googleRetryExport,
 ];
@@ -50,21 +51,23 @@ beforeEach(() => {
     getDatabase: () => null,
     appVersion: 'test',
     rendererEntry: entry,
-    credentialStore: fakeCredentialStore(),
-    pickCredentialFile: () => Promise.resolve(null),
-    createAuthProvider: () => fakeAuthProvider(),
+    createService: () => {
+      throw new Error('createService should not be reached without a database');
+    },
   });
 });
 afterEach(() => vi.clearAllMocks());
 
 describe('google IPC registration', () => {
-  it('registers exactly the five narrow channels — no generic settings/query/HTTP surface', () => {
+  it('registers exactly the seven narrow channels — no credential/spreadsheet/HTTP surface', () => {
     expect([...handlers.keys()].sort()).toEqual([...CHANNELS].sort());
     for (const channel of handlers.keys()) {
       expect(channel).toMatch(
-        /^google:(get-config|update-config|connect|disconnect|retry-export)$/,
+        /^google:(get-config|connect|retry-setup|set-enabled|open-spreadsheet|disconnect|retry-export)$/,
       );
-      expect(channel).not.toMatch(/set|query|exec|sql|http|fetch|request/);
+      expect(channel).not.toMatch(
+        /credential|json|picker|spreadsheet-id|worksheet|query|exec|sql|http|fetch/,
+      );
     }
   });
 
@@ -77,13 +80,16 @@ describe('google IPC registration', () => {
   it.each(CHANNELS)(
     'a trusted request to %s with no database returns a typed DATABASE_UNAVAILABLE result',
     async (channel) => {
-      const result = (await handlers.get(channel)!(trustedEvent(), { saleId: 's1' })) as {
+      const result = (await handlers.get(channel)!(trustedEvent(), {
+        saleId: 's1',
+        enabled: true,
+      })) as {
         ok: false;
         error: { code: string; message: string };
       };
       expect(result.ok).toBe(false);
       expect(result.error.code).toBe('DATABASE_UNAVAILABLE');
-      expect(result.error.message).not.toMatch(/sqlite|C:\\|SELECT|PRIVATE KEY/i);
+      expect(result.error.message).not.toMatch(/sqlite|C:\\|SELECT|refresh_token|ya29/i);
     },
   );
 });

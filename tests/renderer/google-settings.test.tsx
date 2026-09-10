@@ -4,130 +4,91 @@ import { GoogleSheetsSection } from '../../src/renderer/src/features/settings/Go
 import { SettingsPage } from '../../src/renderer/src/features/settings/SettingsPage';
 import {
   describeConnection,
-  describeExportState,
-  describeQueue,
-  extractSpreadsheetId,
-  fieldsFromConfig,
-  validateGoogleForm,
-  validateSheetNameField,
-  validateSpreadsheetIdField,
+  describeSync,
+  describeUnavailable,
+  googleView,
 } from '../../src/renderer/src/features/settings/googleConfig';
 import type { GoogleConfig } from '../../src/shared/google';
 
 /**
- * Phase 2J — Settings → Google Sheets renderer coverage (`task §8`, `§28`). No
- * jsdom: the pure helpers are the exact gates the section runs.
+ * Phase 2J.1 — Settings → Google Sheets renderer coverage (`REQ-GSHEET-016`,
+ * `-017`, `-018`; `TEST-GSHEET-041`). No jsdom: the pure helpers are the exact
+ * gates the section runs. No credential JSON picker, no spreadsheet-ID field, no
+ * worksheet-name fields.
  */
 
 function config(overrides: Partial<GoogleConfig> = {}): GoogleConfig {
   return {
-    enabled: false,
-    spreadsheetId: null,
-    salesSheetName: 'Sales',
-    saleItemsSheetName: 'Sale Items',
-    lastSuccessfulSyncAt: null,
+    setupState: 'DISCONNECTED',
     connected: false,
-    serviceAccountEmail: null,
-    configured: false,
+    enabled: false,
+    ready: false,
+    accountEmail: null,
+    spreadsheetName: null,
+    canOpenSpreadsheet: false,
+    lastSuccessfulSyncAt: null,
     secureStorageAvailable: true,
+    oauthClientConfigured: true,
+    needsReauthorization: false,
+    setupIncompleteReason: null,
     queue: { pending: 0, exporting: 0, exported: 0, failed: 0 },
     ...overrides,
   };
 }
 
-describe('describeConnection', () => {
-  it('reflects loading / secure-storage / connected / not-connected', () => {
-    expect(describeConnection(null)).toBe('Loading…');
-    expect(describeConnection(config({ secureStorageAvailable: false }))).toMatch(
-      /secure storage unavailable/i,
+describe('googleView', () => {
+  it('maps config to the four rendered states', () => {
+    expect(googleView(null)).toBe('loading');
+    expect(googleView(config({ oauthClientConfigured: false }))).toBe('unavailable');
+    expect(googleView(config({ secureStorageAvailable: false }))).toBe('unavailable');
+    expect(googleView(config())).toBe('disconnected');
+    expect(googleView(config({ connected: true, setupState: 'SETUP_INCOMPLETE' }))).toBe(
+      'setup-incomplete',
     );
-    expect(
-      describeConnection(
-        config({ connected: true, serviceAccountEmail: 'pos@x.iam.gserviceaccount.com' }),
-      ),
-    ).toBe('Connected as pos@x.iam.gserviceaccount.com');
+    expect(googleView(config({ connected: true, setupState: 'READY', ready: true }))).toBe('ready');
+  });
+});
+
+describe('display strings', () => {
+  it('describeConnection', () => {
+    expect(describeConnection(null)).toBe('Loading…');
+    expect(describeConnection(config({ connected: true, accountEmail: 'owner@example.com' }))).toBe(
+      'Connected as owner@example.com',
+    );
     expect(describeConnection(config())).toBe('Not connected');
   });
-});
 
-describe('describeExportState / describeQueue', () => {
-  it('states enabled+configured vs enabled-but-not-connected vs off', () => {
+  it('describeSync reflects reauth / paused / backlog / up-to-date', () => {
+    expect(describeSync(config({ needsReauthorization: true }))).toMatch(/sign in again/i);
+    expect(describeSync(config({ enabled: false }))).toMatch(/paused/i);
     expect(
-      describeExportState(config({ enabled: true, connected: true, configured: true })),
-    ).toMatch(/enabled/i);
-    expect(describeExportState(config({ enabled: true, connected: false }))).toMatch(
-      /no Google account is connected/i,
-    );
-    expect(describeExportState(config())).toMatch(/off/i);
-  });
-
-  it('describeQueue shows the four counts', () => {
-    expect(describeQueue({ pending: 2, exporting: 1, exported: 5, failed: 3 })).toBe(
-      '2 pending · 1 exporting · 5 exported · 3 failed',
-    );
-  });
-});
-
-describe('form validation', () => {
-  it('spreadsheet id: blank allowed, URL extracted, malformed rejected', () => {
-    expect(validateSpreadsheetIdField('')).toBeNull();
+      describeSync(
+        config({ enabled: true, queue: { pending: 3, exporting: 0, exported: 1, failed: 0 } }),
+      ),
+    ).toMatch(/3 sales waiting/i);
     expect(
-      validateSpreadsheetIdField('https://docs.google.com/spreadsheets/d/1AbCdEfGhIjK/edit'),
-    ).toBeNull();
-    expect(validateSpreadsheetIdField('too/short')).toMatch(/valid Google spreadsheet ID/i);
-    expect(extractSpreadsheetId('https://docs.google.com/spreadsheets/d/XY_z-123/edit')).toBe(
-      'XY_z-123',
-    );
+      describeSync(
+        config({ enabled: true, queue: { pending: 0, exporting: 0, exported: 9, failed: 0 } }),
+      ),
+    ).toBe('Up to date.');
   });
 
-  it('sheet name: required, bounded, no forbidden chars', () => {
-    expect(validateSheetNameField('  ', 'Sales worksheet name')).toMatch(/enter the/i);
-    expect(validateSheetNameField('Sales/2026', 'Sales worksheet name')).toMatch(/cannot use/i);
-    expect(validateSheetNameField('Sales', 'Sales worksheet name')).toBeNull();
-  });
-
-  it('validateGoogleForm returns a payload only when every field is valid', () => {
-    const good = validateGoogleForm({
-      enabled: false,
-      spreadsheetId: '1AbCdEfGhIjK',
-      salesSheetName: ' Sales ',
-      saleItemsSheetName: 'Sale Items',
-    });
-    expect(good.payload).toEqual({
-      enabled: false,
-      spreadsheetId: '1AbCdEfGhIjK',
-      salesSheetName: 'Sales',
-      saleItemsSheetName: 'Sale Items',
-    });
-    const bad = validateGoogleForm({
-      enabled: true,
-      spreadsheetId: 'x',
-      salesSheetName: 'Sales',
-      saleItemsSheetName: 'Sale Items',
-    });
-    expect(bad.payload).toBeNull();
-    expect(bad.errors.spreadsheetId).toBeTruthy();
-  });
-
-  it('fieldsFromConfig prefills defaults before load', () => {
-    expect(fieldsFromConfig(null)).toEqual({
-      enabled: false,
-      spreadsheetId: '',
-      salesSheetName: 'Sales',
-      saleItemsSheetName: 'Sale Items',
-    });
+  it('describeUnavailable', () => {
+    expect(describeUnavailable(config({ secureStorageAvailable: false }))).toMatch(/securely/i);
+    expect(describeUnavailable(config({ oauthClientConfigured: false }))).toMatch(/not available/i);
   });
 });
 
 describe('first render', () => {
-  it('GoogleSheetsSection shows the heading, connect action, and no secrets/noisy errors', () => {
+  it('shows the heading and Connect action, no service-account / ID / worksheet fields, no secrets', () => {
     const html = renderToStaticMarkup(<GoogleSheetsSection />);
     expect(html).toContain('Google Sheets');
-    expect(html).toContain('Connect service account');
-    expect(html).toContain('Enable Google Sheets export');
-    expect(html).toContain('Sales worksheet name');
+    expect(html).toContain('Connect Google Account');
+    expect(html).not.toMatch(/service account/i);
+    expect(html).not.toMatch(/spreadsheet id/i);
+    expect(html).not.toMatch(/worksheet name/i);
+    expect(html).not.toMatch(/credential|\.json|refresh_token|ya29|PRIVATE KEY/i);
     expect(html).not.toContain('aria-invalid');
-    expect(html).not.toContain('PRIVATE KEY');
   });
 
   it('SettingsPage mounts the Google section alongside the others', () => {

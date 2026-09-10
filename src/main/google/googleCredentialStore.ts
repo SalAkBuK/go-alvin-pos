@@ -1,57 +1,52 @@
 import { mkdir, open, rename, rm } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { appErrors } from '../shared/appError';
 import type { SecureCrypto } from './secureCrypto';
 
 /**
- * At-rest storage for the Google service-account credential (`task §3`, `§4`;
- * `DATA_MODEL.md §21`; `REQ-GSHEET-013`).
+ * At-rest storage for the Google **OAuth refresh token** (`ARCHITECTURE.md
+ * §27.4`; `DATA_MODEL.md §21`; `REQ-GSHEET-013`).
  *
- *  - Only the whitelisted service-account identity/key fields are ever kept.
- *  - The plaintext wrapper embeds a monotonic `generation` that is mirrored in
+ *  - Only the whitelisted OAuth identity/credential fields are ever kept:
+ *    refresh token, OpenID `sub`, and the account email for display.
+ *  - The plaintext wrapper embeds a monotonic `generation` mirrored in
  *    `settings.google_credential_generation`, so a crash between file
- *    replacement and DB commit is detectable and reconcilable (`task §4`).
+ *    replacement and DB commit is detectable and reconcilable.
  *  - The wrapper is encrypted with {@link SecureCrypto} (async `safeStorage` in
  *    production) and written with a temp-file + atomic rename.
- *  - No plaintext credential ever touches SQLite, the renderer, a log, or Git.
- *
- * Externally supplied token / auth endpoint URLs are rejected — the JWT client
- * is always constructed against a hard-coded Google token endpoint (`task §3`,
- * `§20`).
+ *  - No plaintext refresh token ever touches SQLite, the renderer, a log, or Git.
+ *    There is NO plaintext fallback.
  */
 
-export interface ServiceAccountCredential {
-  readonly type: 'service_account';
-  readonly projectId: string;
-  readonly clientEmail: string;
-  readonly privateKey: string;
-  readonly privateKeyId: string;
-  readonly clientId: string;
+export interface OAuthCredential {
+  /** The long-lived Google OAuth refresh token. */
+  readonly refreshToken: string;
+  /** OpenID Connect subject — the durable Google account identifier. */
+  readonly sub: string | null;
+  /** Display-only account email. */
+  readonly email: string | null;
 }
 
 export interface LoadedCredential {
   readonly generation: number;
-  readonly credential: ServiceAccountCredential;
+  readonly credential: OAuthCredential;
 }
 
 interface CredentialWrapper {
   readonly generation: number;
-  readonly credential: ServiceAccountCredential;
+  readonly credential: OAuthCredential;
 }
 
 export interface GoogleCredentialStoreDeps {
-  /** `<userData>/secrets/google-service-account.enc`. */
+  /** `<userData>/secrets/google-oauth.enc`. */
   readonly filePath: string;
   readonly crypto: SecureCrypto;
 }
 
 export interface GoogleCredentialStore {
   isSecureStorageAvailable(): Promise<boolean>;
-  /** Parse + structurally validate a raw JSON string. Throws `GOOGLE_CREDENTIAL_INVALID` on any problem. */
-  parseAndValidate(rawJson: string): ServiceAccountCredential;
   /** Encrypt `{ generation, credential }` and write it atomically (temp file + rename + fsync). */
-  writeCredential(credential: ServiceAccountCredential, generation: number): Promise<void>;
+  writeCredential(credential: OAuthCredential, generation: number): Promise<void>;
   /** Decrypt + validate the stored wrapper. `null` if the file is absent, undecryptable, or malformed. */
   loadCredential(): Promise<LoadedCredential | null>;
   /** Best-effort removal of the credential file and any temp file. Never throws. */
@@ -59,87 +54,21 @@ export interface GoogleCredentialStore {
   fileExists(): boolean;
 }
 
-const TOKEN_URI_ALLOWED = 'https://oauth2.googleapis.com/token';
-const SERVICE_ACCOUNT_EMAIL = /@[^@]+\.iam\.gserviceaccount\.com$/i;
-
-function requireString(record: Record<string, unknown>, key: string): string {
-  const value = record[key];
-  if (typeof value !== 'string' || value.trim() === '') {
-    throw appErrors.googleCredentialInvalid(`missing "${key}"`);
-  }
-  return value;
+function isOptionalString(value: unknown): value is string | null | undefined {
+  return value === null || value === undefined || typeof value === 'string';
 }
 
-function validateCredentialShape(rawJson: string): ServiceAccountCredential {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(rawJson);
-  } catch {
-    throw appErrors.googleCredentialInvalid('the file is not valid JSON');
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw appErrors.googleCredentialInvalid('the file is not a JSON object');
-  }
-  const record = parsed as Record<string, unknown>;
-
-  if (record['type'] !== 'service_account') {
-    throw appErrors.googleCredentialInvalid('"type" must be "service_account"');
-  }
-  // Reject any externally supplied token/auth endpoint that would redirect secrets.
-  for (const urlKey of ['token_uri', 'auth_uri', 'auth_provider_x509_cert_url']) {
-    const value = record[urlKey];
-    if (typeof value === 'string' && value.trim() !== '') {
-      if (urlKey === 'token_uri' && value !== TOKEN_URI_ALLOWED) {
-        throw appErrors.googleCredentialInvalid('"token_uri" is not the Google token endpoint');
-      }
-      if (
-        urlKey !== 'token_uri' &&
-        !/^https:\/\/[a-z0-9.-]*\.?googleapis\.com\//i.test(value) &&
-        !/^https:\/\/accounts\.google\.com\//i.test(value)
-      ) {
-        throw appErrors.googleCredentialInvalid(`"${urlKey}" points outside google.com`);
-      }
-    }
-  }
-  const universe = record['universe_domain'];
-  if (typeof universe === 'string' && universe.trim() !== '' && universe !== 'googleapis.com') {
-    throw appErrors.googleCredentialInvalid('"universe_domain" must be googleapis.com');
-  }
-
-  const clientEmail = requireString(record, 'client_email');
-  if (!SERVICE_ACCOUNT_EMAIL.test(clientEmail)) {
-    throw appErrors.googleCredentialInvalid('"client_email" is not a service-account address');
-  }
-  const privateKey = requireString(record, 'private_key');
-  if (!privateKey.includes('-----BEGIN') || !privateKey.includes('PRIVATE KEY-----')) {
-    throw appErrors.googleCredentialInvalid('"private_key" is not a PEM private key');
-  }
-
-  return {
-    type: 'service_account',
-    projectId: requireString(record, 'project_id'),
-    clientEmail,
-    privateKey,
-    privateKeyId: requireString(record, 'private_key_id'),
-    clientId: requireString(record, 'client_id'),
-  };
-}
-
-/** Re-validate a credential object read back from OUR own encrypted wrapper (camelCase shape). */
-function isStoredCredential(value: unknown): value is ServiceAccountCredential {
+/** Re-validate a credential object read back from OUR own encrypted wrapper. */
+function isStoredCredential(value: unknown): value is OAuthCredential {
   if (typeof value !== 'object' || value === null) {
     return false;
   }
   const record = value as Record<string, unknown>;
   return (
-    record['type'] === 'service_account' &&
-    typeof record['projectId'] === 'string' &&
-    typeof record['clientEmail'] === 'string' &&
-    /@[^@]+\.iam\.gserviceaccount\.com$/i.test(record['clientEmail']) &&
-    typeof record['privateKey'] === 'string' &&
-    record['privateKey'].includes('PRIVATE KEY-----') &&
-    typeof record['privateKeyId'] === 'string' &&
-    typeof record['clientId'] === 'string'
+    typeof record['refreshToken'] === 'string' &&
+    record['refreshToken'].trim() !== '' &&
+    isOptionalString(record['sub']) &&
+    isOptionalString(record['email'])
   );
 }
 
@@ -154,12 +83,15 @@ export function createGoogleCredentialStore(
       return crypto.isAvailable();
     },
 
-    parseAndValidate(rawJson: string): ServiceAccountCredential {
-      return validateCredentialShape(rawJson);
-    },
-
-    async writeCredential(credential: ServiceAccountCredential, generation: number): Promise<void> {
-      const wrapper: CredentialWrapper = { generation, credential };
+    async writeCredential(credential: OAuthCredential, generation: number): Promise<void> {
+      const wrapper: CredentialWrapper = {
+        generation,
+        credential: {
+          refreshToken: credential.refreshToken,
+          sub: credential.sub ?? null,
+          email: credential.email ?? null,
+        },
+      };
       const ciphertext = await crypto.encrypt(JSON.stringify(wrapper));
       await mkdir(dirname(filePath), { recursive: true });
       const handle = await open(tmpPath, 'w');
@@ -182,10 +114,10 @@ export function createGoogleCredentialStore(
         const decrypted = await crypto.decrypt(ciphertext);
         plaintext = decrypted.result;
         if (decrypted.shouldReEncrypt) {
-          // Key rotation — re-encrypt the same wrapper in place (generation unchanged).
+          // OS key rotation — re-encrypt the same wrapper in place (generation unchanged).
           try {
-            const wrapper = JSON.parse(plaintext) as CredentialWrapper;
-            await this.writeCredential(wrapper.credential, wrapper.generation);
+            const rotated = JSON.parse(plaintext) as CredentialWrapper;
+            await this.writeCredential(rotated.credential, rotated.generation);
           } catch {
             /* fall through to normal parse/validate below */
           }
@@ -209,7 +141,14 @@ export function createGoogleCredentialStore(
       if (!isStoredCredential(record['credential'])) {
         return null;
       }
-      return { generation: record['generation'], credential: record['credential'] };
+      return {
+        generation: record['generation'],
+        credential: {
+          refreshToken: record['credential'].refreshToken,
+          sub: record['credential'].sub ?? null,
+          email: record['credential'].email ?? null,
+        },
+      };
     },
 
     async deleteCredential(): Promise<void> {

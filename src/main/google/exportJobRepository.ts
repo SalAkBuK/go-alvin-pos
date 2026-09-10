@@ -318,6 +318,15 @@ export function manualRetry(
     .run(args).changes;
 }
 
+/*
+ * NOTE: the "needs re-authorization" signal is NO LONGER derived from export-job
+ * `last_error` (a historical AUTH error from a superseded credential generation
+ * must not mark a newer, successfully-authorized credential). It is now a
+ * current-active-generation auth-health marker managed by the config service
+ * (`google_auth_failure_generation`, `REQ-GSHEET-018`, `Correction A`).
+ * Historical job errors remain historical job evidence only.
+ */
+
 export function queueSummary(db: Database.Database): GoogleQueueSummary {
   const rows = db
     .prepare(`SELECT status, COUNT(*) AS n FROM google_sheet_export_jobs GROUP BY status`)

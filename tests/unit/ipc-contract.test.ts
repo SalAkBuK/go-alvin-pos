@@ -43,8 +43,10 @@ describe('IPC contract', () => {
         'printingSelectPrinter',
         'printingPrintReceipt',
         'googleGetConfig',
-        'googleUpdateConfig',
         'googleConnect',
+        'googleRetrySetup',
+        'googleSetEnabled',
+        'googleOpenSpreadsheet',
         'googleDisconnect',
         'googleRetryExport',
       ].sort(),
@@ -109,8 +111,16 @@ describe('IPC contract', () => {
       settings: ['tax.get', 'tax.update', 'business.get', 'business.update'],
       // `printing` exposes only narrow capabilities — no generic settings/query surface.
       printing: ['listPrinters', 'getConfig', 'selectPrinter', 'printReceipt'],
-      // `google` exposes only narrow capabilities — no generic settings/query/HTTP surface.
-      google: ['getConfig', 'updateConfig', 'connect', 'disconnect', 'retryExport'],
+      // `google` exposes only narrow capabilities — no credential/spreadsheet/HTTP surface.
+      google: [
+        'getConfig',
+        'connect',
+        'retrySetup',
+        'setEnabled',
+        'openSpreadsheet',
+        'disconnect',
+        'retryExport',
+      ],
     };
     expect(Object.keys(surface).sort()).toEqual([
       'app',

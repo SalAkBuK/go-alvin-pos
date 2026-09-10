@@ -220,26 +220,38 @@ export const APP_ERROR_CODES = [
    * never surfaced to the renderer (`task §15`-`§16`).
    */
   'PRINT_FAILED',
-  // ── Phase 2J: Google Sheets Export Worker ────────────────────────────────
+  // ── Phase 2J / 2J.1: Google Sheets export + OAuth onboarding ─────────────
   /**
-   * The OS secure-credential store (`safeStorage`) is unavailable, so a Google
-   * service-account credential cannot be stored without plaintext. V1 never
-   * falls back to plaintext — the user is told storage is unavailable
-   * (`DATA_MODEL.md §21`, `task §8`).
+   * The OS secure-credential store (`safeStorage`) is unavailable, so the Google
+   * OAuth refresh token cannot be stored without plaintext. V1 never falls back
+   * to plaintext (`DATA_MODEL.md §21`, `ARCHITECTURE.md §27.4`).
    */
   'GOOGLE_SECURE_STORAGE_UNAVAILABLE',
   /**
-   * The selected file is not a well-formed Google **service-account** JSON key
-   * (`type !== "service_account"`, missing `client_email` / `private_key`, or a
-   * disallowed non-`googleapis.com` token endpoint). Nothing was stored
-   * (`REQ-GSHEET-013`, `task §3`).
+   * This build has no developer OAuth client configuration, so `Connect Google
+   * Account` is unavailable. Startup and local POS are unaffected
+   * (`ARCHITECTURE.md §27.4`).
+   */
+  'GOOGLE_OAUTH_NOT_CONFIGURED',
+  /**
+   * The desktop OAuth authorization flow did not complete (browser closed,
+   * access denied, callback lost, `state` mismatch, token exchange failure,
+   * loopback listener failure, shutdown). Nothing was stored; local sales are
+   * unaffected (`ARCHITECTURE.md §27.2`, `REQ-GSHEET-016`).
+   */
+  'GOOGLE_AUTHORIZATION_FAILED',
+  /** A Google sign-in is already in progress on this machine. */
+  'GOOGLE_AUTHORIZATION_IN_PROGRESS',
+  /**
+   * The stored Google OAuth credential is missing, corrupt, or rejected by
+   * Google. The owner is asked to reconnect; export jobs stay durable
+   * (`REQ-GSHEET-019`, `TEST-GSHEET-045`).
    */
   'GOOGLE_CREDENTIAL_INVALID',
-  /**
-   * `enabled: true` was submitted without a connected credential and/or a
-   * spreadsheet id. Network processing needs both (`REQ-GSHEET-002`, `task §6`).
-   */
+  /** An action needs a connected Google account and none is connected (`REQ-GSHEET-018`). */
   'GOOGLE_NOT_CONNECTED',
+  /** `Open Spreadsheet` / enable was requested before the spreadsheet finished provisioning. */
+  'GOOGLE_SPREADSHEET_NOT_READY',
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
 

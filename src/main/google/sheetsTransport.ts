@@ -1,14 +1,9 @@
-import type { GoogleAuthProvider } from './googleAuth';
-import {
-  classifyHttpStatus,
-  classifyThrown,
-  GoogleApiError,
-  scrubExternalText,
-} from './googleRedaction';
+import type { GoogleAuthProvider } from './googleAuthProvider';
+import { googleApiRequest } from './googleApiRequest';
 
 /**
- * The minimum Google Sheets v4 REST surface the worker needs (`task §21`): read
- * a column, batch-update ranges, append rows. Direct HTTPS via the trusted
+ * The minimum Google Sheets v4 REST surface the export worker needs: read a
+ * column, batch-update ranges, append rows. Direct HTTPS via the trusted
  * main-process `fetch` — NOT the full `googleapis` SDK.
  *
  * All writes use `valueInputOption=RAW` so Google stores strings verbatim and
@@ -33,7 +28,7 @@ export interface SheetsTransport {
 export interface SheetsTransportDeps {
   readonly spreadsheetId: string;
   readonly auth: GoogleAuthProvider;
-  /** Per-attempt cancellation (`task §12`). */
+  /** Per-attempt cancellation. */
   readonly signal?: AbortSignal;
   /** Overridable for tests; defaults to the global `fetch`. */
   readonly fetchImpl?: typeof fetch;
@@ -49,64 +44,11 @@ export function sheetRef(sheetName: string, a1: string): string {
 }
 
 export function createSheetsTransport(deps: SheetsTransportDeps): SheetsTransport {
-  const { spreadsheetId, auth, signal } = deps;
-  const doFetch = deps.fetchImpl ?? fetch;
+  const { spreadsheetId, auth, signal, fetchImpl } = deps;
   const id = encodeURIComponent(spreadsheetId);
 
-  async function request(method: 'GET' | 'POST', path: string, body?: unknown): Promise<unknown> {
-    let token: string;
-    try {
-      token = await auth.getAccessToken();
-    } catch (error) {
-      throw new GoogleApiError('AUTH', error instanceof Error ? error.message : String(error), {
-        unknownOutcome: false,
-      });
-    }
-
-    let response: Response;
-    try {
-      const init: RequestInit = {
-        method,
-        headers: {
-          Authorization: `Bearer ${token}`,
-          ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-        },
-      };
-      if (body !== undefined) {
-        init.body = JSON.stringify(body);
-      }
-      if (signal) {
-        init.signal = signal;
-      }
-      response = await doFetch(`${API_BASE}/${id}${path}`, init);
-    } catch (error) {
-      throw classifyThrown(error);
-    }
-
-    if (!response.ok) {
-      let detail = `HTTP ${String(response.status)}`;
-      try {
-        const text = await response.text();
-        const parsed = JSON.parse(text) as { error?: { message?: string } };
-        if (parsed.error?.message) {
-          detail = parsed.error.message;
-        }
-      } catch {
-        /* keep the status-only detail */
-      }
-      throw new GoogleApiError(classifyHttpStatus(response.status), scrubExternalText(detail), {
-        httpStatus: response.status,
-        // A 5xx after the request was sent is ambiguous; treat as unknown so the
-        // stale machinery governs the retry rather than a definite failure.
-        unknownOutcome: response.status >= 500,
-      });
-    }
-
-    if (method === 'GET') {
-      return response.json();
-    }
-    return undefined;
-  }
+  const request = (method: 'GET' | 'POST', path: string, body?: unknown): Promise<unknown> =>
+    googleApiRequest({ auth, method, url: `${API_BASE}/${id}${path}`, body, signal, fetchImpl });
 
   return {
     async getValues(range: string): Promise<string[][]> {

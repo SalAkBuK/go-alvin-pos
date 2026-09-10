@@ -1432,7 +1432,7 @@ Export queue remains consistent.
 # 20. Google Sheets Tests
 
 V1 authenticates to Google with a desktop OAuth flow and creates its own
-spreadsheet (`ARCHITECTURE.md §27`, `REQ-GSHEET-016`–`REQ-GSHEET-019`).
+spreadsheet (`ARCHITECTURE.md §27`, `REQ-GSHEET-016`–`REQ-GSHEET-020`).
 Automated tests exercise the state machine, storage, redaction, and idempotency
 against in-memory / fake OAuth and Google API layers. Behavior against the real
 Google authorization server and Sheets/Drive APIs — including whether every
@@ -1873,14 +1873,15 @@ checkout is delayed or blocked by the Google connection state.
 ## TEST-GSHEET-038 — Connected but Spreadsheet Setup Failed Is Recoverable
 
 Force spreadsheet provisioning to fail after OAuth succeeds and the credential is
-stored.
+stored (fail at or before the Drive lookup, so no `files.create` is issued).
 
 Expected:
 
 State is `Connected / setup incomplete`: the account stays connected, `Retry
 Setup` is offered, the worker makes no spreadsheet writes, durable export jobs
-stay queued, and Google Sheets is not reported as ready. `Retry Setup` later
-completes provisioning without re-authorizing the account.
+stay queued, and Google Sheets is not reported as ready. The state and its
+sanitized reason persist across a restart. Explicit `Retry Setup` later completes
+provisioning without re-authorizing the account.
 
 ---
 
@@ -2023,10 +2024,12 @@ retry) before it learned the spreadsheet ID.
 
 Expected:
 
-The provisioning token, persisted before the create, survives the restart. On
-restart provisioning resumes, the `files.list` lookup with that token finds the
-existing tagged spreadsheet, and it is adopted. No duplicate spreadsheet is
-created; the integration reaches `Ready to sync` after worksheet verification.
+The provisioning token and the "create attempted" marker, both persisted before
+the create, survive the restart. On restart, automatic recovery runs the
+`files.list` **lookup only** with that token, finds the existing tagged
+spreadsheet, and adopts it. No duplicate spreadsheet is created; the integration
+reaches `Ready to sync` after worksheet verification. (Startup recovery never
+issues `files.create` — `TEST-GSHEET-052`.)
 
 ---
 
@@ -2045,6 +2048,149 @@ Expected:
   authoritative; V1 defines no automatic selection among multiple matches.
 - Local sales, inventory, receipts, and reporting are unaffected; durable export
   jobs stay queued.
+
+---
+
+## TEST-GSHEET-050 — Ordinary Setup-Incomplete Startup Does No Google Work
+
+Reach `Connected / setup incomplete` with provisioning failed at/before the Drive
+lookup (no `files.create` ever attempted — the "create attempted" marker is not
+set). Close and relaunch the application with internet available; do **not**
+select `Retry Setup`.
+
+Expected:
+
+- No Drive `files.list` and no `files.create` request is issued at startup.
+- No worksheet is added, renamed, or written at startup.
+- The state remains `Connected / setup incomplete` with its persisted sanitized
+  reason; the UI still offers `Retry Setup`.
+- Local sales and durable export jobs are unaffected.
+
+---
+
+## TEST-GSHEET-051 — Startup Recovery After an Attempted Create — Lookup + Adopt
+
+Reach `Connected / setup incomplete` after a `files.create` was attempted and its
+outcome was ambiguous ("create attempted" marker set; a tagged spreadsheet in
+fact exists remotely under the durable token). Relaunch the application.
+
+Expected:
+
+- Startup issues **one** Drive `files.list` using the **same durable provisioning
+  token** — and no `files.create`.
+- Exactly one non-trashed match is found and adopted; canonical worksheet/header
+  convergence completes; the integration reaches `Ready to sync`.
+- No duplicate spreadsheet exists.
+
+---
+
+## TEST-GSHEET-052 — Startup Recovery With Zero Matches Does Not Create
+
+As `TEST-GSHEET-051` but the `files.list` at startup returns **zero** matches
+(e.g. the earlier ambiguous create never actually succeeded, or the file was
+permanently removed).
+
+Expected:
+
+- Startup does **not** issue `files.create` and does not mutate any worksheet.
+- The integration remains `Connected / setup incomplete` and offers
+  `Retry Setup`.
+- A later explicit `Retry Setup` runs the full canonical flow (lookup first,
+  then a single tagged `files.create` on the still-zero-match result) and
+  reaches `Ready to sync` after verification.
+
+---
+
+## TEST-GSHEET-053 — Transient Google Failure While Ready Preserves Setup
+
+With the integration `Ready to sync`, complete a sale and let the export worker
+hit a transient failure against the configured spreadsheet: separately a network
+error, a timeout / aborted request, an HTTP 5xx, and an HTTP 429.
+
+Expected:
+
+- `google_spreadsheet_id` is unchanged and `setupState` stays `Ready to sync`.
+- The export job follows the existing rules (definite-failure backoff/retry;
+  `unknownOutcome` leaves the job `EXPORTING` for stale recovery).
+- No `Retry Setup` prompt appears; local sale state is authoritative and
+  unaffected.
+
+---
+
+## TEST-GSHEET-054 — Structural "Not Found" Failure → Ready to Setup Incomplete
+
+With the integration `Ready to sync`, delete/trash the configured spreadsheet in
+Google Drive. Complete a new sale and run the export worker until the structural
+result is established.
+
+Expected:
+
+- The export job keeps its canonical failure/retry evidence (not discarded).
+- `google_spreadsheet_id` is invalidated/cleared; `setupState` transitions
+  `Ready to sync → Connected / setup incomplete` with a persisted sanitized
+  reason that the Google spreadsheet needs attention.
+- The OAuth connection is preserved; the owner is not disconnected or forced to
+  re-authorize.
+- The export worker makes no further spreadsheet export writes; durable export
+  jobs stay queued.
+- The UI visibly explains the spreadsheet needs attention and offers
+  `Retry Setup`.
+- Local sale / inventory / payment / receipt state is unchanged.
+
+---
+
+## TEST-GSHEET-055 — Structural Permission Failure (Auth Still Valid) → Setup Incomplete
+
+As `TEST-GSHEET-054` but the failure is a definite loss of access to the
+configured spreadsheet (the per-file grant was removed) while the OAuth
+credential itself still refreshes successfully.
+
+Expected:
+
+- Same transition as `TEST-GSHEET-054`: `Ready to sync → Connected / setup
+  incomplete`, spreadsheet target cleared, OAuth connection preserved,
+  `Retry Setup` offered.
+- The "needs re-authorization" signal is **not** raised — authentication for the
+  current credential generation is still valid.
+
+---
+
+## TEST-GSHEET-056 — Retry Setup After a Deleted Spreadsheet
+
+Following `TEST-GSHEET-054` (state `Connected / setup incomplete`, spreadsheet
+target cleared), the owner selects `Retry Setup`.
+
+Expected:
+
+- No new sign-in: the existing OAuth credential is reused.
+- The existing durable provisioning token is reused; Drive `files.list` runs
+  first.
+- Exactly one match → adopt; **no** match → a single canonical tagged
+  `files.create` for a replacement; more than one match → remain `Connected /
+  setup incomplete`.
+- Canonical `Sales` and `Sale Items` worksheets and headers are converged and
+  verified; the integration returns to `Ready to sync` **only after** full
+  verification.
+- The previously queued export jobs then deliver against the recovered
+  spreadsheet with no duplicate logical rows.
+
+---
+
+## TEST-GSHEET-057 — Needs-Re-Authorization Reflects the Current Credential
+
+Connect (generation A). Revoke the token so an export job fails and reaches
+`FAILED` with an `AUTH:` error. Then select `Connect Google Account` and complete
+a fresh authorization (generation B); provisioning is otherwise `Ready to sync`.
+
+Expected:
+
+- After the successful re-authorization, the integration does **not** report
+  "needs re-authorization": the signal reflects credential generation B, which
+  has never failed authentication.
+- The historical `FAILED` job's `AUTH:` error is not, by itself, treated as
+  evidence about generation B.
+- Local sales and durable export jobs remain safe; the recovered credential can
+  deliver the queued jobs.
 
 ---
 
@@ -4464,10 +4610,11 @@ This matrix supersedes the prior partial matrix (which covered only Void/Audit/E
 | `REQ-GSHEET-013` | `TEST-SEC-005`, `TEST-SEC-007`, `TEST-GSHEET-032`, `TEST-GSHEET-034`, `TEST-GSHEET-035` |
 | `REQ-GSHEET-014` | `TEST-GSHEET-025` |
 | `REQ-GSHEET-015` | `TEST-GSHEET-020`, `TEST-GSHEET-021` |
-| `REQ-GSHEET-016` | `TEST-GSHEET-026` through `TEST-GSHEET-035`, `TEST-GSHEET-037` |
-| `REQ-GSHEET-017` | `TEST-GSHEET-039`, `TEST-GSHEET-040`, `TEST-GSHEET-041`, `TEST-GSHEET-042`, `TEST-GSHEET-047`, `TEST-GSHEET-048`, `TEST-GSHEET-049` |
-| `REQ-GSHEET-018` | `TEST-GSHEET-038`, `TEST-GSHEET-040`, `TEST-GSHEET-044`, `TEST-GSHEET-045`, `TEST-GSHEET-049` |
+| `REQ-GSHEET-016` | `TEST-GSHEET-026` through `TEST-GSHEET-035`, `TEST-GSHEET-037`, `TEST-GSHEET-057` |
+| `REQ-GSHEET-017` | `TEST-GSHEET-039`, `TEST-GSHEET-040`, `TEST-GSHEET-041`, `TEST-GSHEET-042`, `TEST-GSHEET-047`, `TEST-GSHEET-048`, `TEST-GSHEET-049`, `TEST-GSHEET-050`, `TEST-GSHEET-051`, `TEST-GSHEET-052` |
+| `REQ-GSHEET-018` | `TEST-GSHEET-038`, `TEST-GSHEET-040`, `TEST-GSHEET-044`, `TEST-GSHEET-045`, `TEST-GSHEET-049`, `TEST-GSHEET-050`, `TEST-GSHEET-052` |
 | `REQ-GSHEET-019` | `TEST-GSHEET-036` |
+| `REQ-GSHEET-020` | `TEST-GSHEET-053`, `TEST-GSHEET-054`, `TEST-GSHEET-055`, `TEST-GSHEET-056` |
 | `REQ-DB-001` | `TEST-DB-001` |
 | `REQ-DB-002` | `TEST-DB-001`, `TEST-DB-002` |
 | `REQ-DB-003` | `TEST-ATOMIC-001` |

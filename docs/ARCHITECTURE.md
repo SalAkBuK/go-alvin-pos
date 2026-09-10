@@ -582,7 +582,7 @@ The actual network export happens later.
 
 This creates an important guarantee:
 
-> Every committed sale has a durable local export job. When Google Sheets is disabled, not connected, or connected but not yet ready to sync (no Google account, or the spreadsheet/worksheets are not yet provisioned — Section 27.5), network work remains paused; becoming ready and enabled later makes represented sale state eligible for export.
+> Every committed sale has a durable local export job. When Google Sheets is disabled, not connected, or connected but not yet ready to sync (no Google account, or the spreadsheet/worksheets are not yet provisioned — Section 27.5), **export-delivery** network work remains paused; becoming ready and enabled later makes represented sale state eligible for export. (Bounded provisioning recovery — the startup `files.list` lookup of Section 27.5.1 and explicit `Retry Setup` — is a separate operation, not export delivery.)
 
 ---
 
@@ -990,6 +990,37 @@ authoritative `files.create` that brings the spreadsheet into existence.
    guess which spreadsheet is authoritative or delete any remote spreadsheet.
    V1 defines no automatic selection among multiple matches.
 
+**Startup recovery boundary.** Provisioning has two distinct recovery paths, and
+they are **not** the same:
+
+- **Explicit `Retry Setup`** (owner-initiated) runs the full sequence above,
+  including the single tagged `files.create` on a zero-match result.
+- **Automatic startup recovery** runs **only** when local recovery state records
+  that a `files.create` has already been attempted for this installation (a
+  non-secret "create attempted" marker — the exact key name is an implementation
+  detail — set the first time a `files.create` request is issued and reused,
+  like the provisioning token, across restarts; a spreadsheet may therefore
+  already exist remotely). When that marker is set and `google_spreadsheet_id`
+  is not, startup **may** run **lookup only** — one `files.list` with the durable
+  provisioning token:
+  - exactly one non-trashed match → adopt it and complete canonical
+    worksheet/header convergence automatically → **Ready to sync**;
+  - more than one match → remain **Connected / setup incomplete** (safe stop);
+  - **zero matches → startup must NOT issue `files.create`** → remain
+    **Connected / setup incomplete** and offer `Retry Setup`.
+
+  When the "create attempted" marker is **not** set — an ordinary
+  `Connected / setup incomplete` state where provisioning failed at or before
+  the lookup and no create request was ever issued — startup performs **no**
+  Drive or Sheets network work at all: no `files.list`, no `files.create`, no
+  worksheet mutation. The state and its sanitized reason persist across
+  restarts, and recovery is only through explicit `Retry Setup`.
+
+This preserves ambiguous-create restart recovery while ensuring that merely
+launching the application (for example, a cashier opening the POS after the
+owner left setup incomplete) never creates or mutates files in the owner's
+Google Drive.
+
 **Worksheet convergence (idempotent).** After a spreadsheet ID is obtained or
 adopted, the application uses the **Sheets API** to inspect and converge the
 structure to the canonical `Sales` and `Sale Items` worksheets
@@ -1007,6 +1038,62 @@ If a specific required Drive or Sheets call is proven against live Google to nee
 a broader scope than `drive.file`, that is an explicit escalation decision —
 never a silent scope change. What remains subject to live verification is only
 the concrete request/response detail, not the mechanism above.
+
+### 27.5.2 Post-provisioning lifecycle — transient vs structural spreadsheet failure
+
+Once `setupState` is **Ready to sync**, the stored `google_spreadsheet_id`
+alone does **not** remain an authoritative Ready target after the application
+has obtained a **definite structural failure** proving the configured remote
+spreadsheet can no longer be used. The export worker's own request outcomes
+classify the failure.
+
+**Transient failures** — network outage, timeout / aborted request, an
+ambiguous (`unknownOutcome`) result, an HTTP 5xx, or an HTTP 429 rate limit:
+
+- do **not** invalidate the spreadsheet configuration;
+- `google_spreadsheet_id` and the **Ready to sync** state are preserved;
+- the existing export-engine rules apply unchanged (`DATA_MODEL.md §23`-`§25`:
+  definite-failure backoff/retry; `unknownOutcome` leaves the job `EXPORTING`
+  for the 5-minute stale recovery);
+- the local sale remains authoritative and unaffected.
+
+**Structural spreadsheet-target failures** — the configured spreadsheet is
+definitely unavailable / not found (deleted or trashed); or the application
+definitely no longer has permission to use it (the per-file `drive.file` grant
+was revoked); or the configured spreadsheet can no longer satisfy the canonical
+export-target contract. These correspond to a **definite** (not
+`unknownOutcome`) Google result that unambiguously identifies the configured
+spreadsheet target as not-found or not-permitted. The application may confirm
+the result on the export job's normal retry before acting, so a single
+transient blip is not misclassified.
+
+Once such a structural failure is **established for the configured target**:
+
+- local sale / inventory / payment / receipt state is unchanged;
+- the export job keeps its canonical failure/retry evidence (it is not
+  discarded);
+- the integration **stops presenting the spreadsheet as Ready** merely because a
+  stale ID exists — the locally usable spreadsheet target
+  (`google_spreadsheet_id`) is **cleared/invalidated**;
+- the **OAuth connection is preserved** when the credential itself is still
+  valid — no disconnect, no forced re-authorization;
+- `setupState` transitions **Ready to sync → Connected / setup incomplete**,
+  with a persisted sanitized setup-incomplete reason stating that the Google
+  spreadsheet needs attention;
+- the export worker makes **no further spreadsheet export writes** while setup is
+  incomplete (jobs stay queued and durable);
+- the UI visibly explains that the Google spreadsheet needs attention and offers
+  **`Retry Setup`**;
+- the owner is **not** forced to disconnect or re-authorize solely because the
+  spreadsheet was deleted or access was lost.
+
+The export worker must **never** automatically create a replacement spreadsheet
+from an export failure. Recovery that requires creation is only through the
+explicit **`Retry Setup`** workflow (`POS_WORKFLOWS.md §71`), which reuses the
+existing OAuth credential and the existing durable provisioning token, performs
+the canonical Drive lookup first, and — on a zero-match result — may issue the
+single tagged `files.create` for a replacement, then converges and verifies the
+canonical worksheets before returning to **Ready to sync**.
 
 ## 27.6 Boundary rules
 

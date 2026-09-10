@@ -718,14 +718,22 @@ Possible diagnostics:
 - Integration enabled
 - Google account connected (and which account, by display email)
 - Setup state: disconnected / connected but setup incomplete / ready to sync
-- Authentication valid (refresh token usable) or needs re-authorization
+- Setup-incomplete reason (sanitized) when applicable — e.g. the configured
+  spreadsheet needs attention
+- Authentication valid (refresh token usable) or needs re-authorization —
+  reflecting the **current active OAuth credential generation**, not a
+  historical export-job error from a superseded generation
 - Last successful export
 - Pending count
 - Failed count
 - Oldest pending export age
 
 A not-connected, setup-incomplete, or re-authorization-needed state is a
-secondary warning only and never implies local sales failed.
+secondary warning only and never implies local sales failed. A definite
+structural failure of the configured spreadsheet (deleted, or access lost)
+moves the integration to `connected but setup incomplete` with a sanitized
+reason; it does not disconnect the account and does not block local sales
+(`ARCHITECTURE.md §27.5.2`, `REQ-GSHEET-020`).
 
 Example:
 

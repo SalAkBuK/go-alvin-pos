@@ -1378,9 +1378,28 @@ Export job records:
 - Last attempt
 - Sanitized error
 
-The job remains available for future retry. A revoked or expired credential
-surfaces as a connection warning (`SUPPORT_DIAGNOSTICS.md §30`) and prompts
-re-authorization; durable export jobs are retained and are not deleted.
+The job remains available for future retry; durable export jobs are retained and
+are not deleted.
+
+### Transient vs structural (`ARCHITECTURE.md §27.5.2`, `REQ-GSHEET-020`)
+
+- **Transient** (no internet, timeout / ambiguous response, HTTP 5xx, rate
+  limit): the spreadsheet configuration and the **Ready to sync** state are
+  preserved; the existing retry / unknown-outcome rules govern the job.
+- **Structural — credential**: a revoked or expired credential for the **current
+  active credential generation** surfaces as a connection warning
+  (`SUPPORT_DIAGNOSTICS.md §30`) and prompts re-authorization. A historical
+  export-job authentication error from a superseded credential generation does
+  not by itself mark a newer, successfully-authorized credential as needing
+  re-authorization.
+- **Structural — spreadsheet target**: a definite result that the configured
+  spreadsheet is not found (deleted / trashed) or not permitted (the per-file
+  grant was lost) invalidates the stored spreadsheet target, transitions
+  **Ready to sync → Connected / setup incomplete** with a persisted sanitized
+  reason, stops further spreadsheet export writes (jobs stay queued), keeps the
+  OAuth connection, and offers `Retry Setup`. The owner is not forced to
+  disconnect or re-authorize. The export worker never creates a replacement
+  spreadsheet on its own (`REQ-GSHEET-020`).
 
 ---
 
@@ -1937,6 +1956,39 @@ unaffected, and durable export jobs are untouched.
 The application must not report Google Sheets as ready until the spreadsheet and
 both worksheets are verified. If any step fails, the local POS remains fully
 usable.
+
+### Retry Setup (explicit, owner-initiated)
+
+`Retry Setup` is the canonical recovery for any `Connected / setup incomplete`
+state — whether provisioning failed during `Connect`, an ambiguous create was
+never confirmed, or a previously ready spreadsheet suffered a structural failure
+(`REQ-GSHEET-020`). It:
+
+1. reuses the existing OAuth connection — never a new sign-in;
+2. reuses the existing durable provisioning token;
+3. runs steps 7–10 above: Drive `files.list` first; exactly one match → adopt;
+   no match → the single tagged `files.create`; more than one match → stop and
+   stay `Connected / setup incomplete`;
+4. converges and verifies the canonical `Sales` and `Sale Items` worksheets and
+   headers;
+5. returns to **Ready to sync** only after full verification.
+
+### Startup recovery (`ARCHITECTURE.md §27.5.1`)
+
+On launch, for a `Connected / setup incomplete` account:
+
+- if local recovery state records that a `files.create` was already attempted (a
+  spreadsheet may exist remotely), startup **may** run **lookup only** — one
+  Drive `files.list` with the durable token: one match → adopt + converge →
+  **Ready to sync**; more than one → stay `Connected / setup incomplete`;
+  **zero → do NOT create**, stay `Connected / setup incomplete`, offer
+  `Retry Setup`;
+- otherwise (no create was ever attempted), startup issues **no** Drive or
+  Sheets request and does not mutate worksheets; the state and its reason
+  persist, and recovery is only through explicit `Retry Setup`.
+
+Merely launching the application must never create or mutate files in the
+owner's Google Drive.
 
 ### Re-authorization / replacement
 

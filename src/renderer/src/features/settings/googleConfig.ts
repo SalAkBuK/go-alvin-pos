@@ -1,74 +1,69 @@
 import type { GoogleConfig, GoogleQueueSummary } from '../../../../shared/google';
-import {
-  GOOGLE_SALES_SHEET_DEFAULT,
-  GOOGLE_SALE_ITEMS_SHEET_DEFAULT,
-  GOOGLE_SHEET_NAME_MAX_LENGTH,
-} from '../../../../shared/google';
 
 /**
- * Pure, React-free helpers for the Settings → Google Sheets section (`task §8`).
- * No jsdom in the renderer suites, so the display strings and the form gates are
- * unit-tested here directly. The trusted layer re-validates everything.
+ * Pure, React-free helpers for Settings → Google Sheets (Phase 2J.1). No jsdom
+ * in the renderer suites, so the display strings and gates are unit-tested here
+ * directly. The trusted main process re-derives everything.
+ *
+ * The renderer never sees a token, credential, spreadsheet ID, worksheet name,
+ * provisioning token, or OAuth client configuration — only the sanitized
+ * `GoogleConfig`.
  */
 
-const SPREADSHEET_ID = /^[A-Za-z0-9_-]{10,200}$/;
-const FORBIDDEN_SHEET_NAME_CHARS = /[[\]*?/\\:]/;
+export type GoogleView = 'loading' | 'unavailable' | 'disconnected' | 'setup-incomplete' | 'ready';
 
-export interface GoogleFormFields {
-  readonly enabled: boolean;
-  readonly spreadsheetId: string;
-  readonly salesSheetName: string;
-  readonly saleItemsSheetName: string;
-}
-
-export function fieldsFromConfig(config: GoogleConfig | null): GoogleFormFields {
+export function googleView(config: GoogleConfig | null): GoogleView {
   if (config === null) {
-    return {
-      enabled: false,
-      spreadsheetId: '',
-      salesSheetName: GOOGLE_SALES_SHEET_DEFAULT,
-      saleItemsSheetName: GOOGLE_SALE_ITEMS_SHEET_DEFAULT,
-    };
+    return 'loading';
   }
-  return {
-    enabled: config.enabled,
-    spreadsheetId: config.spreadsheetId ?? '',
-    salesSheetName: config.salesSheetName,
-    saleItemsSheetName: config.saleItemsSheetName,
-  };
+  if (!config.oauthClientConfigured || !config.secureStorageAvailable) {
+    return 'unavailable';
+  }
+  switch (config.setupState) {
+    case 'READY':
+      return 'ready';
+    case 'SETUP_INCOMPLETE':
+      return 'setup-incomplete';
+    default:
+      return 'disconnected';
+  }
 }
 
-/** Deterministically pull a spreadsheet id out of a pasted Sheets URL, or return the trimmed input. */
-export function extractSpreadsheetId(input: string): string {
-  const trimmed = input.trim();
-  const match = /\/d\/([A-Za-z0-9_-]+)/.exec(trimmed);
-  return match ? match[1]! : trimmed;
+export function describeUnavailable(config: GoogleConfig | null): string {
+  if (config && !config.secureStorageAvailable) {
+    return 'This device cannot store a Google connection securely, so Google Sheets export is unavailable here.';
+  }
+  return 'Google Sheets export is not available in this build of Go Phones POS.';
 }
 
 export function describeConnection(config: GoogleConfig | null): string {
   if (config === null) {
     return 'Loading…';
   }
-  if (!config.secureStorageAvailable) {
-    return 'Secure storage unavailable on this device';
-  }
   if (config.connected) {
-    return config.serviceAccountEmail ? `Connected as ${config.serviceAccountEmail}` : 'Connected';
+    return config.accountEmail ? `Connected as ${config.accountEmail}` : 'Connected';
   }
   return 'Not connected';
 }
 
-export function describeExportState(config: GoogleConfig | null): string {
+export function describeSync(config: GoogleConfig | null): string {
   if (config === null) {
     return '';
   }
-  if (config.configured) {
-    return 'Export is enabled — completed sales sync to Google Sheets in the background.';
+  if (config.needsReauthorization) {
+    return 'Google needs you to sign in again. Sales are safe and will export once reconnected.';
   }
-  if (config.enabled && !config.connected) {
-    return 'Export is enabled but no Google account is connected. Connect one below.';
+  if (!config.enabled) {
+    return 'Export is paused. Completed sales are saved locally and will sync when you turn export on.';
   }
-  return 'Export is off. Completed sales are saved locally and can be exported later.';
+  const backlog = config.queue.pending + config.queue.exporting + config.queue.failed;
+  if (config.queue.failed > 0) {
+    return `${String(config.queue.failed)} export${config.queue.failed === 1 ? '' : 's'} need attention. Sales are safe.`;
+  }
+  if (backlog > 0) {
+    return `${String(backlog)} sale${backlog === 1 ? '' : 's'} waiting to sync.`;
+  }
+  return 'Up to date.';
 }
 
 export function describeQueue(queue: GoogleQueueSummary): string {
@@ -88,68 +83,7 @@ export function describeLastSync(config: GoogleConfig | null): string {
   return instant.toLocaleString();
 }
 
-export function validateSpreadsheetIdField(value: string): string | null {
-  const id = extractSpreadsheetId(value);
-  if (id === '') {
-    return null; // blank is allowed while enabled is off
-  }
-  return SPREADSHEET_ID.test(id)
-    ? null
-    : 'Enter a valid Google spreadsheet ID (the part of the sheet URL after /d/).';
-}
-
-export function validateSheetNameField(value: string, label: string): string | null {
-  const trimmed = value.trim();
-  if (trimmed === '') {
-    return `Enter the ${label}.`;
-  }
-  if (trimmed.length > GOOGLE_SHEET_NAME_MAX_LENGTH) {
-    return `The ${label} must be ${GOOGLE_SHEET_NAME_MAX_LENGTH} characters or fewer.`;
-  }
-  if (FORBIDDEN_SHEET_NAME_CHARS.test(trimmed)) {
-    return `The ${label} contains a character a worksheet tab cannot use.`;
-  }
-  return null;
-}
-
-export interface GoogleFormValidation {
-  readonly errors: {
-    spreadsheetId?: string;
-    salesSheetName?: string;
-    saleItemsSheetName?: string;
-  };
-  readonly payload: {
-    enabled: boolean;
-    spreadsheetId: string;
-    salesSheetName: string;
-    saleItemsSheetName: string;
-  } | null;
-}
-
-export function validateGoogleForm(fields: GoogleFormFields): GoogleFormValidation {
-  const errors: GoogleFormValidation['errors'] = {};
-  const spreadsheetIdError = validateSpreadsheetIdField(fields.spreadsheetId);
-  if (spreadsheetIdError) {
-    errors.spreadsheetId = spreadsheetIdError;
-  }
-  const salesError = validateSheetNameField(fields.salesSheetName, 'Sales worksheet name');
-  if (salesError) {
-    errors.salesSheetName = salesError;
-  }
-  const itemsError = validateSheetNameField(fields.saleItemsSheetName, 'Sale Items worksheet name');
-  if (itemsError) {
-    errors.saleItemsSheetName = itemsError;
-  }
-  if (Object.keys(errors).length > 0) {
-    return { errors, payload: null };
-  }
-  return {
-    errors,
-    payload: {
-      enabled: fields.enabled,
-      spreadsheetId: extractSpreadsheetId(fields.spreadsheetId),
-      salesSheetName: fields.salesSheetName.trim(),
-      saleItemsSheetName: fields.saleItemsSheetName.trim(),
-    },
-  };
+/** Whether the "Turn export on/off" toggle should be shown and its next value. */
+export function canToggleEnabled(config: GoogleConfig | null): boolean {
+  return config !== null && config.setupState === 'READY';
 }

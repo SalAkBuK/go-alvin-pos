@@ -1,26 +1,23 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { GoogleConfig } from '../../../../shared/google';
 import type { IpcResult } from '../../../../shared/products';
-import { FormField } from '../../components/FormField';
 import {
+  canToggleEnabled,
   describeConnection,
-  describeExportState,
   describeLastSync,
-  describeQueue,
-  fieldsFromConfig,
-  validateGoogleForm,
+  describeSync,
+  describeUnavailable,
+  googleView,
 } from './googleConfig';
-import type { GoogleFormFields } from './googleConfig';
 
 /**
  * Settings → Google Sheets (`PRODUCT_SCOPE.md §22.8`; `POS_WORKFLOWS.md §71`-
- * `§72`; `REQ-GSHEET-011`-`REQ-GSHEET-013`; `task §8`).
+ * `§72`; `REQ-GSHEET-016`-`REQ-GSHEET-019`).
  *
- * Non-secret configuration + the connect/disconnect lifecycle, all through the
- * narrow `window.pos.google.*` surface. The renderer never receives a private
- * key, token, `Authorization` header, or the encrypted blob. If OS secure
- * storage is unavailable the section says so and offers no plaintext path. A
- * disconnected / unconfigured integration never blocks a sale.
+ * One-click `Connect Google Account`. No credential JSON picker, no spreadsheet
+ * ID field, no worksheet-name fields, no service-account email. The renderer
+ * calls only the narrow `window.pos.google.*` surface and receives sanitized
+ * status; the OAuth flow runs entirely in the main process (system browser).
  */
 
 function pos() {
@@ -40,10 +37,8 @@ async function unwrap<T>(promise: Promise<IpcResult<T>>): Promise<T> {
 
 export function GoogleSheetsSection() {
   const [config, setConfig] = useState<GoogleConfig | null>(null);
-  const [fields, setFields] = useState<GoogleFormFields>(fieldsFromConfig(null));
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -54,9 +49,7 @@ export function GoogleSheetsSection() {
       return;
     }
     try {
-      const current = await unwrap(api.google.getConfig());
-      setConfig(current);
-      setFields(fieldsFromConfig(current));
+      setConfig(await unwrap(api.google.getConfig()));
       setLoadError(null);
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : String(error));
@@ -67,91 +60,102 @@ export function GoogleSheetsSection() {
     void load();
   }, [load]);
 
-  const onSave = useCallback(
-    async (event: React.FormEvent) => {
-      event.preventDefault();
-      setNotice(null);
-      setFormError(null);
-      const result = validateGoogleForm(fields);
-      if (!result.payload) {
-        setFieldErrors(result.errors as Record<string, string>);
-        return;
-      }
-      setFieldErrors({});
-      const api = pos();
-      if (!api) {
-        setFormError('Google Sheets settings are unavailable in this context.');
-        return;
-      }
+  const run = useCallback(
+    async (action: () => Promise<GoogleConfig | void>, successNotice: string | null) => {
       setBusy(true);
+      setActionError(null);
+      setNotice(null);
       try {
-        const updated = await unwrap(api.google.updateConfig(result.payload));
-        setConfig(updated);
-        setFields(fieldsFromConfig(updated));
-        setNotice('Google Sheets settings saved.');
+        const next = await action();
+        if (next) {
+          setConfig(next);
+        } else {
+          await load();
+        }
+        if (successNotice) {
+          setNotice(successNotice);
+        }
       } catch (error) {
-        setFormError(error instanceof Error ? error.message : String(error));
+        setActionError(error instanceof Error ? error.message : String(error));
       } finally {
         setBusy(false);
       }
     },
-    [fields],
+    [load],
   );
 
-  const onConnect = useCallback(async () => {
-    const api = pos();
-    if (!api) {
-      return;
-    }
-    setBusy(true);
-    setNotice(null);
-    setFormError(null);
-    try {
-      const result = await unwrap(api.google.connect());
-      setNotice(`Connected Google service account ${result.serviceAccountEmail}.`);
-      await load();
-    } catch (error) {
-      setFormError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
-    }
-  }, [load]);
+  const onConnect = useCallback(
+    () =>
+      void run(async () => {
+        const api = pos();
+        if (!api) {
+          throw new Error('Google Sheets settings are unavailable in this context.');
+        }
+        return unwrap(api.google.connect());
+      }, 'Google account connected.'),
+    [run],
+  );
 
-  const onDisconnect = useCallback(async () => {
-    const api = pos();
-    if (!api) {
-      return;
-    }
-    if (
-      typeof window !== 'undefined' &&
-      !window.confirm('Disconnect the Google service account?')
-    ) {
-      return;
-    }
-    setBusy(true);
-    setNotice(null);
-    setFormError(null);
-    try {
-      const updated = await unwrap(api.google.disconnect());
-      setConfig(updated);
-      setFields(fieldsFromConfig(updated));
-      setNotice('Google service account disconnected. Pending exports are still saved locally.');
-    } catch (error) {
-      setFormError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
-    }
-  }, []);
+  const onRetrySetup = useCallback(
+    () =>
+      void run(async () => {
+        const api = pos();
+        if (!api) {
+          throw new Error('Google Sheets settings are unavailable in this context.');
+        }
+        return unwrap(api.google.retrySetup());
+      }, 'Retried spreadsheet setup.'),
+    [run],
+  );
 
-  const secureStorageUnavailable = config !== null && !config.secureStorageAvailable;
+  const onDisconnect = useCallback(
+    () =>
+      void run(async () => {
+        const api = pos();
+        if (!api) {
+          throw new Error('Google Sheets settings are unavailable in this context.');
+        }
+        return unwrap(api.google.disconnect());
+      }, 'Google account disconnected. Pending exports are still saved locally.'),
+    [run],
+  );
+
+  const onOpenSpreadsheet = useCallback(
+    () =>
+      void run(async () => {
+        const api = pos();
+        if (!api) {
+          throw new Error('Google Sheets settings are unavailable in this context.');
+        }
+        await unwrap(api.google.openSpreadsheet());
+      }, null),
+    [run],
+  );
+
+  const onToggleEnabled = useCallback(
+    (enabled: boolean) =>
+      void run(
+        async () => {
+          const api = pos();
+          if (!api) {
+            throw new Error('Google Sheets settings are unavailable in this context.');
+          }
+          return unwrap(api.google.setEnabled({ enabled }));
+        },
+        enabled ? 'Export turned on.' : 'Export paused.',
+      ),
+    [run],
+  );
+
+  const view = googleView(config);
 
   return (
     <section className="settings-page google-sheets-settings">
       <h3>Google Sheets</h3>
       <p className="field-hint">
-        One-way export of completed sales to a Google Sheet you share with a service account. Google
-        Sheets is a secondary copy — the local database is always authoritative, and a Google
-        problem never affects a sale.
+        Automatically keep a copy of your POS sales in your Google account. Google Sheets is a
+        secondary copy — the local database is always authoritative, and a Google problem never
+        affects a sale.
       </p>
 
       {loadError && (
@@ -160,95 +164,90 @@ export function GoogleSheetsSection() {
         </p>
       )}
 
-      <dl className="settings-current">
-        <div>
-          <dt>Connection</dt>
-          <dd>{describeConnection(config)}</dd>
-        </div>
-        <div>
-          <dt>Export</dt>
-          <dd>{describeExportState(config)}</dd>
-        </div>
-        <div>
-          <dt>Last successful sync</dt>
-          <dd>{describeLastSync(config)}</dd>
-        </div>
-        <div>
-          <dt>Queue</dt>
-          <dd>{config ? describeQueue(config.queue) : '—'}</dd>
-        </div>
-      </dl>
-
-      {secureStorageUnavailable ? (
+      {view === 'unavailable' && (
         <p className="product-form-error" role="alert">
-          Google Sheets credentials cannot be stored securely on this device.
+          {describeUnavailable(config)}
         </p>
-      ) : (
-        <div className="product-form-actions">
-          <button type="button" onClick={() => void onConnect()} disabled={busy}>
-            {config?.connected ? 'Replace service account…' : 'Connect service account…'}
-          </button>
-          {config?.connected && (
-            <button type="button" onClick={() => void onDisconnect()} disabled={busy}>
-              Disconnect
-            </button>
-          )}
-        </div>
       )}
 
-      <form className="settings-form" onSubmit={(e) => void onSave(e)} noValidate>
-        <label className="google-enabled-toggle">
-          <input
-            type="checkbox"
-            checked={fields.enabled}
-            onChange={(e) => setFields((f) => ({ ...f, enabled: e.target.checked }))}
-          />
-          Enable Google Sheets export
-        </label>
+      {(view === 'disconnected' || view === 'setup-incomplete' || view === 'ready') && (
+        <dl className="settings-current">
+          <div>
+            <dt>Connection</dt>
+            <dd>{describeConnection(config)}</dd>
+          </div>
+          {view === 'ready' && (
+            <>
+              <div>
+                <dt>Sales spreadsheet</dt>
+                <dd>{config?.spreadsheetName ?? 'Go Phones POS Sales'}</dd>
+              </div>
+              <div>
+                <dt>Sync</dt>
+                <dd>{describeSync(config)}</dd>
+              </div>
+              <div>
+                <dt>Last successful sync</dt>
+                <dd>{describeLastSync(config)}</dd>
+              </div>
+            </>
+          )}
+          {view === 'setup-incomplete' && (
+            <div>
+              <dt>Setup</dt>
+              <dd>{config?.setupIncompleteReason ?? 'Sales spreadsheet setup is not finished.'}</dd>
+            </div>
+          )}
+        </dl>
+      )}
 
-        <FormField
-          label="Spreadsheet ID or URL"
-          name="googleSpreadsheetId"
-          value={fields.spreadsheetId}
-          onChange={(value) => setFields((f) => ({ ...f, spreadsheetId: value }))}
-          onBlur={() => undefined}
-          error={fieldErrors['spreadsheetId']}
-          hint="Paste the sheet URL or just the ID (the part after /d/)."
-        />
-        <FormField
-          label="Sales worksheet name"
-          name="googleSalesSheet"
-          value={fields.salesSheetName}
-          onChange={(value) => setFields((f) => ({ ...f, salesSheetName: value }))}
-          onBlur={() => undefined}
-          error={fieldErrors['salesSheetName']}
-        />
-        <FormField
-          label="Sale Items worksheet name"
-          name="googleSaleItemsSheet"
-          value={fields.saleItemsSheetName}
-          onChange={(value) => setFields((f) => ({ ...f, saleItemsSheetName: value }))}
-          onBlur={() => undefined}
-          error={fieldErrors['saleItemsSheetName']}
-        />
+      {actionError && (
+        <p className="product-form-error" role="alert">
+          {actionError}
+        </p>
+      )}
+      {notice && (
+        <p className="products-notice" role="status">
+          {notice}
+        </p>
+      )}
 
-        {formError && (
-          <p className="product-form-error" role="alert">
-            {formError}
-          </p>
-        )}
-        {notice && (
-          <p className="products-notice" role="status">
-            {notice}
-          </p>
-        )}
-
-        <div className="product-form-actions">
-          <button type="submit" disabled={busy}>
-            Save Google Sheets settings
+      <div className="product-form-actions">
+        {(view === 'disconnected' || view === 'loading') && (
+          <button type="button" onClick={onConnect} disabled={busy || view === 'loading'}>
+            Connect Google Account
           </button>
-        </div>
-      </form>
+        )}
+        {view === 'setup-incomplete' && (
+          <>
+            <button type="button" onClick={onRetrySetup} disabled={busy}>
+              Retry Setup
+            </button>
+            <button type="button" onClick={onDisconnect} disabled={busy}>
+              Disconnect Google Account
+            </button>
+          </>
+        )}
+        {view === 'ready' && (
+          <>
+            <button type="button" onClick={onOpenSpreadsheet} disabled={busy}>
+              Open Spreadsheet
+            </button>
+            {canToggleEnabled(config) && (
+              <button
+                type="button"
+                onClick={() => onToggleEnabled(!(config?.enabled ?? false))}
+                disabled={busy}
+              >
+                {config?.enabled ? 'Pause export' : 'Turn export on'}
+              </button>
+            )}
+            <button type="button" onClick={onDisconnect} disabled={busy}>
+              Disconnect Google Account
+            </button>
+          </>
+        )}
+      </div>
     </section>
   );
 }

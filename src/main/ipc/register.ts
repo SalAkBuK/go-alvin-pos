@@ -6,11 +6,8 @@ import type { AppPaths } from '../app/paths';
 import type { ProductionDatabase } from '../database/database';
 import { getDatabaseStatus } from '../database/status';
 import { runNativeSqliteCheck } from '../diagnostics/nativeSqliteCheck';
-import type { GoogleAuthProvider } from '../google/googleAuth';
-import type {
-  GoogleCredentialStore,
-  ServiceAccountCredential,
-} from '../google/googleCredentialStore';
+import type { ProductionDatabase as ProductionDatabaseType } from '../database/database';
+import type { GoogleConfigService } from '../google/googleConfigService';
 import { registerCheckoutIpcHandlers } from './checkoutIpc';
 import { registerCustomerIpcHandlers } from './customerIpc';
 import { registerGoogleIpcHandlers } from './googleIpc';
@@ -34,11 +31,15 @@ export interface IpcContext {
   readonly appVersion: string;
   /** The one production database, or `null` while/if initialization has not succeeded. */
   readonly getDatabase: () => ProductionDatabase | null;
-  /** Phase 2J Google wiring — assembled in `index.ts` and shared with the export worker. */
+  /**
+   * Phase 2J.1 Google wiring — one config-service factory assembled in
+   * `index.ts` and shared with the export worker + startup reconciliation.
+   */
   readonly google: {
-    readonly credentialStore: GoogleCredentialStore;
-    readonly pickCredentialFile: () => Promise<string | null>;
-    readonly createAuthProvider: (credential: ServiceAccountCredential) => GoogleAuthProvider;
+    readonly createService: (
+      db: ProductionDatabaseType['connection'],
+      appVersion: string,
+    ) => GoogleConfigService;
   };
 }
 
@@ -114,8 +115,6 @@ export function registerIpcHandlers(context: IpcContext): void {
     logger: context.logger,
     getDatabase: context.getDatabase,
     appVersion: context.appVersion,
-    credentialStore: context.google.credentialStore,
-    pickCredentialFile: context.google.pickCredentialFile,
-    createAuthProvider: context.google.createAuthProvider,
+    createService: context.google.createService,
   });
 }

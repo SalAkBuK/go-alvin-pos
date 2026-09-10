@@ -1976,14 +1976,21 @@ google_sale_items_sheet_name
 
 `google_spreadsheet_id`, `google_sales_sheet_name`, and `google_sale_items_sheet_name`
 are **managed automatically** by the application after the owner connects a
-Google account (`ARCHITECTURE.md §27.5.1`), not entered by the client. The
-integration additionally keeps non-secret internal bookkeeping — for example a
-credential generation/version, an active-generation marker, a setup-state value,
-the connected-account email for display, and a **durable spreadsheet
-provisioning/idempotency token** (generated before the first spreadsheet
-`files.create` and reused across retries/restarts, `ARCHITECTURE.md §27.5.1`) —
-as validated local settings or a structured equivalent. This list is a minimum,
-not an exhaustive schema.
+Google account (`ARCHITECTURE.md §27.5.1`), not entered by the client.
+`google_spreadsheet_id` is written only after the spreadsheet and both canonical
+worksheets are verified, and is **cleared** on a definite structural failure of
+that spreadsheet (`ARCHITECTURE.md §27.5.2`, `REQ-GSHEET-020`) or on disconnect.
+
+The integration additionally keeps non-secret internal bookkeeping — for example
+a credential generation/version, an active-generation marker, a setup-state value
+plus a sanitized setup-incomplete reason, the connected-account email for
+display, a **durable spreadsheet provisioning/idempotency token** (generated
+before the first spreadsheet `files.create` and reused across retries/restarts),
+and a **"provisioning create attempted" marker** (set the first time a
+`files.create` request is issued, so restart recovery knows a spreadsheet may
+already exist and may run a lookup — `ARCHITECTURE.md §27.5.1`) — as validated
+local settings or a structured equivalent. Exact key names are an implementation
+detail; this list is a minimum, not an exhaustive schema.
 
 Secrets must not be stored in this table. The Google OAuth refresh token is a
 secret and lives only in the encrypted credential wrapper (Section 21), never as
@@ -3219,10 +3226,12 @@ AUTH_CREDENTIAL_CHANGED
 
 `GOOGLE_CONFIGURATION_CHANGED` is the single event type for all Google
 integration configuration changes, including OAuth account connect, disconnect,
-re-authorization / credential replacement, enable/disable, and spreadsheet
-provisioning/reconfiguration (`ARCHITECTURE.md §27`, `POS_WORKFLOWS.md §71`–`§72`).
-No new audit event type is introduced for OAuth. Its `details_json` must contain
-no OAuth secrets, tokens, authorization codes, or PKCE verifiers.
+re-authorization / credential replacement, enable/disable, spreadsheet
+provisioning/reconfiguration, and invalidation of a stored spreadsheet target
+after a definite structural failure (`ARCHITECTURE.md §27`, `§27.5.2`,
+`POS_WORKFLOWS.md §71`–`§72`). No new audit event type is introduced for OAuth.
+Its `details_json` must contain no OAuth secrets, tokens, authorization codes, or
+PKCE verifiers.
 
 ```text
 id       TEXT    PRIMARY KEY

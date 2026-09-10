@@ -1,5 +1,6 @@
 import { join } from 'node:path';
-import { app, BrowserWindow, dialog } from 'electron';
+import type Database from 'better-sqlite3';
+import { app, BrowserWindow, shell } from 'electron';
 import { pinUserDataPath, resolveAppPaths } from './app/paths';
 import { Logger } from './app/logger';
 import { createMainWindow } from './app/window';
@@ -13,8 +14,10 @@ import { createElectronSecureCrypto } from './google/electronSafeStorage';
 import { createExportWorker } from './google/exportWorker';
 import type { ExportWorker } from './google/exportWorker';
 import { createGoogleConfigService } from './google/googleConfigService';
+import type { GoogleConfigService } from './google/googleConfigService';
 import { createGoogleCredentialStore } from './google/googleCredentialStore';
-import { createServiceAccountAuthProvider } from './google/googleAuth';
+import { createGoogleOAuthClient } from './google/googleOAuthClient';
+import { loadOAuthClientConfig } from './google/oauthClientConfig';
 import { createSheetsTransport } from './google/sheetsTransport';
 
 /**
@@ -45,30 +48,47 @@ const logger = new Logger({
 let mainWindow: BrowserWindow | null = null;
 let productionDatabase: ProductionDatabase | null = null;
 let googleExportWorker: ExportWorker | null = null;
+let googleConfigService: GoogleConfigService | null = null;
 
 /**
- * Phase 2J Google wiring, shared by the IPC handlers and the background export
- * worker. The encrypted service-account credential lives under `userData/secrets`
- * — never in SQLite, never plaintext, never in the renderer.
+ * Phase 2J.1 Google wiring, shared by the IPC handlers, the background export
+ * worker, and startup reconciliation. The encrypted OAuth refresh token lives
+ * under `userData/secrets` — never in SQLite, never plaintext, never in the
+ * renderer (`ARCHITECTURE.md §27.4`).
  */
 const googleCredentialStore = createGoogleCredentialStore({
-  filePath: join(paths.userData, 'secrets', 'google-service-account.enc'),
+  filePath: join(paths.userData, 'secrets', 'google-oauth.enc'),
   crypto: createElectronSecureCrypto(),
 });
 
-async function pickGoogleCredentialFile(): Promise<string | null> {
-  const options = {
-    title: 'Select the Google service-account JSON key',
-    properties: ['openFile' as const],
-    filters: [{ name: 'Service account key', extensions: ['json'] }],
-  };
-  const result = mainWindow
-    ? await dialog.showOpenDialog(mainWindow, options)
-    : await dialog.showOpenDialog(options);
-  if (result.canceled || result.filePaths.length === 0) {
-    return null;
-  }
-  return result.filePaths[0] ?? null;
+/**
+ * The developer OAuth "Desktop app" client configuration for this build/run
+ * (`ARCHITECTURE.md §27.4`). `null` — and Google connection unavailable — when
+ * `GO_PHONES_GOOGLE_OAUTH_CLIENT_JSON` is unset or invalid; startup and local
+ * POS are unaffected. Neither value is ever logged.
+ */
+const googleOAuthClientConfig = loadOAuthClientConfig({
+  onWarn: (message) => logger.warn('google', 'google.oauth.client-config-unavailable', { message }),
+});
+const googleOAuthClient = googleOAuthClientConfig
+  ? createGoogleOAuthClient(googleOAuthClientConfig)
+  : null;
+
+const googleLoggerAdapter = {
+  info: (event: string, fields?: Record<string, unknown>) => logger.info('google', event, fields),
+  warn: (event: string, fields?: Record<string, unknown>) => logger.warn('google', event, fields),
+  error: (event: string, fields?: Record<string, unknown>) => logger.error('google', event, fields),
+};
+
+function buildGoogleConfigService(db: Database.Database, appVersion: string): GoogleConfigService {
+  return createGoogleConfigService({
+    db,
+    appVersion,
+    credentialStore: googleCredentialStore,
+    oauthClient: googleOAuthClient,
+    openExternal: (url: string) => shell.openExternal(url),
+    logger: googleLoggerAdapter,
+  });
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -94,9 +114,10 @@ if (!app.requestSingleInstanceLock()) {
 
   // Graceful shutdown: stop the export worker (synchronous — stop scheduling
   // work and abort our wait on the active request; an ambiguous in-flight job is
-  // left `EXPORTING` for the 5-minute startup stale recovery) BEFORE closing the
-  // one authoritative connection.
+  // left `EXPORTING` for the 5-minute startup stale recovery) and abort any
+  // pending OAuth authorization, BEFORE closing the one authoritative connection.
   app.on('will-quit', () => {
+    googleConfigService?.cancelPendingAuthorization();
     googleExportWorker?.stopSync();
     productionDatabase?.close();
   });
@@ -111,9 +132,7 @@ if (!app.requestSingleInstanceLock()) {
         appVersion: app.getVersion(),
         getDatabase: () => productionDatabase,
         google: {
-          credentialStore: googleCredentialStore,
-          pickCredentialFile: pickGoogleCredentialFile,
-          createAuthProvider: createServiceAccountAuthProvider,
+          createService: buildGoogleConfigService,
         },
       });
 
@@ -132,30 +151,38 @@ if (!app.requestSingleInstanceLock()) {
         });
 
         // (3) Google Sheets export worker — only after the DB is open. Reconcile
-        // any crash-interrupted credential change, recover stale EXPORTING jobs,
-        // then start the non-overlapping poll loop. Google latency/outage never
+        // any crash-interrupted credential change, finish provisioning for a
+        // connected-but-not-ready account, recover stale EXPORTING jobs, then
+        // start the non-overlapping poll loop. Google latency/outage never
         // touches checkout (`AGENTS.md` invariants 2 & 7).
-        const googleConfigService = createGoogleConfigService({
-          db: productionDatabase.connection,
-          appVersion: app.getVersion(),
-          credentialStore: googleCredentialStore,
-          pickCredentialFile: pickGoogleCredentialFile,
-          createAuthProvider: createServiceAccountAuthProvider,
-        });
+        const configService = buildGoogleConfigService(
+          productionDatabase.connection,
+          app.getVersion(),
+        );
+        googleConfigService = configService;
         try {
-          await googleConfigService.reconcileAtStartup();
+          await configService.reconcileAtStartup();
         } catch (reconcileError) {
           logger.error('google', 'google.config.reconcile-failed', {
             error:
               reconcileError instanceof Error ? reconcileError.message : String(reconcileError),
           });
         }
+        void configService.ensureProvisionedIfNeeded().catch((error: unknown) => {
+          logger.warn('google', 'google.config.provision-at-startup-failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
         googleExportWorker = createExportWorker({
           db: productionDatabase.connection,
           logger,
-          resolveContext: () => googleConfigService.resolveExportContext(),
+          resolveContext: () => configService.resolveExportContext(),
           createTransport: (ctx, signal) =>
             createSheetsTransport({ spreadsheetId: ctx.spreadsheetId, auth: ctx.auth, signal }),
+          reportAuthHealth: (result, credentialGeneration) =>
+            configService.noteExportAuthResult(credentialGeneration, result),
+          onStructuralTargetFailure: (spreadsheetId, kind) =>
+            configService.invalidateSpreadsheetTarget(spreadsheetId, kind),
         });
         googleExportWorker.recoverStale();
         googleExportWorker.start();

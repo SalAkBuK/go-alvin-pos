@@ -1300,6 +1300,23 @@ implementation choice:
   double-add a canonical role after an ambiguous response), and the final
   structure is verified before **Ready to sync**.
 
+Automatic recovery is bounded (`ARCHITECTURE.md §27.5.1` "Startup recovery
+boundary"):
+
+- **Explicit `Retry Setup`** (owner-initiated) runs the full sequence above,
+  including the single tagged `files.create` on a zero-match result, reusing the
+  existing OAuth credential and the existing durable provisioning token.
+- **Application startup** performs Drive/Sheets work only when local recovery
+  state records that a `files.create` was already attempted (a spreadsheet may
+  exist remotely). Even then, startup runs **lookup only** — one `files.list`
+  with the durable token; a single match is adopted and converged, more than one
+  match remains `Connected / setup incomplete`, and a **zero-match result must
+  not issue `files.create`**. For an ordinary `Connected / setup incomplete`
+  state where no create was ever attempted, startup issues **no** Drive or
+  Sheets request and does not mutate worksheets — recovery is only through
+  explicit `Retry Setup`. Merely launching the application must never create or
+  mutate files in the owner's Google Drive.
+
 The Google Drive API is enabled as another API under the **same `drive.file`
 scope** with no scope change. The user must be able to open the configured
 spreadsheet from the POS with an explicit action that uses the system browser.
@@ -1323,8 +1340,20 @@ the credential is stored but spreadsheet provisioning fails:
 - the application must not report Google Sheets as ready until the spreadsheet
   and both canonical worksheets are actually configured.
 
+A `Connected / setup incomplete` state — and its sanitized reason — persists
+across application restarts. Recovery is by explicit `Retry Setup`; automatic
+startup recovery is bounded to lookup-only and only when a create was already
+attempted (`REQ-GSHEET-017`, `ARCHITECTURE.md §27.5.1`).
+
+The "needs re-authorization" health signal describes the **current active OAuth
+credential generation**. A historical export-job authentication error recorded
+under a superseded credential generation must not, by itself, mark a newer,
+successfully-authorized credential as needing re-authorization
+(`SUPPORT_DIAGNOSTICS.md §30`, `POS_WORKFLOWS.md §46`).
+
 Network export delivery (`REQ-GSHEET-001`, `REQ-GSHEET-006`) is paused unless the
-integration is **enabled, connected, and ready to sync**.
+integration is **enabled, connected, and ready to sync**. A structural failure
+of the configured spreadsheet after it was ready is handled by `REQ-GSHEET-020`.
 
 ---
 
@@ -1345,6 +1374,51 @@ but **successful remote revocation must not be required** for local disconnect
 to succeed. A Google outage, revocation failure, or absent internet connection
 must not prevent local disconnect. Network access must not be part of the local
 configuration transaction.
+
+---
+
+## REQ-GSHEET-020 — Spreadsheet Target Recovery After a Structural Failure
+
+**Priority:** MUST
+
+A stored `google_spreadsheet_id` alone must not keep the integration in
+**Ready to sync** after the application has obtained a **definite structural
+failure** showing the configured remote spreadsheet can no longer be used
+(`ARCHITECTURE.md §27.5.2`).
+
+**Transient** Google failures (network outage, timeout / ambiguous response,
+HTTP 5xx, rate limit) must **not** invalidate the spreadsheet configuration:
+`google_spreadsheet_id` and the **Ready to sync** state are preserved, the
+existing export retry / unknown-outcome rules apply, and the local sale is
+unaffected.
+
+When a **definite structural spreadsheet-target failure** is established (the
+configured spreadsheet is definitely unavailable / not found, or the application
+definitely no longer has permission to use it, or it can no longer satisfy the
+canonical export-target contract):
+
+- local sale / inventory / payment / receipt state is unchanged and the export
+  job retains its canonical failure/retry evidence;
+- the locally usable spreadsheet target (`google_spreadsheet_id`) is
+  invalidated/cleared;
+- the OAuth connection is preserved when the credential itself remains valid —
+  the owner is **not** forced to disconnect or re-authorize;
+- the integration transitions to **Connected / setup incomplete** with a
+  persisted sanitized reason that the Google spreadsheet needs attention;
+- the export worker makes no further spreadsheet export writes while setup is
+  incomplete (jobs stay queued and durable);
+- the UI visibly explains the spreadsheet needs attention and offers
+  `Retry Setup`.
+
+`Retry Setup` after a lost/deleted spreadsheet must: reuse the existing OAuth
+connection; reuse the existing durable provisioning token; perform the canonical
+Drive `files.list` lookup first; adopt on exactly one match; on **no** match, as
+an owner-initiated action, create a replacement with the canonical single tagged
+`files.create`; remain `Connected / setup incomplete` on more than one match;
+converge and verify the canonical `Sales` and `Sale Items` worksheets and
+headers; and return to **Ready to sync** only after full verification. The
+export worker must **never** automatically create a replacement spreadsheet from
+an export failure.
 
 ---
 

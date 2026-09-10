@@ -66,6 +66,7 @@ function makeWorker(
     saleItemsSheetName: 'Sale Items',
     businessTimezone: 'America/Chicago',
     auth: fakeAuthProvider(),
+    credentialGeneration: 1,
   };
   const transport = fakeSheetsTransport(sheet, opts.transportOptions ?? {});
   const logs: Array<{ level: string; event: string; fields: Record<string, unknown> }> = [];

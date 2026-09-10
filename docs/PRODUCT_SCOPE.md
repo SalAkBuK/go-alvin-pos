@@ -828,7 +828,12 @@ The V1 mechanism is fixed, not an implementation choice (`ARCHITECTURE.md §27.5
   API on the adopted or created spreadsheet.
 
 The Google Drive API is used under the same `drive.file` scope with no scope
-change.
+change. **`Retry Setup` is an explicit owner action.** Application startup does
+not create a spreadsheet or begin a new provisioning attempt just because no
+spreadsheet ID is stored; automatic startup recovery is limited to a Drive
+lookup, and only when a create was already attempted (`ARCHITECTURE.md §27.5.1`).
+Merely launching the POS never creates or changes files in the owner's Google
+Drive.
 
 ### 22.8.2 Setup state
 
@@ -839,7 +844,10 @@ three conceptual states — **Disconnected**, **Connected / setup incomplete**
 `Retry Setup`, the owner does not have to reconnect their account, and the
 export worker performs no spreadsheet writes while durable export jobs stay
 queued. The application does not report Google Sheets as ready until the
-spreadsheet and both canonical worksheets are actually configured. None of these
+spreadsheet and both canonical worksheets are actually configured, and it does
+not keep reporting **Ready to sync** once a stored spreadsheet has definitely
+been deleted or lost — it returns to `Connected / setup incomplete` and offers
+`Retry Setup` without forcing a re-connect (`REQ-GSHEET-020`). None of these
 states affect local sales, inventory, payments, receipts, or reporting.
 
 ### Boundary rules

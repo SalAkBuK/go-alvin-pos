@@ -24,12 +24,7 @@ import type {
   DeclineCardCheckoutRequest,
   DeclineCardCheckoutResult,
 } from './checkout';
-import type {
-  GoogleConfig,
-  GoogleConnectResult,
-  RetryExportInput,
-  UpdateGoogleConfigInput,
-} from './google';
+import type { GoogleConfig, GoogleSetEnabledInput, RetryExportInput } from './google';
 import type {
   PrinterConfig,
   PrinterDevice,
@@ -176,16 +171,21 @@ export const IPC = {
   printingSelectPrinter: 'printing:select-printer',
   printingPrintReceipt: 'printing:print-receipt',
 
-  // ── Phase 2J: Google Sheets Export Worker ────────────────────────────────
-  // Five narrow capabilities. `get-config` is read-only; `update-config`
-  // persists ONLY the four non-secret `google_*` settings; `connect` opens a
-  // main-process file picker and stores an ENCRYPTED service-account key
-  // (nothing secret ever crosses back to the renderer); `disconnect` turns the
-  // integration off; `retry-export` moves one FAILED job back to PENDING by
-  // immutable Sale ID. No generic settings/query/HTTP surface.
+  // ── Phase 2J.1: Google OAuth onboarding + Sheets export ──────────────────
+  // Narrow capabilities only. `get-config` is read-only; `connect` runs the
+  // desktop OAuth flow entirely in the main process (system browser, PKCE,
+  // localhost loopback) and then provisioning — nothing secret ever crosses
+  // back to the renderer; `retry-setup` re-runs provisioning without a new
+  // sign-in; `set-enabled` toggles the single `google_sheets_enabled` flag;
+  // `open-spreadsheet` opens the configured spreadsheet in the system browser;
+  // `disconnect` invalidates the credential locally (works offline);
+  // `retry-export` moves one FAILED job back to PENDING by immutable Sale ID.
+  // No credential JSON, spreadsheet-ID, worksheet-name, or generic HTTP surface.
   googleGetConfig: 'google:get-config',
-  googleUpdateConfig: 'google:update-config',
   googleConnect: 'google:connect',
+  googleRetrySetup: 'google:retry-setup',
+  googleSetEnabled: 'google:set-enabled',
+  googleOpenSpreadsheet: 'google:open-spreadsheet',
   googleDisconnect: 'google:disconnect',
   googleRetryExport: 'google:retry-export',
 } as const;
@@ -361,24 +361,29 @@ export interface PosApi {
   };
   readonly google: {
     /**
-     * Current non-secret Google Sheets configuration + derived `connected` /
-     * `configured` state + local export-queue counts. Never returns a key,
-     * token, or the encrypted blob.
+     * Current non-secret Google integration state (`setupState`, connected
+     * account email for display, spreadsheet name, sync health, queue counts).
+     * Never returns a token, refresh token, authorization code, ID token, or
+     * OAuth client configuration.
      */
     getConfig(): Promise<IpcResult<GoogleConfig>>;
     /**
-     * Persist the four non-secret fields (`enabled`, spreadsheet id, two sheet
-     * names) and write one `GOOGLE_CONFIGURATION_CHANGED` audit in the same
-     * transaction. Rejects `enabled: true` without a connected credential.
+     * Run the desktop OAuth flow in the main process (system browser + PKCE +
+     * `127.0.0.1` loopback), store the encrypted refresh token, then provision
+     * the app's own spreadsheet. The renderer receives only sanitized status.
      */
-    updateConfig(input: UpdateGoogleConfigInput): Promise<IpcResult<GoogleConfig>>;
+    connect(): Promise<IpcResult<GoogleConfig>>;
+    /** Re-run spreadsheet provisioning for a connected-but-not-ready account (no new sign-in). */
+    retrySetup(): Promise<IpcResult<GoogleConfig>>;
+    /** Turn Google Sheets export on/off. Enabling requires a ready-to-sync integration. */
+    setEnabled(input: GoogleSetEnabledInput): Promise<IpcResult<GoogleConfig>>;
+    /** Open the configured spreadsheet in the external system browser. */
+    openSpreadsheet(): Promise<IpcResult<void>>;
     /**
-     * Open a main-process file picker for a service-account JSON key, validate
-     * its shape, encrypt it with OS secure storage, and persist it atomically.
-     * The renderer never sees the JSON or the private key. Works offline.
+     * Invalidate the Google credential locally (export off, active marker off,
+     * stored spreadsheet id cleared) and best-effort delete the encrypted file
+     * and revoke remotely. Works offline; pending export jobs stay durable.
      */
-    connect(): Promise<IpcResult<GoogleConnectResult>>;
-    /** Turn the integration off and remove the stored credential. Pending jobs stay durable. */
     disconnect(): Promise<IpcResult<GoogleConfig>>;
     /**
      * Manual "Retry Export" for a `FAILED` job (`REQ-GSHEET-012`): `FAILED →
