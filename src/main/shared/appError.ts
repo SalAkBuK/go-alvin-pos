@@ -189,4 +189,68 @@ export const appErrors = {
       'GOOGLE_AUTHORIZATION_IN_PROGRESS',
       'A Google sign-in is already in progress. Finish or close it first.',
     ),
+  backupInProgress: (): AppError =>
+    new AppError(
+      'BACKUP_IN_PROGRESS',
+      'A backup is already running. Wait for it to finish, then try again.',
+    ),
+  backupFailed: (): AppError =>
+    new AppError(
+      'BACKUP_FAILED',
+      'The backup could not be completed. Your sales data is safe and the app keeps working — check Backup & Restore for details, then try again.',
+    ),
+  offDeviceDestinationInvalid: (): AppError =>
+    new AppError(
+      'OFF_DEVICE_DESTINATION_INVALID',
+      'That location could not be verified as an accessible external USB drive or network backup location.',
+    ),
+  maintenanceInProgress: (): AppError =>
+    new AppError(
+      'MAINTENANCE_IN_PROGRESS',
+      'The database is being restored. This action is unavailable until the restore finishes.',
+    ),
+  restoreBlockedCheckoutActive: (): AppError =>
+    new AppError(
+      'RESTORE_BLOCKED_CHECKOUT_ACTIVE',
+      'Finish or clear the current sale before restoring the database.',
+    ),
+  restoreBlockedCardPending: (): AppError =>
+    new AppError(
+      'RESTORE_BLOCKED_CARD_PENDING',
+      'Resolve the pending card payment or reconciliation before restoring the database.',
+    ),
+  restoreAlreadyRunning: (): AppError =>
+    new AppError('RESTORE_ALREADY_RUNNING', 'A database restore is already running.'),
+  restoreCandidateNotFound: (): AppError =>
+    new AppError(
+      'RESTORE_CANDIDATE_NOT_FOUND',
+      'That backup could not be found, or its file is missing. Choose another backup.',
+    ),
+  restoreCandidateInvalid: (): AppError =>
+    new AppError(
+      'RESTORE_CANDIDATE_INVALID',
+      'This backup did not pass its safety check and cannot be restored. Choose another backup.',
+    ),
+  restoreSchemaIncompatible: (relation: 'older' | 'newer'): AppError =>
+    new AppError(
+      'RESTORE_SCHEMA_INCOMPATIBLE',
+      relation === 'older'
+        ? 'This backup is from an older version of Go Phones POS and cannot be restored by this version. Contact support for a matching version.'
+        : 'This backup was made by a newer version of Go Phones POS. Update this computer to that version or newer before restoring it.',
+    ),
+  restoreValidationFailed: (): AppError =>
+    new AppError(
+      'RESTORE_VALIDATION_FAILED',
+      'The restore did not pass validation, so your previous database has been put back. No data was lost.',
+    ),
+  restoreRecoveryFailed: (): AppError =>
+    new AppError(
+      'RESTORE_RECOVERY_FAILED',
+      'The restore failed and automatic recovery could not complete. Restart the application; it will finish recovering your previous database. Contact support if this repeats.',
+    ),
+  restoreConfirmationStale: (): AppError =>
+    new AppError(
+      'RESTORE_CONFIRMATION_STALE',
+      'Your data changed since the warning was shown. Review the updated warning before restoring.',
+    ),
 } as const;

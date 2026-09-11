@@ -103,8 +103,8 @@ The diagnostics system must report appropriate information such as:
 - Google Sheets integration enabled/disabled
 - Google Sheets queue counts
 - Last successful Google export
-- Last successful backup
-- Backup overdue state
+- Last successful local recovery backup and local overdue state
+- Separate off-device protection state and sanitized attention reason
 - Migration state
 - Update state
 - Installation identifier
@@ -693,10 +693,10 @@ V1 default thresholds (`ARCHITECTURE.md` Section 49A): `WARNING` below 2 GB free
 
 Diagnostics must expose:
 
-- Last successful backup time
-- Last backup failure
-- Whether the last successful backup was local-disk or off-device (`DATA_MODEL.md` Section 36B) — never implying disk/device-loss protection unless an off-device backup is actually current
-- Whether backup is overdue
+- Last successful local-disk recovery backup time, last local failure, and whether local backup is overdue
+- Separate off-device protection state: not configured, healthy, or needs attention
+- When off-device needs attention, a safe reason distinguishing never succeeded, unavailable, stale, last copy failed, and verification failed
+- Whether the configured destination is positively verified now; a historical success must not imply protection after a device swap, disconnect, or failed re-verification
 
 Example:
 
@@ -708,6 +708,8 @@ No successful backup has occurred in 7 days.
 ```
 
 V1 default cadence/retention (`ARCHITECTURE.md` Section 49A): automatic backups run daily at 03:00 local business time; automatic backups are retained 14 days and manual backups 90 days.
+
+Off-device automatic/manual copies use fixed V1 retention of 14/90 days. Off-device failures remain warnings/secondary failures while the local database and local recovery backup remain healthy. User wording should say **Off-device backup not set up**, **Protected with an external/network backup**, or **External/network backup needs attention**. It must not expose PowerShell, disk numbers, bus types, command output, raw paths, WAL details, or other filesystem internals.
 
 ---
 
@@ -1181,6 +1183,7 @@ backup.started
 backup.completed
 backup.failed
 backup.retention.cleanup
+backup.off_device.verification
 restore.started
 restore.completed
 restore.failed

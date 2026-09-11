@@ -891,6 +891,14 @@ V1 distinguishes two different guarantees, and does not conflate them:
 
 V1 must provide manual and recurring automatic SQLite-safe backups. Documentation and in-app messaging must never describe a same-disk (default) backup as protecting against physical disk failure, device loss, or theft — only a verified off-device backup provides that protection.
 
+For V1, `OFF_DEVICE` is a positively verified protection class, not a synonym for another folder or drive letter. A genuine accessible/writable UNC network location qualifies. A local-filesystem destination qualifies only when Windows inspection proves that it is on a different physical disk from the operational database and that the destination disk is USB/external storage. Another partition on the database disk and a second internal HDD/SSD do not qualify. Mapped-network and device-classification ambiguity fails closed rather than overstating protection.
+
+When an off-device destination is configured, each manual or automatic backup first creates and verifies the normal local-disk recovery backup, then best-effort copies that exact closed artifact to the reverified off-device destination and verifies the copy independently. Local success remains successful if the off-device copy fails. Pre-migration backups remain local-disk-only so unavailable external/network storage never delays startup or migration. V1 off-device retention is fixed at 14 days for automatic copies and 90 days for manual copies, confined to the configured app-managed directory.
+
+Restore presents one trusted candidate view across catalogued backups, valid preserved app-managed local files, valid files in the configured app-managed off-device directory, and a file explicitly selected through an owner-facing native **Browse for a backup file...** action. Discovery is read-only: it does not reconstruct `backup_records` or mutate restored business data. Every physical candidate is independently verified and reverified immediately before restore. Identical local and off-device copies remain distinguishable physical recovery sources, while duplicate references to the same canonical file appear only once. New off-device copies include advisory, non-secret sidecar metadata; actual SQLite bytes and schema remain authoritative.
+
+Backup health reports local recovery and off-device protection separately. A configured destination that has never succeeded, is stale, unavailable, failed its latest copy, or can no longer be positively verified is not displayed as protected. Off-device failure is secondary work and never blocks checkout, committed sales, local backup success, startup, migration, or local restore.
+
 Google Sheets export provides a secondary copy of sales information but must not be considered a complete database backup.
 
 Google Sheets may not contain:

@@ -4,7 +4,8 @@ import type { IpcResult } from '../../shared/products';
 import type { Logger } from '../app/logger';
 import { isAllowedRendererNavigation, resolveRendererEntry } from '../app/rendererEntry';
 import type { RendererEntry } from '../app/rendererEntry';
-import { isAppError } from '../shared/appError';
+import { isExclusiveMaintenanceActive } from '../maintenance/maintenanceStatus';
+import { appErrors, isAppError } from '../shared/appError';
 
 /**
  * Privileged-IPC plumbing for Phase 2B business channels (task `§14`, `§16`;
@@ -47,10 +48,22 @@ export interface TrustedInvokeContext {
 
 type Handler<T> = (...args: readonly unknown[]) => T | Promise<T>;
 
+export interface TrustedInvokeOptions {
+  /**
+   * When `true`, the channel is still served while a RESTORE / MIGRATION owns
+   * the exclusive database lifecycle. Only the restore-orchestration and
+   * maintenance-status channels set this; every other channel is refused with a
+   * typed `MAINTENANCE_IN_PROGRESS` result rather than touching a closing /
+   * swapping / reinitializing database (Phase 2L-B Item 6).
+   */
+  readonly allowDuringExclusiveMaintenance?: boolean;
+}
+
 export function registerTrustedInvoke<T>(
   channel: string,
   context: TrustedInvokeContext,
   handler: Handler<T>,
+  options?: TrustedInvokeOptions,
 ): void {
   const entry = context.rendererEntry ?? resolveRendererEntry();
 
@@ -62,6 +75,11 @@ export function registerTrustedInvoke<T>(
       });
       // Reject the invoke outright — a compromised/unexpected frame gets no envelope.
       throw new Error('Request rejected: untrusted sender.');
+    }
+
+    if (!options?.allowDuringExclusiveMaintenance && isExclusiveMaintenanceActive()) {
+      // A restore owns the database lifecycle — refuse before touching the DB.
+      return { ok: false, error: appErrors.maintenanceInProgress().toIpcError() };
     }
 
     try {

@@ -43,6 +43,9 @@ export function describeConnection(config: GoogleConfig | null): string {
   if (config.connected) {
     return config.accountEmail ? `Connected as ${config.accountEmail}` : 'Connected';
   }
+  if (config.restoreReconnectRequired) {
+    return 'Google Sheets needs to be connected again after the database restore. Your local sales are safe.';
+  }
   return 'Not connected';
 }
 

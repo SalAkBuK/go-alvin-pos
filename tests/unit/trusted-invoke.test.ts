@@ -16,6 +16,7 @@ function capture(channel: string, fn: (event: unknown, ...args: unknown[]) => un
 vi.mock('electron', () => electron);
 
 import { isTrustedSender, registerTrustedInvoke } from '../../src/main/ipc/trustedInvoke';
+import { setExclusiveMaintenance } from '../../src/main/maintenance/maintenanceStatus';
 import { AppError } from '../../src/main/shared/appError';
 import type { RendererEntry } from '../../src/main/app/rendererEntry';
 import type { Logger } from '../../src/main/app/logger';
@@ -99,5 +100,34 @@ describe('registerTrustedInvoke', () => {
       /untrusted sender/i,
     );
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('refuses a normal channel with MAINTENANCE_IN_PROGRESS while a RESTORE owns the lifecycle (Item 6)', async () => {
+    const spy = vi.fn(() => ({ n: 1 }));
+    registerTrustedInvoke('t:dbwork', { logger, rendererEntry: entry }, spy);
+    setExclusiveMaintenance('RESTORE');
+    try {
+      const result = await handlers.get('t:dbwork')!(fakeEvent('http://localhost:5173/'));
+      expect(result).toEqual({
+        ok: false,
+        error: { code: 'MAINTENANCE_IN_PROGRESS', message: expect.stringMatching(/restored/i) },
+      });
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      setExclusiveMaintenance(null);
+    }
+  });
+
+  it('still serves an allowDuringExclusiveMaintenance channel while a RESTORE runs', async () => {
+    registerTrustedInvoke('t:allowed', { logger, rendererEntry: entry }, () => ({ ok: true }), {
+      allowDuringExclusiveMaintenance: true,
+    });
+    setExclusiveMaintenance('RESTORE');
+    try {
+      const result = await handlers.get('t:allowed')!(fakeEvent('http://localhost:5173/'));
+      expect(result).toEqual({ ok: true, data: { ok: true } });
+    } finally {
+      setExclusiveMaintenance(null);
+    }
   });
 });

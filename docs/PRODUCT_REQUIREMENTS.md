@@ -1509,7 +1509,7 @@ Every declared foreign key must specify an explicit `ON DELETE` action as define
 
 **Priority:** MUST
 
-V1 must provide an owner-initiated method of backing up the local SQLite database.
+V1 must provide an owner-initiated method of backing up the local SQLite database. When a verified off-device destination is configured, a manual backup must create and verify its normal local-disk recovery backup first, then best-effort copy that exact completed artifact off-device and independently verify the copy. Local success must be reported as success even if the protection copy fails, with the off-device failure reported separately.
 
 ---
 
@@ -1541,7 +1541,7 @@ V1 must have a documented restore procedure. Before production release, a databa
 
 **Priority:** MUST
 
-V1 must create recurring automatic backups using a SQLite-safe procedure. Backup work must not corrupt the operational database or silently interrupt checkout.
+V1 must create recurring automatic backups using a SQLite-safe procedure. Backup work must not corrupt the operational database or silently interrupt checkout. When a verified off-device destination is configured, the automatic workflow must create and verify the local-disk backup first, then copy that exact closed artifact off-device and verify the destination copy. It must not take two snapshots at different times. Pre-migration backups are always local-disk-only in V1 and never wait for or duplicate to off-device storage.
 
 ---
 
@@ -1549,7 +1549,7 @@ V1 must create recurring automatic backups using a SQLite-safe procedure. Backup
 
 **Priority:** MUST
 
-Automatic backups must use a documented retention and cleanup policy so storage does not grow without bound. Cleanup must preserve backups required for an active migration or recovery case.
+Automatic backups must use a documented retention and cleanup policy so storage does not grow without bound. Cleanup must preserve backups required for an active migration or recovery case. V1 off-device retention is fixed, with no separate retention setting: automatic copies are retained for 14 days and manual copies for 90 days. Cleanup is confined to the exact configured app-managed off-device directory, removes only files and matching sidecars that pass app-managed identity/manifest rules, skips partial or unrelated files, preserves existing recovery holds and the only verified usable backup, and skips safely with visible health when the destination is unavailable.
 
 ---
 
@@ -1557,7 +1557,7 @@ Automatic backups must use a documented retention and cleanup policy so storage 
 
 **Priority:** MUST
 
-The application must expose the time and result of the latest automatic backup, warn when backup is overdue, and make backup failures visible through diagnostics and the durable audit trail.
+The application must expose the time and result of the latest automatic backup, warn when backup is overdue, and make backup failures visible through diagnostics and the durable audit trail. Local-disk recovery health and optional off-device-protection health must remain separate. Off-device health distinguishes not configured, currently protected, and needs attention; attention must distinguish at least never succeeded, unavailable, stale, last copy failed, and destination verification failed. Stored configuration or an earlier success is never permanent proof that a destination is still off-device.
 
 ---
 
@@ -1577,7 +1577,7 @@ Once an initialized database exists, no schema migration may modify it without a
 
 **Priority:** MUST
 
-The system must retain enough local metadata to identify backup type, creation time, outcome, verification state, and failure details where applicable. This metadata supports backup-health display and recovery without making a backup copy part of the operational schema.
+The system must retain enough local metadata to identify backup type, creation time, outcome, verification state, and failure details where applicable. This metadata supports backup-health display and recovery without making a backup copy part of the operational schema. Each physical local or off-device copy has its own metadata/result even when both contain the same logical snapshot and SHA-256. New off-device copies also have an atomically written, versioned, non-secret sidecar containing advisory identity, kind, time, source-version/schema, checksum, size, and location metadata. The sidecar is never a trust root: discovery recomputes file checksum and reads schema from SQLite, rejects or clearly marks conflicting claims, and remains backward-compatible with an otherwise valid older managed backup whose sidecar is absent.
 
 ---
 
@@ -1587,13 +1587,23 @@ The system must retain enough local metadata to identify backup type, creation t
 
 The application and its documentation must not describe a same-disk (default) backup as protecting against physical disk failure, computer loss, theft, or fire. V1 supports an optional, separately configurable off-device backup destination; the backup metadata (`REQ-BACKUP-009`) records whether a given backup is same-disk or off-device, and health/status displays state exactly what protection the currently configured backups provide.
 
+For V1, a genuine accessible/writable UNC network destination may qualify. A local-filesystem destination qualifies only when trusted Windows inspection positively proves both a different physical disk from the operational database and USB/external device identity. A different drive letter, folder, partition, or internal physical disk does not qualify. A mapped network drive qualifies only if built-in Windows facilities positively resolve it as remote; unknown, unavailable, malformed, permission-denied, timed-out, or otherwise ambiguous inspection fails closed. The destination is reverified whenever an off-device copy is attempted.
+
+Off-device configuration, verification, copy, retention, and health failures are isolated secondary failures. They must not block checkout, committed sales, local backup success, startup, migration, or local restore, and use the existing backup success/failure audit model rather than inventing a new audit-event type.
+
 ---
 
 ## REQ-BACKUP-011 — Safe Restore Workflow
 
 **Priority:** MUST
 
-Before replacing the active database with a backup, the application must: preserve a timestamped copy of the current (pre-restore) database; inspect the candidate backup's metadata (schema version, source app version, creation time); detect and clearly warn when the current database contains completed sales newer than the backup; require explicit confirmation before proceeding when data would be lost; and validate the restored database before reopening checkout, falling back to the preserved pre-restore copy if validation fails. V1 restore is a whole-database replace-or-abort operation; it does not implement record-level merge between the current database and the restored backup.
+Before replacing the active database with a backup, the application must: preserve a timestamped copy of the current (pre-restore) database; inspect the candidate backup's metadata (schema version, source app version, creation time); always require one explicit, unambiguous confirmation before replacing the active database, whether or not newer data is detected — restoring a backup is never a silent or default-confirmed action; detect and clearly warn, with the exact transaction count and date range, when the current database contains completed sales — identified by immutable Sale ID, never by comparing `completed_at` timestamps alone — that the backup does not; and validate the restored database before reopening checkout, falling back to the preserved pre-restore copy if validation fails. V1 restore is a whole-database replace-or-abort operation; it does not implement record-level merge between the current database and the restored backup.
+
+The trusted restore-candidate view must unify live catalogued backups, valid preserved unreferenced files in known app-managed local roots, valid files in the configured app-managed off-device directory, and one backup explicitly selected by the owner through a native file-open dialog. Discovery must not insert reconstructed `backup_records` rows or otherwise mutate business SQLite. Managed-root discovery is non-recursive unless its defined layout requires otherwise, excludes partials, resolves canonical paths, and rejects traversal or reparse/symlink escape. The renderer receives safe metadata and opaque candidate IDs/tokens, never an arbitrary submitted or returned raw path.
+
+Every source uses the same trusted verification pipeline before being offered as verified and again immediately before replacement: existence/readability, canonical resolved path, read-only SQLite open, `quick_check`, foreign-key check, `schema_migrations` and exact V1 schema compatibility, canonical critical-table readability, a fresh SHA-256, and comparison with any catalog or sidecar claim. An unrelated SQLite database is not a restore candidate merely because it opens. References to the same canonical physical file are deduplicated; byte-identical files in local and off-device locations remain separate physical candidates. Any material candidate change invalidates prior verification/confirmation and requires a fresh confirmation.
+
+**Browse for a backup file...** must use the Electron main process's native open dialog. Selection does not configure off-device storage, trust a filename, create a `backup_records` row, or bypass universal restore confirmation. Whole-database restore faithfully rewinds ordinary SQLite settings, including off-device destination configuration, under `DATA_MODEL.md` Section 52A; the application must not silently reapply a newer off-device setting afterward.
 
 ---
 
@@ -2374,7 +2384,19 @@ No completed sale exists; the checkout attempt (payment method, intended total, 
 
 Expected:
 
-The application detects that current data is newer than the backup, warns how many transactions would be lost, and requires explicit confirmation before proceeding; a pre-restore recovery copy is preserved regardless of the outcome.
+The application identifies, by immutable Sale ID, the completed sales the current database holds that the backup does not, warns how many transactions would be lost and their date range, and requires explicit confirmation before proceeding; a pre-restore recovery copy is preserved regardless of the outcome.
+
+---
+
+## ACCEPT-013 — Restore Always Requires Confirmation, Even Without a Newer Sale
+
+1. Take a backup at time T with no sales completed after it.
+2. Without completing any further sale, change other business data (for example void an existing sale, adjust inventory, edit a product or customer, or change the tax rate).
+3. Attempt to restore the backup from T.
+
+Expected:
+
+The application still requires one explicit confirmation before replacing the active database, even though no completed sale would be lost — the confirmation states that the operation replaces the current database with the selected backup. Restore never silently proceeds merely because no newer completed sale was detected.
 
 ---
 

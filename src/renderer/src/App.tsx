@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { AppInfo, DatabaseStatus } from '../../shared/ipc';
+import type { MaintenanceState } from '../../shared/maintenance';
 import { BrandLogo } from './components/BrandLogo';
 import { CheckoutPage } from './features/checkout/CheckoutPage';
 import { CustomersPage } from './features/customers/CustomersPage';
@@ -44,6 +45,7 @@ function describeDatabase(database: DatabaseStatus | null): string {
 export function App() {
   const [status, setStatus] = useState<ShellStatus>({ info: null, database: null });
   const [area, setArea] = useState<Area>('checkout');
+  const [maintenance, setMaintenance] = useState<MaintenanceState>('SAFE');
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.pos === 'undefined') {
@@ -64,6 +66,36 @@ export function App() {
     };
   }, []);
 
+  // Application-level maintenance banner (secondary defence — the trusted main
+  // process refuses DB-backed IPC during a restore regardless of the UI).
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.pos === 'undefined') {
+      return;
+    }
+    let active = true;
+    const poll = (): void => {
+      void window.pos.maintenance
+        .status()
+        .then((result) => {
+          if (active && result.ok) {
+            setMaintenance(result.data.state);
+          }
+        })
+        .catch(() => {
+          /* ignore — best effort */
+        });
+    };
+    poll();
+    const timer = setInterval(poll, 2000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, []);
+
+  const restoring =
+    maintenance === 'RESTORE_IN_PROGRESS' || maintenance === 'MIGRATION_IN_PROGRESS';
+
   return (
     <main className="app">
       <header className="app-header">
@@ -75,6 +107,11 @@ export function App() {
           {status.info ? `${status.info.name} ${status.info.version}` : 'Go Phones POS'} · database{' '}
           {describeDatabase(status.database)}
         </p>
+        {restoring && (
+          <p className="app-maintenance-banner" role="status">
+            Restoring database — sales are temporarily unavailable. This will finish in a moment.
+          </p>
+        )}
         <nav className="app-nav">
           <button
             type="button"

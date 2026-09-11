@@ -257,6 +257,7 @@ Responsibilities include:
 - Receipt printing
 - Google Sheets export
 - Backup creation
+- Backup discovery, off-device destination verification, and native backup-file selection
 - Secure local settings
 - Window lifecycle
 - Single-instance enforcement
@@ -296,6 +297,8 @@ window.pos.sync.retry()
 
 window.pos.sales.void()
 window.pos.backup.create()
+window.pos.backup.listRestoreCandidates()
+window.pos.backup.browseRestoreCandidate()
 window.pos.export.csv()
 window.pos.updates.restartAndInstall()
 window.pos.diagnostics.run()
@@ -904,6 +907,22 @@ claim, never the email address.
   reconcilable on the next launch. **"Connected"** means a usable encrypted
   OAuth credential exists and matches the locally active credential
   generation/configuration.
+- Because the encrypted credential wrapper lives outside SQLite, a whole-database
+  restore (`DATA_MODEL.md` Section 52A) can rewind the locally active credential
+  generation behind the wrapper's actual generation — the same observable shape
+  ordinary crash recovery reconciles, but with no interrupted write behind it,
+  so generation comparison alone cannot prove the wrapper still belongs to the
+  account/configuration the restored snapshot represents. Immediately after a
+  completed restore, before any other Google reconciliation or network work: if
+  the restored configuration is active, the application always requires an
+  explicit `Connect Google Account` before treating it as connected, regardless
+  of whether the wrapper's generation matches, leads, or lags; if the restored
+  configuration is disconnected, it requires explicit reconnection only when the
+  wrapper's generation leads the restored generation (the shape ordinary crash
+  recovery would otherwise adopt), never for an absent, equal, or lagging
+  wrapper. This quarantine is recorded in exactly one non-secret local setting
+  (`DATA_MODEL.md` Section 52A, step 7) and is cleared only by an explicit
+  `Connect Google Account` or `Disconnect Google Account`.
 - The wrapper may hold only the minimum needed for safe operation: credential
   generation/version, the refresh token, the Google `sub` if retained, and the
   account email for display. Access tokens are short-lived runtime values and
@@ -1391,9 +1410,29 @@ Minimal `backup_records` metadata may record backup kind, location kind (same-di
 
 Every V1 automatic and pre-migration backup defaults to the same disk as the operational database (`location_kind = LOCAL_DISK`). This protects against accidental deletion, application-level corruption, and a bad migration — it does **not** protect against loss of the machine or disk itself. An optional, separately configured off-device destination (`location_kind = OFF_DEVICE`) is required for that protection. Backup health displays and documentation must state this distinction explicitly rather than implying a same-disk backup survives hardware loss.
 
+For V1, `OFF_DEVICE` requires positive verification. A genuine UNC network destination qualifies only after accessibility and writability checks. A mapped drive qualifies only when built-in Windows facilities positively resolve it as remote; ambiguity fails closed and the owner is directed to use UNC form. A local-filesystem destination qualifies only when Windows storage inspection proves both that its volume maps to a different physical disk number from the operational database and that the destination disk is USB/external. A second internal disk, a second partition, another drive letter, another folder, or an owner's assertion does not qualify.
+
+The trusted main process performs local-device inspection by argument-safe `execFile`/`spawn` invocation of the built-in Windows PowerShell runtime and a fixed script; user paths are supplied as arguments or environment values, never interpolated into a shell command. The process uses `-NoProfile`, noninteractive execution, a short explicit timeout, and bounded output. It does not use `ExecutionPolicy Bypass`, native Node add-ons, FFI, WMI npm packages, or other compiled dependencies. Timeout, process failure, unavailable Storage cmdlets, malformed output, permission failure, unknown bus type, or ambiguous disk mapping returns a sanitized failure and fails closed. Renderer code receives no raw command, command output, disk number, bus type, or user filesystem path. Verification is repeated whenever a configured destination is actually used because drive letters and devices can change.
+
+## Local-First Off-Device Copy
+
+An automatic or manual operation always creates and verifies its normal `LOCAL_DISK` SQLite snapshot first. Only after that succeeds does it copy that exact completed and closed artifact into the configured app-managed `OFF_DEVICE` directory and verify the destination bytes independently. The two physical files therefore share a logical snapshot/checksum but have separate backup records/results. Local success completes independently; off-device copy, verification, retention, or availability failure is secondary and never changes local success or blocks checkout, startup, migration, or local restore. `PRE_MIGRATION` is always local-disk-only and is never copied off-device.
+
+## Unified Restore Discovery and Physical Identity
+
+The trusted layer builds one read-only restore-candidate model from live catalogued records, preserved unreferenced final files in known app-managed local roots, files in the configured app-managed off-device directory, and a one-time file selected through Electron's native open dialog. Discovery never reconstructs `backup_records` and never mutates the active or restored database. Managed enumeration is confined to the exact known directories, non-recursive unless the managed layout explicitly requires otherwise, excludes partials, resolves canonical real paths, and rejects traversal or symlink/reparse-point escape. Browse intentionally permits one selected file outside managed roots but grants no arbitrary renderer filesystem access.
+
+A catalogue reference and filesystem result for the same canonical physical file collapse into one candidate. Separate local and off-device files never collapse merely because their bytes/checksum match. Renderer-facing IDs are opaque: uncatalogued identity deterministically incorporates canonical physical-path identity and fresh content checksum without revealing the path, while a browsed file may use a main-process-owned session token. Checksum is evidence, not authorization or physical identity.
+
+Every source passes one verification pipeline before being presented as verified and again immediately before restore: existence/readability, canonical path resolution, read-only `better-sqlite3` open, `PRAGMA quick_check`, foreign-key check, valid `schema_migrations`, exact V1 schema compatibility, canonical critical-table presence/readability, fresh SHA-256, and comparison with any catalogue/sidecar claim. An arbitrary SQLite database that merely opens is rejected. A material candidate change invalidates prior verification and confirmation.
+
+New off-device copies have an atomically written versioned sidecar next to the SQLite file. It contains only non-secret advisory metadata such as logical backup identifier, backup kind/time, source app/schema version, checksum, size, and location kind. SQLite bytes and actual schema are authoritative; mismatched or malformed claims are rejected or clearly marked, while a missing sidecar does not by itself invalidate an older otherwise-valid managed backup. Retention removes a matching sidecar only when it safely removes its managed SQLite file.
+
+Local recovery health and off-device protection health are separate. Off-device status is not configured, healthy, or needs attention, with attention preserving the distinction among never succeeded, unavailable, stale, latest copy failed, and destination verification failed. A recent copied file cannot make health positive after current verification shows the destination is unavailable or no longer the verified network/external device.
+
 ## Restore Safety
 
-A whole-database restore never silently replaces the active database. Before restoring, the trusted layer preserves a SQLite-consistent snapshot of the current database (not a raw file copy — see above), compares the candidate backup's metadata and latest sale timestamp against the current database's latest sale timestamp, warns and requires explicit confirmation if the current database is newer, and validates the restored database before reopening checkout — falling back to the preserved pre-restore copy if validation fails. V1 restore is a whole-database replace-or-abort operation with no record-level merge (`DATA_MODEL.md` Section 52A).
+A whole-database restore never silently replaces the active database. Before restoring, the trusted layer preserves a SQLite-consistent snapshot of the current database (not a raw file copy — see above), reads the candidate backup's metadata, and identifies completed sales the current database holds that the backup does not by immutable Sale ID (never by comparing timestamps alone, which a clock anomaly could move backward). It always requires one explicit confirmation before replacing the active database, whether or not a newer completed sale is found; when one is found, the confirmation additionally names the exact transaction count and date range that would be lost. It then validates the restored database before reopening checkout — falling back to the preserved pre-restore copy if validation fails. V1 restore is a whole-database replace-or-abort operation with no record-level merge (`DATA_MODEL.md` Section 52A).
 
 ---
 
@@ -1779,6 +1818,7 @@ Receipt footer
 Receipt disclaimer
 Selected printer
 Google Sheets enabled
+Optional off-device backup destination
 ```
 
 The Google **spreadsheet ID** and the canonical **worksheet names** are managed
@@ -1786,7 +1826,7 @@ automatically by the application after the owner connects a Google account
 (Section 27); they are not entered by the client during normal setup. They may
 still exist internally as validated non-secret local configuration.
 
-Settings should be stored locally in an appropriate trusted location or database table.
+Settings should be stored locally in an appropriate trusted location or database table. The off-device destination is ordinary non-secret configuration in the existing settings infrastructure; any stored "verified" state is only historical evidence and never replaces re-verification at use time. Whole-database restore may rewind this setting and must not silently reapply the pre-restore value (`DATA_MODEL.md` Section 52A).
 
 Secrets and ordinary business settings should not necessarily use the same storage mechanism. The OAuth refresh token is a secret and is never an ordinary settings row (Section 27.4, `DATA_MODEL.md §21`).
 
@@ -1804,7 +1844,7 @@ The V1 architecture should avoid blocking future additions such as:
 - Direct Clover integration
 - Multiple locations
 - Cloud reporting
-- Remote backups
+- Managed cloud/remote backup services beyond the V1 configured network-directory copy
 
 However:
 
@@ -1840,8 +1880,10 @@ Several operational policies must have a concrete, documented V1 default (config
 | Policy | V1 Default |
 |---|---|
 | Automatic backup cadence | Daily at 03:00 local business time |
-| Automatic backup retention | Most recent 14 days |
-| Manual backup retention | 90 days |
+| Local-disk automatic backup retention | Most recent 14 days by default |
+| Local-disk manual backup retention | 90 days by default |
+| Off-device automatic-copy retention | 14 days, fixed in V1 |
+| Off-device manual-copy retention | 90 days, fixed in V1 |
 | Log rotation | 10 MB per file, last 10 files retained, 30-day retention |
 | Stale `EXPORTING` job timeout | 5 minutes of no update, then reset to `PENDING` on next worker cycle/startup |
 | Google export retry backoff | Exponential, starting at 30 seconds, capped at 30 minutes between attempts |
@@ -1854,7 +1896,7 @@ Several operational policies must have a concrete, documented V1 default (config
 | Checkout commit feedback target | Under 1 second under normal local conditions |
 | Checkout quantity/monetary bounds | See `DATA_MODEL.md` Section 41A |
 
-These are conservative, simple defaults chosen to avoid unnecessary enterprise complexity for a single store with roughly 50 products; each may be made owner-configurable, but the values above are what tests and behavior assume when nothing else is configured.
+These are conservative, simple defaults chosen to avoid unnecessary enterprise complexity for a single store with roughly 50 products. Policies described as defaults may be made owner-configurable, but the off-device retention periods are fixed and have no separate V1 settings/UI. The values above are what tests and behavior assume when nothing else is configured.
 
 ---
 

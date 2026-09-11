@@ -252,6 +252,82 @@ export const APP_ERROR_CODES = [
   'GOOGLE_NOT_CONNECTED',
   /** `Open Spreadsheet` / enable was requested before the spreadsheet finished provisioning. */
   'GOOGLE_SPREADSHEET_NOT_READY',
+  // ── Phase 2L: Backup & Restore (backup-creation half) ─────────────────────
+  /**
+   * A backup (manual or automatic) is already running, so a second overlapping
+   * backup was not started. The in-progress backup is unaffected; the caller
+   * retries once it finishes (`REQ-BACKUP-005`, `POS_WORKFLOWS.md §66`,
+   * `TEST-BACKUP-008`).
+   */
+  'BACKUP_IN_PROGRESS',
+  /**
+   * The backup could not be created or verified — the destination was
+   * unavailable/unwritable, the snapshot failed, or the resulting file failed
+   * verification. The local database is unaffected and sales continue; backup
+   * health shows the failure. The raw filesystem/SQLite reason is logged
+   * internally, never surfaced to the renderer (`REQ-BACKUP-002`,
+   * `REQ-BACKUP-007`, `POS_WORKFLOWS.md §66`, `TEST-BACKUP-007`,
+   * `TEST-BACKUP-009`).
+   */
+  'BACKUP_FAILED',
+  /**
+   * An owner-selected OFF_DEVICE backup destination could not be verified as
+   * a genuine external USB drive or network location (Phase 2L-C). The
+   * existing local backup / restore capability is unaffected — this only
+   * blocks accepting the new destination.
+   */
+  'OFF_DEVICE_DESTINATION_INVALID',
+  // ── Phase 2L-B: safe whole-database restore + maintenance coordinator ─────
+  /**
+   * A RESTORE (or, later, an update MIGRATION) owns the exclusive database
+   * lifecycle, so this normal DB-backed request is refused at the trusted IPC
+   * boundary rather than touching a closing/swapping database
+   * (`ARCHITECTURE.md §42.3`, `POS_WORKFLOWS.md §102`, `DATA_MODEL.md §52A`).
+   */
+  'MAINTENANCE_IN_PROGRESS',
+  /** Restore cannot start: a checkout is active or a sale transaction is in flight (`POS_WORKFLOWS.md §67A` step 1). */
+  'RESTORE_BLOCKED_CHECKOUT_ACTIVE',
+  /** Restore cannot start: an unresolved card payment/reconciliation must be cleared first (Item 5). */
+  'RESTORE_BLOCKED_CARD_PENDING',
+  /** Restore cannot start: another restore is already running. */
+  'RESTORE_ALREADY_RUNNING',
+  /** The selected backup no longer exists, is not COMPLETED, or its file is missing (`REQ-BACKUP-011`). */
+  'RESTORE_CANDIDATE_NOT_FOUND',
+  /**
+   * The selected backup failed its immediate pre-restore safety re-check
+   * (checksum mismatch, not openable as SQLite, `quick_check`/foreign-key
+   * failure, missing canonical tables, incoherent metadata). Nothing was
+   * replaced (`REQ-BACKUP-011`, `TEST-BACKUP-019`, adversarial "corrupted
+   * candidate").
+   */
+  'RESTORE_CANDIDATE_INVALID',
+  /**
+   * The backup's schema version does not equal this build's target schema
+   * version. V1 restore is exact-match only — older and newer are both rejected
+   * before any replacement (`AGENTS.md` invariant 9; approved Phase 2L-B policy,
+   * to be revisited before the first production schema > 1).
+   */
+  'RESTORE_SCHEMA_INCOMPATIBLE',
+  /**
+   * The restored database failed post-swap validation. The pre-restore recovery
+   * copy has been put back and validated — the application continues on the
+   * original data, nothing was lost (`DATA_MODEL.md §52A` step 6,
+   * `TEST-BACKUP-019`).
+   */
+  'RESTORE_VALIDATION_FAILED',
+  /**
+   * A restore failed after the swap AND the pre-restore recovery copy could not
+   * be restored/validated in-process. Checkout stays blocked; the crash-
+   * consistent restore marker drives recovery on the next launch.
+   */
+  'RESTORE_RECOVERY_FAILED',
+  /**
+   * The supplied restore confirmation is stale — the current database changed
+   * since the newer-data warning was shown, so the loss figures no longer
+   * apply. A fresh warning + token is returned (`POS_WORKFLOWS.md §67A` step 5,
+   * Phase 2L-B Item 11).
+   */
+  'RESTORE_CONFIRMATION_STALE',
 ] as const;
 export type AppErrorCode = (typeof APP_ERROR_CODES)[number];
 

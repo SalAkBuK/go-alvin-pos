@@ -17,6 +17,7 @@ import {
   writeGoogleEnabled,
   writeProvisioningCreateAttempted,
   writeProvisioningToken,
+  writeRestoreReconnectRequired,
   writeSetupIncompleteReason,
   writeSpreadsheetId,
 } from '../settings/googleSettingsRepository';
@@ -50,6 +51,33 @@ import type { ProvisioningOutcome } from './spreadsheetProvisioning';
  * Network access is NEVER part of a SQLite transaction. Refresh tokens,
  * authorization codes, PKCE verifiers, ID tokens, and raw OAuth responses never
  * leave this layer.
+ *
+ * **Restore-specific quarantine** (2L-B final corrections): a whole-database
+ * restore can rewind the committed `google_credential_generation` behind the
+ * encrypted credential file's actual generation — the file lives outside
+ * SQLite precisely so it survives a restore untouched. That produces the exact
+ * same *observable* mismatch (`fileGeneration > sqliteGeneration`) that
+ * ordinary interrupted-OAuth-write crash recovery also produces, with no way
+ * to tell the two apart from the numbers alone, so {@link reconcileAtStartup}
+ * must never auto-adopt a file-ahead generation on its own after a restore.
+ * {@link prepareRestoredCredentialState} is the restore lifecycle's own,
+ * narrow check — called ONLY after a genuinely completed restore, before any
+ * other Google reconciliation/network work — that sets a durable, non-secret
+ * `google_restore_reconnect_required` quarantine flag per a locked,
+ * deliberately conservative rule: if the restored snapshot says a credential
+ * is ACTIVE, quarantine is set UNCONDITIONALLY — generation equality alone
+ * can never prove the encrypted credential belongs to the same account the
+ * restored snapshot represents, so it is never trusted as proof. If the
+ * restored snapshot says DISCONNECTED, quarantine is set only when the file
+ * is ahead of the restored generation (otherwise ordinary `reconcileAtStartup`
+ * would read that as an interrupted Connect and silently reconnect something
+ * the restore intentionally left disconnected); an absent, equal, or
+ * behind-generation file is left to the ordinary disconnected/stale-file
+ * cleanup, which only ever deletes. While quarantined, `loadActiveCredential`
+ * unconditionally returns `null` (so "connected", `resolveExportContext`,
+ * `retrySetup`, and `setEnabled(true)` all fail closed), and
+ * `reconcileAtStartup` is a complete no-op. Only an explicit `connect()` or
+ * `disconnect()` clears it.
  */
 
 const CONFIG_SUBJECT_ID = 'google_sheets';
@@ -94,6 +122,34 @@ export interface GoogleConfigService {
   openSpreadsheet(): Promise<void>;
   retryExport(raw: unknown): Promise<GoogleConfig>;
   reconcileAtStartup(): Promise<void>;
+  /**
+   * Restore lifecycle ONLY (2L-B follow-up): called once, after a genuinely
+   * completed restore swap/reopen/validate, BEFORE `reconcileAtStartup`,
+   * `ensureProvisionedIfNeeded`, the export worker, or any other Google work
+   * runs against the restored connection. Never rewrites, deletes, or revokes
+   * the encrypted credential wrapper, and never touches the restored
+   * spreadsheet id.
+   *
+   * Locked conservative rule: if the restored `google_credential_active` is
+   * `true`, ALWAYS quarantines — generation equality alone is never trusted as
+   * proof the file belongs to the same account/configuration the restored
+   * snapshot represents. If the restored state is disconnected, quarantines
+   * only when the file's generation is strictly ahead of the restored
+   * `google_credential_generation` (the exact shape ordinary
+   * `reconcileAtStartup` would otherwise silently adopt as an interrupted
+   * Connect); an absent, equal, or behind-generation file is left to the
+   * ordinary disconnected/stale-file cleanup. A no-op when neither applies.
+   * Never throws for an ordinary mismatch; a genuine I/O failure propagates so
+   * the caller can log it, but Google work still resumes afterward exactly as
+   * a fresh-database-open would.
+   *
+   * The only SQLite mutation is the `google_restore_reconnect_required`
+   * settings row itself — no other Google setting changes, and no audit
+   * event is appended (entering this quarantine is a SYSTEM safety reaction,
+   * not an owner Google configuration action; a structured diagnostic log
+   * is the record of it instead, `DATA_MODEL.md §52A`).
+   */
+  prepareRestoredCredentialState(): Promise<void>;
   /**
    * Bounded automatic startup recovery for a `Connected / setup incomplete`
    * account (`ARCHITECTURE.md §27.5.1`): runs a Drive `files.list` LOOKUP ONLY,
@@ -179,6 +235,12 @@ export function createGoogleConfigService(deps: GoogleConfigServiceDeps): Google
 
   async function loadActiveCredential(): Promise<LoadedCredential | null> {
     const settings = readGoogleSettings(db);
+    // Restore-specific quarantine wins over everything else — fail closed
+    // regardless of what the raw generation comparison would say (2L-B final
+    // corrections).
+    if (settings.restoreReconnectRequired) {
+      return null;
+    }
     if (!settings.credentialActive || settings.credentialGeneration === 0) {
       return null;
     }
@@ -229,7 +291,10 @@ export function createGoogleConfigService(deps: GoogleConfigServiceDeps): Google
       ready,
       accountEmail: active ? active.credential.email : null,
       spreadsheetName: spreadsheetConfigured ? GOOGLE_SPREADSHEET_NAME : null,
-      canOpenSpreadsheet: spreadsheetConfigured,
+      // While quarantined, the restored spreadsheet configuration remains
+      // inert — the UI must never offer it as though it were the current
+      // connected destination (2L-B final corrections).
+      canOpenSpreadsheet: settings.restoreReconnectRequired ? false : spreadsheetConfigured,
       lastSuccessfulSyncAt: settings.lastSuccessfulSyncAt,
       secureStorageAvailable,
       oauthClientConfigured: oauthClient !== null,
@@ -245,6 +310,7 @@ export function createGoogleConfigService(deps: GoogleConfigServiceDeps): Google
         setupState === 'SETUP_INCOMPLETE'
           ? (settings.setupIncompleteReason ?? 'Sales spreadsheet setup is not finished.')
           : null,
+      restoreReconnectRequired: settings.restoreReconnectRequired,
       queue: queueSummary(db),
     };
   }
@@ -400,6 +466,13 @@ export function createGoogleConfigService(deps: GoogleConfigServiceDeps): Google
 
     async ensureProvisionedIfNeeded(): Promise<void> {
       const settings = readGoogleSettings(db);
+      // No automatic provisioning/recovery may run — let alone clear — the
+      // restore quarantine (2L-B final corrections). `loadActiveCredential`
+      // would already fail closed here too; this guard keeps the contract
+      // explicit and independent of that call ordering.
+      if (settings.restoreReconnectRequired) {
+        return;
+      }
       if (settings.spreadsheetId !== null) {
         return;
       }
@@ -485,7 +558,10 @@ export function createGoogleConfigService(deps: GoogleConfigServiceDeps): Google
 
     async openSpreadsheet(): Promise<void> {
       const settings = readGoogleSettings(db);
-      if (settings.spreadsheetId === null) {
+      // While quarantined the stored spreadsheet id is inert, restored
+      // configuration — it must never be offered as the current connected
+      // destination, server-side as well as in the DTO (2L-B final corrections).
+      if (settings.restoreReconnectRequired || settings.spreadsheetId === null) {
         throw appErrors.googleSpreadsheetNotReady();
       }
       const url = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(
@@ -500,8 +576,76 @@ export function createGoogleConfigService(deps: GoogleConfigServiceDeps): Google
       return buildConfig();
     },
 
+    async prepareRestoredCredentialState(): Promise<void> {
+      const settings = readGoogleSettings(db);
+      const loaded = credentialStore.fileExists() ? await credentialStore.loadCredential() : null;
+
+      // Locked conservative rule (2L-B follow-up — generation equality alone
+      // cannot prove the encrypted credential belongs to the same
+      // account/configuration the restored snapshot represents).
+      const needsQuarantine = settings.credentialActive
+        ? // Case A: the restored snapshot says a credential is ACTIVE.
+          // ALWAYS quarantine — regardless of whether the file exists, and
+          // regardless of whether its generation matches, is ahead of, or is
+          // behind the restored generation. An apparent generation MATCH is
+          // not proof of account identity: two independent histories (e.g. a
+          // restore rewinding to gen N after gen N was previously reused by a
+          // different account following an earlier restore) can coincide on
+          // the same number.
+          true
+        : // Case B: the restored snapshot says DISCONNECTED. Leave it
+          // disconnected — UNLESS the file is ahead of this restored
+          // generation, in which case ordinary `reconcileAtStartup` would
+          // otherwise read that as an interrupted Connect and silently
+          // reconnect something the restore intentionally left disconnected.
+          // An absent, equal, or behind file is left to the existing
+          // disconnected/stale-file cleanup, which only ever deletes — it
+          // cannot reconnect automatically.
+          loaded !== null && loaded.generation > settings.credentialGeneration;
+
+      if (!needsQuarantine) {
+        return;
+      }
+      // The ONLY permitted post-restore SQLite mutation (`DATA_MODEL.md
+      // §52A`): this one settings row. Never rewrites, deletes, or revokes
+      // the credential file, never touches the restored spreadsheet id, and
+      // — deliberately, since entering this quarantine is a SYSTEM safety
+      // reaction, not an owner Google configuration action — appends no
+      // audit event. The structured diagnostic log below is the evidence a
+      // quarantine occurred; it carries only non-sensitive technical context
+      // (a state relationship, not raw credential/token/spreadsheet values)
+      // and is never exposed to the renderer.
+      const occurredAt = now();
+      db.transaction(() => writeRestoreReconnectRequired(db, occurredAt)).immediate();
+      authCache = null;
+      const generationRelation: 'EQUAL' | 'AHEAD' | 'BEHIND' | 'ABSENT' =
+        loaded === null
+          ? 'ABSENT'
+          : loaded.generation === settings.credentialGeneration
+            ? 'EQUAL'
+            : loaded.generation > settings.credentialGeneration
+              ? 'AHEAD'
+              : 'BEHIND';
+      log?.warn('google.restore.reconnect_required', {
+        restoredCredentialActive: settings.credentialActive,
+        credentialFilePresent: loaded !== null,
+        generationRelation,
+      });
+    },
+
     async reconcileAtStartup(): Promise<void> {
       const settings = readGoogleSettings(db);
+      // Restore quarantine wins: the file-ahead-generation adoption below is
+      // sound ONLY within one continuous install timeline (a crash between the
+      // credential-file write and the SQLite commit). A restore can rewind
+      // SQLite behind the file and produce the identical numbers with no
+      // interrupted write at all — {@link prepareRestoredCredentialState}
+      // already decided this case; ordinary reconciliation must not touch the
+      // file or the committed generation while quarantined (2L-B final
+      // corrections).
+      if (settings.restoreReconnectRequired) {
+        return;
+      }
       const loaded = credentialStore.fileExists() ? await credentialStore.loadCredential() : null;
 
       if (!loaded) {

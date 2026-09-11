@@ -78,6 +78,23 @@ const api: PosApi = {
   reports: {
     daily: (input) => ipcRenderer.invoke(IPC.reportsDaily, input),
   },
+  backup: {
+    status: () => ipcRenderer.invoke(IPC.backupStatus),
+    createManual: () => ipcRenderer.invoke(IPC.backupCreateManual),
+    listRestoreCandidates: () => ipcRenderer.invoke(IPC.backupListRestoreCandidates),
+    inspectRestoreCandidate: (input) =>
+      ipcRenderer.invoke(IPC.backupInspectRestoreCandidate, input),
+    restore: (input) => ipcRenderer.invoke(IPC.backupRestore, input),
+    statusVerified: () => ipcRenderer.invoke(IPC.backupStatusVerified),
+    configureOffDevice: () => ipcRenderer.invoke(IPC.backupConfigureOffDevice),
+    clearOffDevice: () => ipcRenderer.invoke(IPC.backupClearOffDevice),
+    offDeviceConfiguration: () => ipcRenderer.invoke(IPC.backupOffDeviceConfiguration),
+    browseRestoreCandidate: () => ipcRenderer.invoke(IPC.backupBrowseRestoreCandidate),
+  },
+  maintenance: {
+    status: () => ipcRenderer.invoke(IPC.maintenanceStatus),
+    noteCheckoutActivity: (input) => ipcRenderer.invoke(IPC.maintenanceCheckoutActivity, input),
+  },
   settings: {
     tax: {
       get: () => ipcRenderer.invoke(IPC.settingsTaxGet),

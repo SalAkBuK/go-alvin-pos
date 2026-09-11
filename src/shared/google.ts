@@ -70,6 +70,14 @@ export interface GoogleConfig {
   readonly needsReauthorization: boolean;
   /** A sanitized, human-readable reason provisioning has not completed, when `setupState === 'SETUP_INCOMPLETE'`. */
   readonly setupIncompleteReason: string | null;
+  /**
+   * `true` when a database restore left the encrypted Google credential
+   * unable to be safely matched to the restored configuration — the owner
+   * must use `Connect Google Account` again. Never a generation number, a
+   * credential detail, or a spreadsheet id; the UI shows only a calm
+   * client-facing explanation.
+   */
+  readonly restoreReconnectRequired: boolean;
   readonly queue: GoogleQueueSummary;
 }
 

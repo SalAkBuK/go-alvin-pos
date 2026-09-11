@@ -2852,23 +2852,35 @@ Expected:
 
 ---
 
-## TEST-BACKUP-017 — Full Table-Set Restore Verification
+## TEST-BACKUP-017 — Full Table-Set Restore Verification (General Fidelity Contract)
 
 Populate every table listed in `DATA_MODEL.md` Section 52 (`products`, `customers`, `sales`, `sale_items`, `payments`, `inventory_movements`, `settings`, `google_sheet_export_jobs`, `checkout_requests`, `counters`, `audit_events`, `backup_records`, `schema_migrations`) with representative rows, back up, then restore into a test environment.
 
 Expected:
 
-Every table's row count and representative content match the source exactly after restore, including the receipt-number counter and durable audit history — not just the subset already covered by `TEST-BACKUP-004` through `TEST-BACKUP-006`.
+The selected backup's contents restore faithfully: every canonical table's row count and content match the source exactly after restore — including the receipt-number counter, the `audit_sequence` counter, durable audit history, and every setting — not just the subset already covered by `TEST-BACKUP-004` through `TEST-BACKUP-006`. No row is appended, rewritten, or deleted in any table.
+
+The sole V1 exception: when the restore triggers the restore-specific Google credential quarantine (`DATA_MODEL.md` Section 52A step 7; `ARCHITECTURE.md` Section 27.4), the **only** permitted post-restore SQLite delta is the single `settings` row `google_restore_reconnect_required`. Even then: no audit event is appended merely because quarantine was entered — `audit_events` and `counters.audit_sequence` still match the backup exactly — and every other setting, Google or otherwise, still matches the backup exactly. This is not a general permission for runtime/system-metadata mutation; it is this one named key, in this one named circumstance. `TEST-BACKUP-022` is the concrete integration scenario that proves this exact exception end-to-end through the production restore/Google lifecycle.
+
+---
+
+## TEST-BACKUP-022 — Google-Quarantine Branch of TEST-BACKUP-017
+
+Back up a database with an active Google configuration (connected, a spreadsheet configured). Before restoring, change the external encrypted credential so it no longer safely matches the backup's Google configuration (e.g., connect a different account). Restore that backup through the production restore lifecycle (coordinator, swap, reopen, validate, `prepareRestoredCredentialState`).
+
+Expected:
+
+The restore triggers the quarantine named as `TEST-BACKUP-017`'s sole exception. Comparing the final live restored database against the selected backup, every canonical table and every setting other than `google_restore_reconnect_required` matches exactly, per `TEST-BACKUP-017`; `google_restore_reconnect_required` is absent from the backup and `true` in the restored database; no `GOOGLE_CONFIGURATION_CHANGED` or other audit event is appended merely for entering quarantine.
 
 ---
 
 ## TEST-BACKUP-018 — Restore Safety: Newer Local Data Detected
 
-Take a backup, then complete additional sales, then attempt to restore the earlier backup.
+Take a backup, then complete additional sales, then attempt to restore the earlier backup. Include a variant where the system clock moves backward between the backup and the additional sales, and a variant where a later sale's `completed_at` coincides exactly with the candidate's latest sale.
 
 Expected:
 
-The application detects that the current database is newer, warns with the specific transaction count/date range that would be lost, and does not proceed without explicit confirmation; a pre-restore recovery copy of the current database is preserved regardless of the outcome (`DATA_MODEL.md` Section 52A).
+The application identifies the completed sales the current database holds that the candidate does not, by immutable Sale ID — not by comparing `completed_at` timestamps, so a clock moving backward or two sales sharing a timestamp cannot hide a sale — warns with the specific transaction count/date range that would be lost, and does not proceed without explicit confirmation; a pre-restore recovery copy of the current database is preserved regardless of the outcome (`DATA_MODEL.md` Section 52A).
 
 ---
 
@@ -2879,6 +2891,121 @@ Force the restored database to fail validation after replacement (e.g., simulate
 Expected:
 
 The application restores the preserved pre-restore copy and reports a stable error code rather than leaving the database in the failed-validation state.
+
+---
+
+## TEST-BACKUP-021 — Generic Whole-Database Restore Confirmation
+
+Take a backup with no sales completed after it, then change only non-sale business state (for example void an existing sale, adjust inventory, edit a product or customer, or change the tax rate), then attempt to restore the backup. Separately, attempt to restore a backup against which nothing changed at all.
+
+Expected:
+
+The first Restore Database attempt always returns a required confirmation, even though no completed sale would be lost — restore is never a silent or default-confirmed action. The confirmation states that the operation replaces the current database with the selected backup. A stale confirmation (anything in the material restore-state fingerprint changed since the warning was issued) is rejected and a fresh confirmation is issued; a confirmation reused when only secondary bookkeeping (Google export-job delivery state, Google connectivity settings, automatic-backup records, or backup/Google audit events) changed in between remains valid.
+
+---
+
+## TEST-BACKUP-023 — Unified Discovery and Physical Identity
+
+Using injectable managed roots, create: a live catalogued backup; the same physical file found by directory enumeration; a preserved final managed backup whose catalogue row was rewound away; byte-identical local and off-device copies; a missing catalogued file; a corrupt managed SQLite file; an unrelated valid SQLite database; and a `.sqlite.partial`.
+
+Expected:
+
+- The catalogue/directory references to one canonical physical file appear once.
+- Byte-identical files in separate local and off-device locations remain distinct physical candidates and may share a logical checksum/snapshot.
+- The preserved uncatalogued final backup is rediscovered after restart and can complete the normal restore flow.
+- Missing, partial, corrupt, unrelated, escaped, or otherwise unverified files are not offered as verified.
+- Discovery does not insert/update/delete `backup_records` or mutate any other business SQLite state.
+
+---
+
+## TEST-BACKUP-024 — Candidate and Sidecar Verification Matrix
+
+Exercise fresh checksum calculation, a catalogue checksum mismatch, `quick_check` failure, foreign-key failure, missing/invalid `schema_migrations`, incompatible schema, and missing/unreadable canonical critical tables. For sidecars exercise matching metadata, checksum mismatch, schema mismatch, malformed JSON/shape, and a missing sidecar on a valid older managed backup.
+
+Expected:
+
+- Every source passes the same read-only verification pipeline and receives a stable sanitized outcome.
+- Catalogue and sidecar claims are compared with freshly calculated/read facts and are never trust roots.
+- Invalid or incompatible candidates are rejected; an otherwise valid older backup is not rejected solely because no sidecar exists.
+- New sidecars contain no secret/customer/transaction/card content and are published atomically from a partial/temp file.
+
+---
+
+## TEST-BACKUP-025 — Off-Device Destination Classification
+
+Through an injectable Windows-storage inspector, test: another partition and another drive letter on the database disk; a different internal disk; a genuine USB disk with a different disk number; genuine UNC storage; ambiguous mapped-network storage; PowerShell unavailable, timeout, malformed output, missing cmdlets, permission failure, and unknown bus type; then replace a previously verified destination drive with a different device under the same drive letter.
+
+Expected:
+
+- Only the genuine reverified UNC destination and proven different USB/external disk qualify.
+- Same-disk locations and internal disks are rejected as off-device.
+- Every ambiguous/error case fails closed with bounded sanitized output and no raw command/device internals exposed.
+- Re-verification catches drive reuse; configuration-time success is never permanent trust.
+
+---
+
+## TEST-BACKUP-026 — Local-First Off-Device Copy and Failure Isolation
+
+For automatic and manual operations, make the local backup succeed and then separately make the off-device copy succeed, fail, disconnect mid-copy, and leave a partial destination artifact. Compare both successful files byte-for-byte/checksum. Run checkout concurrently, and run migration with off-device storage unavailable.
+
+Expected:
+
+- The exact completed local snapshot is copied and independently verified; no second SQLite snapshot is taken.
+- Local backup success remains completed and usable when the off-device step fails, and manual UI reports the split outcome accurately.
+- Partial external copies are never candidates.
+- Checkout, committed sales, startup, migration, and local restore remain unaffected.
+- `PRE_MIGRATION` remains local-only and creates no off-device copy.
+
+---
+
+## TEST-BACKUP-027 — Fixed Off-Device Retention Boundary
+
+Create managed and unrelated files inside and outside the configured app-managed directory, including automatic copies older/newer than 14 days, manual copies older/newer than 90 days, matching sidecars, partials, recovery-held files, and the only verified usable backup. Repeat while the destination is unavailable.
+
+Expected:
+
+- Only eligible expired managed files and matching sidecars inside the exact directory are removed.
+- No recursive arbitrary-drive/share cleanup, unrelated deletion, partial deletion, escape, or removal of protected/only-usable recovery artifacts occurs.
+- An unavailable destination skips cleanup safely and surfaces health attention rather than corruption.
+
+---
+
+## TEST-BACKUP-028 — Separate Off-Device Health
+
+Exercise no configuration, configured but never successful, current verified success, unavailable destination, stale success, latest copy failure, verification failure, and a once-successful path now resolving to another device.
+
+Expected:
+
+- Local recovery health remains independent.
+- Off-device state is respectively not configured, healthy, or needs attention with the correct safe reason.
+- No historical success is displayed as current protection after re-verification fails.
+- User-facing text does not expose PowerShell, paths, disk numbers, bus types, WAL, or command output.
+
+---
+
+## TEST-BACKUP-029 — Native Browse and Final Revalidation
+
+Exercise native-dialog cancellation, a valid compatible Go Phones backup outside managed roots, invalid SQLite, unrelated SQLite, and incompatible schema. Verify the renderer contract, then modify the selected file between list and confirmation and between confirmation and swap.
+
+Expected:
+
+- Cancel changes nothing; valid selection returns only safe metadata plus an opaque main-process token.
+- The renderer neither supplies nor receives a raw path and cannot turn Browse into arbitrary file access.
+- Browse does not configure off-device storage, insert a backup record, trust filename/sidecar, or bypass universal confirmation.
+- The exact candidate is reverified immediately before replacement; either modification invalidates stale verification/confirmation and requires a fresh safe flow.
+
+---
+
+## TEST-BACKUP-030 — Off-Device and Discovery Adversarial Safety
+
+Attack path traversal, symlink/reparse escape, PowerShell path injection, hung inspection, unplugged USB/network disconnect during copy, crash between SQLite-copy and sidecar publication, catalogue rewind, checksum collision as authorization, and duplicate content in separate physical locations. Restore a valid discovered/browsed candidate through the production coordinator.
+
+Expected:
+
+- Argument-safe invocation prevents shell injection; timeouts terminate safely; managed-root confinement survives aliases/reparse points.
+- Incomplete artifacts/sidecars are ignored or safely diagnosed and never treated as verified backups.
+- Physical location remains part of identity and checksum alone never authorizes restore.
+- Restore fidelity, Google restore quarantine, worker quiescence, maintenance locking, and local checkout isolation remain exactly as required by `TEST-BACKUP-017`, `TEST-BACKUP-022`, and `TEST-REL-009` through `TEST-REL-011`.
 
 ---
 
@@ -4624,17 +4751,17 @@ This matrix supersedes the prior partial matrix (which covered only Void/Audit/E
 | `REQ-DB-007` | `TEST-CRASH-002`, `TEST-REL-003` |
 | `REQ-DB-008` | `TEST-DB-016` |
 | `REQ-DB-009` | `TEST-DB-010` |
-| `REQ-BACKUP-001` | `TEST-BACKUP-001` through `TEST-BACKUP-003` |
-| `REQ-BACKUP-002` | `TEST-BACKUP-002`, `TEST-BACKUP-002A`, `TEST-BACKUP-003` |
+| `REQ-BACKUP-001` | `TEST-BACKUP-001` through `TEST-BACKUP-003`, `TEST-BACKUP-026` |
+| `REQ-BACKUP-002` | `TEST-BACKUP-002`, `TEST-BACKUP-002A`, `TEST-BACKUP-003`, `TEST-BACKUP-024`, `TEST-BACKUP-026` |
 | `REQ-BACKUP-003` | `TEST-BACKUP-016` |
 | `REQ-BACKUP-004` | `TEST-BACKUP-003` through `TEST-BACKUP-006` |
-| `REQ-BACKUP-005` | `TEST-BACKUP-008`, `TEST-BACKUP-009` |
-| `REQ-BACKUP-006` | `TEST-BACKUP-010` |
-| `REQ-BACKUP-007` | `TEST-BACKUP-009`, `TEST-BACKUP-011` |
+| `REQ-BACKUP-005` | `TEST-BACKUP-008`, `TEST-BACKUP-009`, `TEST-BACKUP-026` |
+| `REQ-BACKUP-006` | `TEST-BACKUP-010`, `TEST-BACKUP-027` |
+| `REQ-BACKUP-007` | `TEST-BACKUP-009`, `TEST-BACKUP-011`, `TEST-BACKUP-028` |
 | `REQ-BACKUP-008` | `TEST-BACKUP-012`, `TEST-BACKUP-013` |
-| `REQ-BACKUP-009` | `TEST-BACKUP-015` |
-| `REQ-BACKUP-010` | `TEST-BACKUP-020` |
-| `REQ-BACKUP-011` | `TEST-BACKUP-017` through `TEST-BACKUP-019` |
+| `REQ-BACKUP-009` | `TEST-BACKUP-015`, `TEST-BACKUP-023`, `TEST-BACKUP-024` |
+| `REQ-BACKUP-010` | `TEST-BACKUP-020`, `TEST-BACKUP-025`, `TEST-BACKUP-028` |
+| `REQ-BACKUP-011` | `TEST-BACKUP-017` through `TEST-BACKUP-019`, `TEST-BACKUP-021` through `TEST-BACKUP-024`, `TEST-BACKUP-029`, `TEST-BACKUP-030` |
 | `REQ-AUTH-001` | `TEST-AUTH-001` |
 | `REQ-AUTH-002` | `TEST-AUTH-003` |
 | `REQ-AUTH-003` | `TEST-AUTH-004` |

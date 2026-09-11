@@ -84,6 +84,14 @@ export interface ExportWorker {
   start(): void;
   /** Synchronous, safe to call from `app.on('will-quit')` before the DB closes. */
   stopSync(): void;
+  /**
+   * `stopSync()` plus an `await` on any in-flight drain pass, so no worker
+   * callback can run a DB write on a connection the caller is about to close /
+   * swap (Phase 2L-B Item 7). An in-flight *network* request is still left in
+   * its ambiguous state for the existing stale-`EXPORTING` recovery — this only
+   * waits for the local settle, never fabricates an `EXPORTED` outcome.
+   */
+  stop(): Promise<void>;
   /** One full drain pass (stale recovery + claim/process until idle). For startup + tests. */
   runOnce(): Promise<void>;
   recoverStale(): number;
@@ -100,6 +108,8 @@ export function createExportWorker(deps: ExportWorkerDeps): ExportWorker {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopping = false;
   let activeAbort: AbortController | null = null;
+  /** The currently executing drain pass, or `null` when idle — awaited by `stop()`. */
+  let activeRun: Promise<void> | null = null;
   const skip = new Set<string>();
 
   function recoverStale(): number {
@@ -291,12 +301,15 @@ export function createExportWorker(deps: ExportWorkerDeps): ExportWorker {
       return;
     }
     try {
-      await runOnce();
+      const run = runOnce();
+      activeRun = run;
+      await run;
     } catch (error) {
       logger.error('google', 'google.export.tick_failed', {
         error: error instanceof Error ? error.message : String(error),
       });
     } finally {
+      activeRun = null;
       if (!stopping) {
         scheduleTick(pollIntervalMs);
       }
@@ -333,6 +346,25 @@ export function createExportWorker(deps: ExportWorkerDeps): ExportWorker {
       // `POS_WORKFLOWS.md §49`, `TEST-DEFAULT-002`) makes it retryable
       // idempotently, exactly as after a crash.
       activeAbort?.abort();
+    },
+
+    async stop(): Promise<void> {
+      stopping = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      activeAbort?.abort();
+      // Wait for the current drain pass to settle its local DB write (if any)
+      // on the still-open connection before the caller closes / swaps it.
+      const run = activeRun;
+      if (run) {
+        try {
+          await run;
+        } catch {
+          /* a failed pass is already logged by `tick`; nothing to do here */
+        }
+      }
     },
 
     runOnce,

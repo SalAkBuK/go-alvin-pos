@@ -6,6 +6,7 @@ import { createCardCheckoutService } from '../checkout/cardCheckoutService';
 import { createCheckoutService } from '../checkout/checkoutService';
 import { createReceiptService } from '../checkout/receiptService';
 import { createSaleService } from '../checkout/saleService';
+import type { MaintenanceCoordinator } from '../maintenance/maintenanceCoordinator';
 import { appErrors } from '../shared/appError';
 import { registerTrustedInvoke } from './trustedInvoke';
 
@@ -34,6 +35,12 @@ export interface CheckoutIpcContext {
   readonly getDatabase: () => ProductionDatabase | null;
   readonly appVersion: string;
   readonly rendererEntry?: RendererEntry;
+  /**
+   * Optional in tests. When present, the authoritative sale transactions run
+   * inside `coordinator.runGuardedTransaction` so a restore's exclusive claim
+   * sees `TRANSACTION_IN_FLIGHT` and defers (Phase 2L-B Item 4).
+   */
+  readonly coordinator?: MaintenanceCoordinator;
 }
 
 export function registerCheckoutIpcHandlers(context: CheckoutIpcContext): void {
@@ -50,25 +57,34 @@ export function registerCheckoutIpcHandlers(context: CheckoutIpcContext): void {
     return db.connection;
   }
 
+  /** Run a synchronous authoritative mutation through the coordinator's guarded primitive. */
+  function guarded<T>(fn: () => T): T {
+    return context.coordinator ? context.coordinator.runGuardedTransaction(fn) : fn();
+  }
+
   registerTrustedInvoke(IPC.checkoutReview, trusted, (request) =>
     createCheckoutService({ db: database() }).review(request),
   );
 
   registerTrustedInvoke(IPC.checkoutCompleteCash, trusted, (request) =>
-    createSaleService({ db: database(), appVersion: context.appVersion }).completeCashSale(request),
+    guarded(() =>
+      createSaleService({ db: database(), appVersion: context.appVersion }).completeCashSale(
+        request,
+      ),
+    ),
   );
 
   const cardService = () =>
     createCardCheckoutService({ db: database(), appVersion: context.appVersion });
 
   registerTrustedInvoke(IPC.checkoutBeginCard, trusted, (request) =>
-    cardService().beginCard(request),
+    guarded(() => cardService().beginCard(request)),
   );
   registerTrustedInvoke(IPC.checkoutCompleteCard, trusted, (request) =>
-    cardService().completeCard(request),
+    guarded(() => cardService().completeCard(request)),
   );
   registerTrustedInvoke(IPC.checkoutDeclineCard, trusted, (request) =>
-    cardService().declineCard(request),
+    guarded(() => cardService().declineCard(request)),
   );
 
   registerTrustedInvoke(IPC.receiptsGetBySaleId, trusted, (saleId) =>

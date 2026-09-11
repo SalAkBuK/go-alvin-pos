@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type {
   CheckoutReview,
   CompletedSaleResult,
@@ -123,6 +123,37 @@ export function CheckoutPage() {
 
   const preview = useMemo(() => cartPreview(cart), [cart]);
   const previewErrors = useMemo(() => previewValidationErrors(cart), [cart]);
+
+  // Tell the trusted main process whether a draft cart is open, so the
+  // maintenance coordinator can defer a database restore while a sale is in
+  // progress (`POS_WORKFLOWS.md §102`; Phase 2L-B). Renderer-only state — the
+  // main process treats this as an input, and also clears it on renderer
+  // crash/reload and after a completed sale.
+  const cartActive = cart.lines.length > 0;
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.pos === 'undefined') {
+      return;
+    }
+    void window.pos.maintenance.noteCheckoutActivity({ active: cartActive }).then((result) => {
+      if (cartActive && !result.ok) {
+        // A RESTORE / MIGRATION owner already held the exclusive lifecycle
+        // when this cart tried to become active — the main process refused to
+        // record it. Abandon it rather than let it continue against whatever
+        // database is in place once maintenance finishes (Item 3, 2L-B
+        // adversarial follow-up). The 2-second status banner is secondary
+        // defence only; this reaction is the renderer-side half of the fix.
+        setCart(EMPTY_CART);
+        setError(
+          'Database maintenance is in progress. The cart was cleared — please try again in a moment.',
+        );
+      }
+    });
+    return () => {
+      if (cartActive) {
+        void window.pos.maintenance.noteCheckoutActivity({ active: false });
+      }
+    };
+  }, [cartActive]);
 
   const mutate = useCallback((next: CartState) => {
     setCart(next);

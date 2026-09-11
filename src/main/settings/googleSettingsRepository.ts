@@ -42,6 +42,23 @@ const KEY_CREATE_ATTEMPTED = 'google_provisioning_create_attempted';
  * marks a newer, successfully-authorized credential.
  */
 const KEY_AUTH_FAILURE_GENERATION = 'google_auth_failure_generation';
+/**
+ * Restore-specific Google quarantine (2L-B final corrections; `ARCHITECTURE.md
+ * §27.4`). A whole-database restore can rewind this database's committed
+ * `google_credential_generation`/`google_credential_active` behind the
+ * encrypted credential file's actual generation — the file lives outside
+ * SQLite precisely so it survives a restore untouched, but that means a
+ * restore can create the exact same *observable* mismatch
+ * (`fileGeneration > sqliteGeneration`) that ordinary interrupted-OAuth-write
+ * crash recovery also produces, with no way to tell the two apart from the
+ * numbers alone. This flag is set ONLY by the restore lifecycle's own narrow
+ * "prepare restored credential state" step — never by ordinary
+ * `reconcileAtStartup` — and is cleared ONLY by an explicit owner action
+ * (`Connect Google Account` or `Disconnect Google Account`). While set: no
+ * file-ahead-generation adoption, no "connected" derivation, zero Google
+ * network. Default / missing: `false`.
+ */
+const KEY_RESTORE_RECONNECT_REQUIRED = 'google_restore_reconnect_required';
 
 export interface GoogleSettingsRow {
   readonly enabled: boolean;
@@ -61,6 +78,13 @@ export interface GoogleSettingsRow {
   readonly provisioningCreateAttempted: boolean;
   /** Credential generation of the last unresolved Google auth failure, or `null`. */
   readonly authFailureGeneration: number | null;
+  /**
+   * `true` only after a restore found the encrypted credential's generation
+   * could not safely be matched against the restored active generation. While
+   * `true`, "connected" must derive `false` regardless of the raw generation
+   * comparison, and the worker performs zero network.
+   */
+  readonly restoreReconnectRequired: boolean;
 }
 
 function nonEmpty(value: string | null): string | null {
@@ -84,6 +108,7 @@ export function readGoogleSettings(db: Database.Database): GoogleSettingsRow {
     provisioningCreateAttempted: getSettingValue(db, KEY_CREATE_ATTEMPTED) === 'true',
     authFailureGeneration:
       authFailureGeneration !== null && authFailureGeneration > 0 ? authFailureGeneration : null,
+    restoreReconnectRequired: getSettingValue(db, KEY_RESTORE_RECONNECT_REQUIRED) === 'true',
   };
 }
 
@@ -101,7 +126,12 @@ export function writeGoogleEnabled(
   db.prepare(UPSERT).run({ key: KEY_ENABLED, value: enabled ? 'true' : 'false', updatedAt });
 }
 
-/** Connect / re-authorize: advance the monotonic generation and mark it active. Opens no transaction. */
+/**
+ * Connect / re-authorize: advance the monotonic generation, mark it active,
+ * and clear any restore-reconnect quarantine — an explicit, successfully
+ * committed connect/reauthorize is exactly the recovery action the quarantine
+ * exists to require (2L-B final corrections). Opens no transaction.
+ */
 export function writeCredentialConnected(
   db: Database.Database,
   generation: number,
@@ -110,6 +140,7 @@ export function writeCredentialConnected(
   const upsert = db.prepare(UPSERT);
   upsert.run({ key: KEY_CREDENTIAL_GENERATION, value: String(generation), updatedAt });
   upsert.run({ key: KEY_CREDENTIAL_ACTIVE, value: 'true', updatedAt });
+  db.prepare(DELETE).run({ key: KEY_RESTORE_RECONNECT_REQUIRED });
 }
 
 /**
@@ -117,7 +148,10 @@ export function writeCredentialConnected(
  * value), turn export off, and clear the stored spreadsheet id — a reconnected
  * account must re-discover/re-verify its spreadsheet (`ARCHITECTURE.md §27.5`).
  * The provisioning token is deliberately RETAINED as installation-level
- * recovery metadata. Opens no transaction.
+ * recovery metadata. Also clears any restore-reconnect quarantine — once the
+ * local account relationship is authoritatively disconnected, there is no
+ * restored-credential mismatch left to quarantine (2L-B final corrections).
+ * Opens no transaction.
  */
 export function writeCredentialDisconnected(db: Database.Database, updatedAt: string): void {
   const upsert = db.prepare(UPSERT);
@@ -130,6 +164,7 @@ export function writeCredentialDisconnected(db: Database.Database, updatedAt: st
   // carry to the next account. The durable provisioning token is retained (idempotency).
   del.run({ key: KEY_CREATE_ATTEMPTED });
   del.run({ key: KEY_AUTH_FAILURE_GENERATION });
+  del.run({ key: KEY_RESTORE_RECONNECT_REQUIRED });
 }
 
 /** Record / clear the sanitized "setup not finished" reason. Opens no transaction. */
@@ -195,4 +230,13 @@ export function clearAuthFailureGeneration(db: Database.Database): void {
 /** Worker-only: record the instant of the most recent confirmed export. Opens its own write. */
 export function writeLastSuccessfulSync(db: Database.Database, iso: string): void {
   db.prepare(UPSERT).run({ key: KEY_LAST_SYNC, value: iso, updatedAt: iso });
+}
+
+/**
+ * Set the restore-reconnect quarantine (2L-B final corrections). Called ONLY
+ * by the restore lifecycle's own "prepare restored credential state" step,
+ * never by ordinary `reconcileAtStartup`. Opens no transaction.
+ */
+export function writeRestoreReconnectRequired(db: Database.Database, updatedAt: string): void {
+  db.prepare(UPSERT).run({ key: KEY_RESTORE_RECONNECT_REQUIRED, value: 'true', updatedAt });
 }

@@ -1968,6 +1968,7 @@ tax_rate_bps
 receipt_footer
 receipt_disclaimer
 selected_printer
+off_device_backup_destination
 google_sheets_enabled
 google_spreadsheet_id
 google_sales_sheet_name
@@ -2000,7 +2001,7 @@ a settings row.
 
 # 20. Settings Key Rules
 
-Settings should be validated according to type.
+Settings should be validated according to type. The optional `off_device_backup_destination` is a validated non-secret path string in the existing settings infrastructure. Stored verification information is historical evidence only; the destination is reverified when used. Because it is ordinary SQLite configuration, whole-database restore may rewind or remove it and the application must not silently reapply the pre-restore value (Section 52A).
 
 Examples:
 
@@ -3302,6 +3303,8 @@ OFF_DEVICE
 
 `location_kind` records whether the backup file was written to the same physical machine/disk (`LOCAL_DISK`, the V1 default for every automatic and pre-migration backup) or to a separately configured off-device destination (`OFF_DEVICE`, optional in V1 — e.g., a distinct external/USB drive or a network path the owner configures for manual/automatic backups). This distinction exists so backup health reporting and documentation never overstate what a given backup protects against (Section 23 of `PRODUCT_SCOPE.md`, Section 37 of `ARCHITECTURE.md`).
 
+For V1, `OFF_DEVICE` is limited to an accessible/writable genuine UNC network location or a local filesystem volume that trusted Windows inspection proves is both on a different physical disk from the operational database and USB/external. Another drive letter or partition on the same disk and a different internal disk are not `OFF_DEVICE`; ambiguous classification fails closed. `PRE_MIGRATION` is always `LOCAL_DISK`, while manual and automatic backups may have an additional off-device copy.
+
 Allowed `status` values:
 
 ```text
@@ -3315,11 +3318,26 @@ For a schema migration that modifies an **existing initialized database**, a pre
 
 The backup record and matching `BACKUP_COMPLETED` or `BACKUP_FAILED` audit event must be committed together when SQLite is writable.
 
+For a manual or automatic backup, the verified `LOCAL_DISK` record and its optional `OFF_DEVICE` copy are separate physical backup records/results even though they contain the same logical snapshot, size, and checksum. A failed off-device copy does not change the completed local record. Existing fields and audit event types are sufficient for V1; this behavior does not require a new schema migration or audit enum. An implementation may place the local backup record ID in the off-device sidecar as its logical-backup identifier without requiring a new relational column.
+
 ## V1 Default Cadence and Retention
 
 - Automatic backups run daily at a configurable default time (`03:00` local business time).
-- Automatic (`LOCAL_DISK`) backups are retained for the most recent 14 days; manual backups are retained for 90 days. Retention cleanup never removes the only verified usable backup, and never removes a backup still required for an active migration or recovery case (`REQ-BACKUP-006`).
-- These defaults are configurable; the values above are the documented V1 defaults used when no other value is configured, so tests and behavior remain deterministic without requiring the owner to configure anything first.
+- Automatic (`LOCAL_DISK`) backups are retained for the most recent 14 days by default; manual local backups are retained for 90 days by default. Retention cleanup never removes the only verified usable backup, and never removes a backup still required for an active migration or recovery case (`REQ-BACKUP-006`).
+- `OFF_DEVICE` retention is fixed and not separately configurable in V1: automatic copies are retained for 14 days and manual copies for 90 days. Cleanup is non-recursive and confined to the exact configured app-managed directory. It deletes only files that pass app-managed filename/manifest validation and the matching sidecar, skips partial/unrelated files, and skips safely with health attention when the destination is unavailable.
+- Local cadence/retention values are documented defaults and may become configurable. The fixed off-device periods have no V1 settings/UI.
+
+## Off-Device Sidecar
+
+Each new off-device copy has a versioned, atomically written sidecar next to the SQLite file. The sidecar may contain only non-secret metadata: manifest format version, logical/local backup identifier, backup kind, creation/completion time, source app version, source schema version, SHA-256, size, and location kind. It contains no credentials, OAuth material, customer data, transaction contents, card data, or other secrets.
+
+The sidecar is advisory, not authoritative. Discovery calculates SHA-256 from the SQLite bytes, reads schema facts from SQLite, and compares those facts with the sidecar. Malformed or mismatched claims are rejected or surfaced with stable sanitized status. A missing sidecar does not by itself make an older otherwise-valid managed backup unrestorable.
+
+## Unified Restore-Candidate Read Model
+
+Restore discovery reads but does not rewrite `backup_records`. It combines live catalogued records, valid preserved unreferenced final files in known app-managed local roots, files in the configured app-managed off-device directory, and one file explicitly chosen through the trusted native dialog. Catalogue rewind therefore remains a discovery concern and never changes restored business SQLite.
+
+Resolved canonical physical path is used internally to deduplicate references to the same file. Content checksum alone is not physical identity: byte-identical local and off-device files remain separate candidates. Renderer-facing candidate identity is opaque and does not disclose paths. A deterministic uncatalogued identity may digest canonical-path identity together with the verified checksum; a browsed candidate may instead use a main-process session token.
 
 ---
 
@@ -3754,12 +3772,16 @@ A whole-database restore is a destructive operation and must not silently discar
 
 1. Before touching the active database, creates a SQLite-consistent snapshot/backup copy (Section 54, "Backup and Recovery-Copy Safety Under WAL" — not a raw copy of the live main file) of the **current** (pre-restore) database at a timestamped recovery location (e.g., `gophones-pre-restore-<timestamp>.sqlite`) so today's state is never lost even if the wrong backup is chosen.
 2. Reads the candidate backup's metadata (`backup_records`, or the equivalent metadata embedded alongside a backup file selected from outside `backup_records`, e.g., one copied in from an external drive) — its schema version, source app version, and creation timestamp — without yet replacing anything.
-3. Compares the backup's creation timestamp and the latest `sales.completed_at` it contains against the **current** database's latest `sales.completed_at`. If the current database contains completed sales newer than the backup, the restore would discard them.
-4. If the current database is newer, the UI clearly warns the user how many transactions (and their date range) would be lost, and requires an explicit, unambiguous confirmation before proceeding — restoring an older backup over newer data is never a silent or default-confirmed action.
+   Before a candidate is offered as verified, and again immediately before replacement, the trusted layer requires: existence/readability; canonical real-path resolution; read-only SQLite open; `PRAGMA quick_check`; foreign-key check; valid `schema_migrations` and exact V1 schema compatibility; canonical critical-table presence/readability; a freshly calculated SHA-256; and comparison with any catalogued checksum or sidecar claim. Filename parsing is only a pre-filter. An unrelated SQLite database is not accepted merely because it opens. A material file change invalidates discovery-time verification and any confirmation bound to it.
+3. Identifies completed sales the current database holds that the candidate backup does not, by each sale's immutable Sale ID — never by comparing `sales.completed_at` timestamps alone, since a clock anomaly could move a later sale's timestamp backward or make two sales' timestamps coincide.
+4. Always requires one explicit, unambiguous confirmation before replacing the active database — restoring a backup is never a silent or default-confirmed action, whether or not a newer completed sale is found. When the current database holds completed sales the backup does not, the confirmation additionally states the exact transaction count and completed_at date range that would be lost. When none is found, the confirmation still clearly states that proceeding replaces the current database with the selected backup and that any other changes made since the backup (for example voids, inventory adjustments, product/customer edits, or setting changes) may be reverted.
 5. Only after confirmation does the trusted layer replace the active database with the backup, then validates the restored database (schema version, foreign keys, critical tables readable) before reopening checkout.
 6. If restored-database validation fails, the pre-restore recovery copy from step 1 is used to restore the original database, and the failure is reported with a stable error code.
+7. The selected backup's authoritative database contents are restored faithfully: no restored row in any table is rewritten, deleted, or normalized merely because a restore occurred. The only post-restore SQLite mutation V1 permits is the single `settings` row `google_restore_reconnect_required` (`ARCHITECTURE.md` Section 27.4) — set, as a value on that one key only, when the restored Google credential relationship requires the owner to reconnect explicitly before `reconcileAtStartup`, provisioning recovery, the export worker, or any other Google network work runs against the restored database. Every other table and every other setting — `products`, `customers`, `sales`, `sale_items`, `payments`, `inventory_movements`, `checkout_requests`, `google_sheet_export_jobs`, `counters` (`receipt_number` and `audit_sequence` alike), `audit_events`, `backup_records`, `schema_migrations`, and every other Google setting (spreadsheet id, credential generation, `credentialActive`, enabled/setup state) — matches the selected backup exactly, with no row appended, rewritten, or deleted. No audit event is appended for entering this quarantine; a structured diagnostic log is the record of it instead.
 
-V1 does not implement record-level merge between the current database and a restored backup — this is a whole-database replace-or-abort operation, not a reconciliation feature. The pre-restore recovery copy (step 1) is the safety net if the wrong backup is selected or validation fails. Restore is an exclusive maintenance operation (`ARCHITECTURE.md` Section 42.3) and cannot begin during an active or in-flight checkout.
+V1 does not implement record-level merge between the current database and a restored backup — this is a whole-database replace-or-abort operation, not a reconciliation feature. The pre-restore recovery copy (step 1) is the safety net if the wrong backup is selected or validation fails. Restore is an exclusive maintenance operation (`ARCHITECTURE.md` Section 42.3) and cannot begin during an active or in-flight checkout. Step 7's single named exception is not a general license for post-restore normalization or bookkeeping; a future feature that needs a different post-restore mutation requires this section to be deliberately revisited, never silently extended.
+
+Ordinary settings inside the selected database are restored exactly with that database. In particular, an off-device destination configured after the selected backup was taken is not silently reapplied after restore; the backup's value or absence wins. Native Browse remains available if the restored configuration no longer points to an external backup.
 
 ---
 

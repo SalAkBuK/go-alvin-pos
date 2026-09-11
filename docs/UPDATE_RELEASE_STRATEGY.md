@@ -472,6 +472,8 @@ Before applying any schema migration **to an existing initialized database**:
 4. Record backup metadata.
 5. Only then begin migration.
 
+The required pre-migration backup is always written and verified in the normal `LOCAL_DISK` recovery location in V1. It is never duplicated to the optional off-device destination, and migration/startup never waits for external USB or network storage. An unavailable or failed off-device destination therefore cannot block a migration whose local pre-migration backup is valid.
+
 Verification confirms at minimum that the backup file exists, is readable as SQLite, and represents the expected source schema. A mere file-copy success signal is insufficient.
 
 This flow applies only when an initialized database already exists. The first-run creation of a brand-new empty database (`001_initial_schema`) is bootstrap initialization: steps 2–4 are skipped, because there is no prior authoritative state to back up and the backup-evidence tables do not yet exist. Step 5 still runs (`001_initial_schema` is applied).

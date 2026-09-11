@@ -4,6 +4,7 @@ import type { RendererEntry } from '../app/rendererEntry';
 import type { ProductionDatabase } from '../database/database';
 import { createSalesHistoryService } from '../salesHistory/salesHistoryService';
 import { createVoidService } from '../void/voidService';
+import type { MaintenanceCoordinator } from '../maintenance/maintenanceCoordinator';
 import { appErrors } from '../shared/appError';
 import { registerTrustedInvoke } from './trustedInvoke';
 
@@ -32,6 +33,8 @@ export interface SalesHistoryIpcContext {
   readonly getDatabase: () => ProductionDatabase | null;
   readonly appVersion: string;
   readonly rendererEntry?: RendererEntry;
+  /** Optional in tests — see `CheckoutIpcContext.coordinator` (Phase 2L-B Item 4). */
+  readonly coordinator?: MaintenanceCoordinator;
 }
 
 export function registerSalesHistoryIpcHandlers(context: SalesHistoryIpcContext): void {
@@ -56,7 +59,11 @@ export function registerSalesHistoryIpcHandlers(context: SalesHistoryIpcContext)
   );
   registerTrustedInvoke(IPC.salesHistoryVoid, trusted, (input) => {
     const db = connection();
-    const { saleId } = createVoidService({ db, appVersion: context.appVersion }).voidSale(input);
+    const runVoid = (): { saleId: string } =>
+      createVoidService({ db, appVersion: context.appVersion }).voidSale(input);
+    const { saleId } = context.coordinator
+      ? context.coordinator.runGuardedTransaction(runVoid)
+      : runVoid();
     // Reload authoritative persisted state so the renderer never fabricates the
     // post-void detail (`task §10`).
     return createSalesHistoryService({ db }).getById(saleId);

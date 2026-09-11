@@ -50,6 +50,18 @@ describe('IPC contract', () => {
         'googleOpenSpreadsheet',
         'googleDisconnect',
         'googleRetryExport',
+        'backupStatus',
+        'backupStatusVerified',
+        'backupCreateManual',
+        'backupListRestoreCandidates',
+        'backupInspectRestoreCandidate',
+        'backupRestore',
+        'backupBrowseRestoreCandidate',
+        'backupConfigureOffDevice',
+        'backupClearOffDevice',
+        'backupOffDeviceConfiguration',
+        'maintenanceStatus',
+        'maintenanceCheckoutActivity',
       ].sort(),
     );
   });
@@ -70,6 +82,8 @@ describe('IPC contract', () => {
       'settings',
       'printing',
       'google',
+      'backup',
+      'maintenance',
     ];
     for (const name of Object.values(IPC)) {
       const namespace = name.split(':')[0];
@@ -111,6 +125,24 @@ describe('IPC contract', () => {
       salesHistory: ['list', 'getById', 'voidSale'],
       // `reports` exposes only the read-only Daily Report — no generic query surface.
       reports: ['daily'],
+      // `backup` exposes status + a no-argument manual backup + the two-stage
+      // restore by opaque backupId, plus Phase 2L-C's no-argument OFF_DEVICE
+      // setup (the main process owns the native dialogs) and Browse — no path,
+      // destination, or filesystem surface.
+      backup: [
+        'status',
+        'statusVerified',
+        'createManual',
+        'listRestoreCandidates',
+        'inspectRestoreCandidate',
+        'restore',
+        'browseRestoreCandidate',
+        'configureOffDevice',
+        'clearOffDevice',
+        'offDeviceConfiguration',
+      ],
+      // `maintenance` exposes read-only status + the one narrow draft-cart signal.
+      maintenance: ['status', 'noteCheckoutActivity'],
       // `settings` exposes only the tax and business sub-objects — no generic setter.
       settings: ['tax.get', 'tax.update', 'business.get', 'business.update'],
       // `printing` exposes only narrow capabilities — no generic settings/query surface.
@@ -128,11 +160,13 @@ describe('IPC contract', () => {
     };
     expect(Object.keys(surface).sort()).toEqual([
       'app',
+      'backup',
       'checkout',
       'customers',
       'diagnostics',
       'google',
       'inventory',
+      'maintenance',
       'printing',
       'products',
       'receipts',

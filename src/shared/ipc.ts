@@ -13,6 +13,14 @@
  * NOT defined yet.
  */
 
+import type { BackupHealth, ManualBackupResult, OffDeviceBackupConfiguration } from './backup';
+import type { CheckoutActivityInput, MaintenanceState } from './maintenance';
+import type {
+  RestoreCandidate,
+  RestoreCandidateInspection,
+  RestoreOutcome,
+  RestoreRequest,
+} from './restore';
 import type {
   BeginCardCheckoutRequest,
   BeginCardCheckoutResult,
@@ -198,6 +206,42 @@ export const IPC = {
   googleOpenSpreadsheet: 'google:open-spreadsheet',
   googleDisconnect: 'google:disconnect',
   googleRetryExport: 'google:retry-export',
+
+  // ── Phase 2L: Backup & Restore (backup-creation half) ─────────────────────
+  // `status` is a read-only backup-health DTO. `create-manual` is the owner
+  // `Back Up Now` and takes NO arguments — the renderer cannot pass a path,
+  // destination, or backup id; the trusted layer owns the file location. There
+  // is deliberately no restore / filesystem / destination channel here.
+  backupStatus: 'backup:status',
+  backupCreateManual: 'backup:create-manual',
+
+  // ── Phase 2L-B: safe whole-database restore + maintenance coordinator ─────
+  // `list-restore-candidates` / `inspect-restore-candidate` are read-only and
+  // take only an opaque `{ backupId }`. `restore` runs the guarded whole-
+  // database replace-or-abort (`{ backupId, confirmationToken? }`). The renderer
+  // never sends a path, filename, `storage_path`, or SQL. `maintenance:status`
+  // is a read-only coordinator-state read; `maintenance:checkout-activity` is
+  // the ONLY renderer-mutable maintenance input (`{ active: boolean }` draft-
+  // cart presence).
+  backupListRestoreCandidates: 'backup:list-restore-candidates',
+  backupInspectRestoreCandidate: 'backup:inspect-restore-candidate',
+  backupRestore: 'backup:restore',
+  maintenanceStatus: 'maintenance:status',
+  maintenanceCheckoutActivity: 'maintenance:checkout-activity',
+
+  // ── Phase 2L-C: OFF_DEVICE backup + unified discovery + Browse ────────────
+  // `status-verified` is the live-reverified twin of `backup:status` — it
+  // re-runs the OFF_DEVICE destination check before answering, so it is used
+  // only for an explicit Settings-page load/refresh, never a tight poll.
+  // `configure-off-device` / `clear-off-device` take NO renderer-supplied
+  // path: the trusted main process owns the native directory dialog.
+  // `browse-restore-candidate` takes NO argument either; a cancelled dialog
+  // resolves `{ ok: true, data: null }`, never an error.
+  backupStatusVerified: 'backup:status-verified',
+  backupConfigureOffDevice: 'backup:configure-off-device',
+  backupClearOffDevice: 'backup:clear-off-device',
+  backupOffDeviceConfiguration: 'backup:off-device-configuration',
+  backupBrowseRestoreCandidate: 'backup:browse-restore-candidate',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -415,6 +459,81 @@ export interface PosApi {
      * sync version.
      */
     retryExport(input: RetryExportInput): Promise<IpcResult<GoogleConfig>>;
+  };
+  readonly backup: {
+    /**
+     * Read-only backup health: the most recent automatic backup result and
+     * time, the last successful automatic backup time, whether backup is
+     * overdue (a protection warning — never a database-failure claim), the most
+     * recent failure, and the protection level (`LOCAL_DISK_ONLY` in V1).
+     */
+    status(): Promise<IpcResult<BackupHealth>>;
+    /**
+     * Owner `Back Up Now`: create + verify one WAL-safe SQLite snapshot of the
+     * local database on this computer, record its metadata and a durable audit
+     * event, and run retention cleanup. Takes no arguments — the trusted layer
+     * owns the destination. Resolves with the completed backup's file name and
+     * size, or a typed `BACKUP_IN_PROGRESS` / `BACKUP_FAILED` error.
+     */
+    createManual(): Promise<IpcResult<ManualBackupResult>>;
+    /** App-managed COMPLETED backups usable as restore candidates, newest first. */
+    listRestoreCandidates(): Promise<IpcResult<readonly RestoreCandidate[]>>;
+    /**
+     * Read-only preview of one candidate by opaque `backupId`: metadata,
+     * schema compatibility, and how many completed sales (with date range)
+     * would be lost. Takes no lock and creates no copy.
+     */
+    inspectRestoreCandidate(input: {
+      backupId: string;
+    }): Promise<IpcResult<RestoreCandidateInspection>>;
+    /**
+     * Guarded whole-database restore. Acquires exclusive DB-lifecycle
+     * ownership, quiesces background work, revalidates the candidate, takes a
+     * verified pre-restore recovery copy, and — only with an explicit
+     * `confirmationToken` when newer data would be lost — swaps + validates the
+     * restored database, rolling back to the pre-restore copy on any failure.
+     * Resolves `COMPLETED`, `CONFIRMATION_REQUIRED` (with a fresh token), or a
+     * typed `RESTORE_*` error.
+     */
+    restore(input: RestoreRequest): Promise<IpcResult<RestoreOutcome>>;
+    /**
+     * Live-reverified backup health, including OFF_DEVICE protection status.
+     * Re-runs the destination check before answering — use it for a Settings
+     * page load/refresh, never a tight poll.
+     */
+    statusVerified(): Promise<IpcResult<BackupHealth>>;
+    /**
+     * Owner-initiated off-device setup: the trusted main process shows a
+     * native directory dialog, verifies the selection proves genuine
+     * device/disk-loss protection, and persists it. Takes no path argument.
+     * A cancelled dialog resolves the unchanged current configuration.
+     */
+    configureOffDevice(): Promise<IpcResult<OffDeviceBackupConfiguration>>;
+    /** Remove the configured off-device destination (does not touch its files). */
+    clearOffDevice(): Promise<IpcResult<OffDeviceBackupConfiguration>>;
+    /** Live-reverified off-device destination configuration, for display. */
+    offDeviceConfiguration(): Promise<IpcResult<OffDeviceBackupConfiguration>>;
+    /**
+     * Native "Browse for a backup file…": shows a file-open dialog, verifies
+     * the selection through the same independent pipeline every managed
+     * candidate passes, and returns a one-time restore candidate. A
+     * cancelled dialog resolves `data: null` — never an error.
+     */
+    browseRestoreCandidate(): Promise<IpcResult<RestoreCandidate | null>>;
+  };
+  readonly maintenance: {
+    /** Current maintenance-coordinator state, for the app-level banner. Read-only. */
+    status(): Promise<IpcResult<{ state: MaintenanceState }>>;
+    /**
+     * The only renderer-mutable maintenance input: whether a draft cart is
+     * currently open in this renderer. Cannot set any exclusive/transaction
+     * state. `{ active: false }` is honoured only from the WebContents that
+     * owns the tracked draft cart. `{ active: true }` resolves `ok: false`
+     * (`MAINTENANCE_IN_PROGRESS`) when a RESTORE / MIGRATION owner already
+     * holds the exclusive lifecycle — the cart was NOT recorded as active and
+     * must not be continued.
+     */
+    noteCheckoutActivity(input: CheckoutActivityInput): Promise<IpcResult<{ accepted: boolean }>>;
   };
   readonly settings: {
     /** The sales-tax rate only — no generic settings access. */

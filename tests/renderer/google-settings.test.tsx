@@ -31,6 +31,7 @@ function config(overrides: Partial<GoogleConfig> = {}): GoogleConfig {
     oauthClientConfigured: true,
     needsReauthorization: false,
     setupIncompleteReason: null,
+    restoreReconnectRequired: false,
     queue: { pending: 0, exporting: 0, exported: 0, failed: 0 },
     ...overrides,
   };

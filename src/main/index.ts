@@ -8,7 +8,19 @@ import { resolveRendererEntry } from './app/rendererEntry';
 import { focusExistingWindow } from './app/singleInstance';
 import { installWebContentsHardening } from './app/security';
 import { registerIpcHandlers } from './ipc/register';
+import { createBackupService } from './backup/backupService';
+import type { BackupService } from './backup/backupService';
+import { createBackupScheduler } from './backup/backupScheduler';
+import type { BackupScheduler } from './backup/backupScheduler';
+import { createRestoreService } from './backup/restoreService';
+import type { RestoreService } from './backup/restoreService';
+import { createBackupFileDialogOpener } from './app/backupFileDialog';
+import { createOffDeviceDirectoryDialogOpener } from './app/offDeviceDirectoryDialog';
+import { recoverInterruptedRestore } from './app/startupRestoreRecovery';
+import { createMaintenanceCoordinator } from './maintenance/maintenanceCoordinator';
+import type { MaintenanceCoordinator } from './maintenance/maintenanceCoordinator';
 import { ProductionDatabase, DatabaseInitializationError } from './database/database';
+import { targetSchemaVersion } from './database/migrations';
 import { setDatabaseStatus } from './database/status';
 import { createElectronSecureCrypto } from './google/electronSafeStorage';
 import { createExportWorker } from './google/exportWorker';
@@ -49,6 +61,19 @@ let mainWindow: BrowserWindow | null = null;
 let productionDatabase: ProductionDatabase | null = null;
 let googleExportWorker: ExportWorker | null = null;
 let googleConfigService: GoogleConfigService | null = null;
+let backupService: BackupService | null = null;
+let backupScheduler: BackupScheduler | null = null;
+let restoreService: RestoreService | null = null;
+
+/**
+ * The one maintenance coordinator (`ARCHITECTURE.md §42.3`). Created before the
+ * database so the IPC surface and restore share it. `getDb` returns the live
+ * connection, or `null` mid-swap.
+ */
+const maintenanceCoordinator: MaintenanceCoordinator = createMaintenanceCoordinator({
+  logger,
+  getDb: () => productionDatabase?.connection ?? null,
+});
 
 /**
  * Phase 2J.1 Google wiring, shared by the IPC handlers, the background export
@@ -116,21 +141,147 @@ if (!app.requestSingleInstanceLock()) {
   // work and abort our wait on the active request; an ambiguous in-flight job is
   // left `EXPORTING` for the 5-minute startup stale recovery) and abort any
   // pending OAuth authorization, BEFORE closing the one authoritative connection.
+  // A restore mid-swap leaves its crash-consistent marker + verified pre-restore
+  // copy — the next launch recovers from those (`startupRestoreRecovery`).
   app.on('will-quit', () => {
     googleConfigService?.cancelPendingAuthorization();
     googleExportWorker?.stopSync();
+    backupScheduler?.stopSync();
     productionDatabase?.close();
   });
+
+  /**
+   * Wire every database-backed service/worker against `pdb`'s connection and
+   * publish "ready" status. Used at first startup AND after a restore swaps the
+   * database (Phase 2L-B Item 15) — objects that closed over the previous
+   * connection are rebuilt, not mutated.
+   */
+  function wireDatabaseBackedServices(pdb: ProductionDatabase): void {
+    productionDatabase = pdb;
+    setDatabaseStatus({
+      state: 'ready',
+      schemaVersion: pdb.schemaVersion,
+      failureCode: null,
+    });
+
+    const configService = buildGoogleConfigService(pdb.connection, app.getVersion());
+    googleConfigService = configService;
+    googleExportWorker = createExportWorker({
+      db: pdb.connection,
+      logger,
+      resolveContext: () => configService.resolveExportContext(),
+      createTransport: (ctx, signal) =>
+        createSheetsTransport({ spreadsheetId: ctx.spreadsheetId, auth: ctx.auth, signal }),
+      reportAuthHealth: (result, credentialGeneration) =>
+        configService.noteExportAuthResult(credentialGeneration, result),
+      onStructuralTargetFailure: (spreadsheetId, kind) =>
+        configService.invalidateSpreadsheetTarget(spreadsheetId, kind),
+    });
+    backupService = createBackupService({
+      db: pdb.connection,
+      backupsRoot: paths.backups,
+      appVersion: app.getVersion(),
+      logger,
+      isExclusiveMaintenanceActive: () => maintenanceCoordinator.isExclusiveActive(),
+    });
+    backupScheduler = createBackupScheduler(backupService, logger);
+  }
+
+  /** Reconcile Google state, recover stale export work, then start the workers + scheduler. */
+  function startBackgroundWork(): void {
+    const configService = googleConfigService;
+    if (configService) {
+      void configService.reconcileAtStartup().catch((error: unknown) => {
+        logger.error('google', 'google.config.reconcile-failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      void configService.ensureProvisionedIfNeeded().catch((error: unknown) => {
+        logger.warn('google', 'google.config.provision-at-startup-failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+    googleExportWorker?.recoverStale();
+    googleExportWorker?.start();
+    void backupService?.runAutomaticIfDue().catch((error: unknown) => {
+      logger.warn('backup', 'backup.startup-catch-up-failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    backupScheduler?.start();
+  }
+
+  /** Bring background DB work to a safe boundary WITHOUT closing the connection (Phase 2L-B Item 7). */
+  async function quiesceBackgroundWork(): Promise<void> {
+    backupScheduler?.stopSync();
+    await backupService?.awaitIdle();
+    googleConfigService?.cancelPendingAuthorization();
+    await googleExportWorker?.stop();
+  }
 
   app
     .whenReady()
     .then(async () => {
       installWebContentsHardening(rendererEntry);
+
+      restoreService = createRestoreService({
+        logger,
+        databaseFile: paths.databaseFile,
+        backupsRoot: paths.backups,
+        userDataDir: paths.userData,
+        targetSchemaVersion: targetSchemaVersion(),
+        coordinator: maintenanceCoordinator,
+        getCurrentDatabase: () => productionDatabase,
+        quiesceBackgroundWork,
+        openDatabase: () =>
+          ProductionDatabase.open({
+            filename: paths.databaseFile,
+            backupDir: paths.backups,
+            logger,
+            appVersion: app.getVersion(),
+          }),
+        activateDatabase: (pdb, context) => {
+          wireDatabaseBackedServices(pdb as ProductionDatabase);
+          if (context?.restored) {
+            // Restore-specific lifecycle ordering (2L-B final corrections):
+            // rebuild GoogleConfigService against the restored connection
+            // (above) → let it narrowly inspect the restored credential
+            // relationship and persist a quarantine if necessary → only THEN
+            // resume ordinary reconcileAtStartup/provisioning/worker/scheduler
+            // background work. `restoreService` itself never learns this
+            // step's name or what it does — it only signals "a restore just
+            // completed" via `context.restored`.
+            const configService = googleConfigService;
+            const prepared = configService
+              ? configService.prepareRestoredCredentialState().catch((error: unknown) => {
+                  logger.error('google', 'google.restore-reconcile-failed', {
+                    error: error instanceof Error ? error.message : String(error),
+                  });
+                })
+              : Promise.resolve();
+            void prepared.then(() => startBackgroundWork());
+          } else {
+            startBackgroundWork();
+          }
+        },
+      });
+
       registerIpcHandlers({
         logger,
         paths,
         appVersion: app.getVersion(),
         getDatabase: () => productionDatabase,
+        getBackupService: () => backupService,
+        getRestoreService: () => restoreService,
+        maintenanceCoordinator,
+        // Phase 2L-C.4: the native "Browse for a backup file…" dialog is
+        // main-owned; `mainWindow` is read lazily so the current window
+        // applies even though it is not created until after this call.
+        showBackupFileDialog: createBackupFileDialogOpener(() => mainWindow),
+        // Phase 2L-C.1: the native off-device destination directory dialog is
+        // main-owned the same way.
+        showOffDeviceDirectoryDialog: createOffDeviceDirectoryDialogOpener(() => mainWindow),
         google: {
           createService: buildGoogleConfigService,
         },
@@ -138,54 +289,35 @@ if (!app.requestSingleInstanceLock()) {
 
       // (2) Open the production database — only now that we own the instance.
       try {
-        productionDatabase = await ProductionDatabase.open({
+        // Interrupted-restore recovery FIRST (`DATA_MODEL.md §52A` step 6).
+        const recovery = recoverInterruptedRestore({
+          userDataDir: paths.userData,
+          backupsRoot: paths.backups,
+          databaseFile: paths.databaseFile,
+          targetSchemaVersion: targetSchemaVersion(),
+          logger,
+        });
+        if (recovery.kind === 'failed') {
+          setDatabaseStatus({
+            state: 'unavailable',
+            schemaVersion: null,
+            failureCode: recovery.failureCode,
+          });
+          logger.fatal('database', 'database.initialization-failed', {
+            failureCode: recovery.failureCode,
+          });
+          mainWindow = createMainWindow(rendererEntry);
+          return;
+        }
+
+        const pdb = await ProductionDatabase.open({
           filename: paths.databaseFile,
           backupDir: paths.backups,
           logger,
           appVersion: app.getVersion(),
         });
-        setDatabaseStatus({
-          state: 'ready',
-          schemaVersion: productionDatabase.schemaVersion,
-          failureCode: null,
-        });
-
-        // (3) Google Sheets export worker — only after the DB is open. Reconcile
-        // any crash-interrupted credential change, finish provisioning for a
-        // connected-but-not-ready account, recover stale EXPORTING jobs, then
-        // start the non-overlapping poll loop. Google latency/outage never
-        // touches checkout (`AGENTS.md` invariants 2 & 7).
-        const configService = buildGoogleConfigService(
-          productionDatabase.connection,
-          app.getVersion(),
-        );
-        googleConfigService = configService;
-        try {
-          await configService.reconcileAtStartup();
-        } catch (reconcileError) {
-          logger.error('google', 'google.config.reconcile-failed', {
-            error:
-              reconcileError instanceof Error ? reconcileError.message : String(reconcileError),
-          });
-        }
-        void configService.ensureProvisionedIfNeeded().catch((error: unknown) => {
-          logger.warn('google', 'google.config.provision-at-startup-failed', {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-        googleExportWorker = createExportWorker({
-          db: productionDatabase.connection,
-          logger,
-          resolveContext: () => configService.resolveExportContext(),
-          createTransport: (ctx, signal) =>
-            createSheetsTransport({ spreadsheetId: ctx.spreadsheetId, auth: ctx.auth, signal }),
-          reportAuthHealth: (result, credentialGeneration) =>
-            configService.noteExportAuthResult(credentialGeneration, result),
-          onStructuralTargetFailure: (spreadsheetId, kind) =>
-            configService.invalidateSpreadsheetTarget(spreadsheetId, kind),
-        });
-        googleExportWorker.recoverStale();
-        googleExportWorker.start();
+        wireDatabaseBackedServices(pdb);
+        startBackgroundWork();
       } catch (error) {
         const failureCode =
           error instanceof DatabaseInitializationError ? error.code : 'DB_INIT_FAILED';

@@ -1771,6 +1771,16 @@ User initiates a manual backup, or the recurring automatic-backup schedule becom
 6. A durable success or failure audit event is recorded.
 7. Retention cleanup removes only backups beyond the configured policy, preserves backups held for migration or recovery, and never removes the only verified usable backup.
 
+The approved V1 location sequence is more specific than the conceptual steps above:
+
+1. Write, close, and independently verify the normal `LOCAL_DISK` backup.
+2. Record local metadata/health and the existing durable audit result.
+3. For `AUTOMATIC` or `MANUAL` only, reverify any configured off-device destination, copy the exact completed local artifact into its app-managed directory, and independently verify those destination bytes. `PRE_MIGRATION` is always local-only.
+4. Record the `OFF_DEVICE` result separately using existing backup metadata/audit semantics. Local success remains authoritative if this step fails; a manual result states both that local recovery succeeded and that off-device protection needs attention.
+5. Update local recovery and off-device-protection health separately.
+
+Off-device retention is fixed at 14 days for automatic copies and 90 days for manual copies. Cleanup stays inside the exact app-managed directory, removes only validated managed files and their matching sidecars, preserves migration/recovery safety rules and the only verified usable backup, and skips safely if the destination is unavailable.
+
 Backup must not corrupt the active database.
 
 ---
@@ -1783,6 +1793,8 @@ If backup fails:
 - A visible backup-health warning should identify that protection is overdue or failing.
 - The failure should be recorded in the durable audit trail and diagnostic log without exposing sensitive data.
 - Automatic backup should retry according to policy without creating an overlapping backup operation.
+
+If the local backup succeeds and only the optional off-device step fails, do not report the local operation as failed. Record and surface the off-device failure separately and retry it at the next normally eligible backup opportunity or explicit user action. Off-device failure never delays migration or startup because pre-migration backup is local-only.
 
 Backup failure should not be confused with sale failure.
 
@@ -1817,19 +1829,42 @@ A production restore is an exclusive maintenance operation. It must not start du
 
 The shared user selects `Restore Database` and chooses a backup to restore from.
 
+The candidate list is a read-only union of live catalogued backups, valid preserved unreferenced final files in known app-managed local directories, valid files in the configured app-managed off-device directory, and a one-time file selected through **Browse for a backup file...**. The renderer never submits or receives an arbitrary raw path. Browse opens Electron's main-process native file dialog; cancellation changes nothing, while selection returns only verified safe metadata plus an opaque main-process-owned token.
+
 ## Expected Flow
 
 1. Confirm no checkout is active or in flight; if one is, defer until idle (Section 102).
 2. Preserve a SQLite-consistent snapshot/backup copy (`DATA_MODEL.md` Section 54, "Backup and Recovery-Copy Safety Under WAL" — not a raw file copy) of the **current** database before touching anything.
-3. Read the selected backup's metadata: schema version, source app version, creation time, and its latest contained sale timestamp.
-4. Compare the backup's latest sale timestamp against the current database's latest sale timestamp.
-5. If the current database is newer, warn clearly, naming how many transactions and what date range would be lost, and require an explicit, unambiguous confirmation before proceeding. There is no default-confirmed or silent path when data would be lost.
-6. Replace the active database with the backup only after any required confirmation.
+3. Read the selected backup's metadata: schema version, source app version, and creation time.
+4. Identify completed sales the current database holds that the backup does not, by each sale's immutable Sale ID — not by comparing `completed_at` timestamps, which a clock anomaly could move backward or make coincide across sales.
+5. Always require one explicit, unambiguous confirmation before proceeding — there is no default-confirmed or silent restore path, whether or not a newer completed sale is found. When the current database holds completed sales the backup does not, the warning additionally names the exact transaction count and date range that would be lost. When none is found, the warning still clearly states that proceeding replaces the current database with the selected backup.
+6. Replace the active database with the backup only after that confirmation.
 7. Validate the restored database (schema version, foreign keys enabled, critical tables readable) before reopening checkout.
 8. If validation fails, restore the pre-restore copy from step 2 and report a stable error code and recovery guidance.
 9. On success, record the restore outcome in diagnostics and reopen checkout.
 
+Before step 2, and again immediately before step 6, the trusted layer resolves the opaque candidate and performs the complete independent verification defined by `DATA_MODEL.md` Section 52A. A changed file invalidates prior verification and confirmation. Discovery or Browse never inserts a `backup_records` row, trusts a filename/sidecar, configures off-device storage, or bypasses confirmation. After success, ordinary settings — including the off-device destination — match the selected backup; a newer pre-restore value is not silently reapplied.
+
 V1 restore is whole-database replace-or-abort; it does not attempt to merge records between the current database and the restored backup.
+
+---
+
+# 67B. Configure Off-Device Backup Workflow
+
+## Trigger
+
+The owner chooses an external/network backup destination in Settings.
+
+## Expected Flow
+
+1. The trusted main process receives the location through a native directory-selection boundary; the renderer does not submit a raw path.
+2. For UNC/network storage, verify that the location is genuinely remote, accessible, and writable. A mapped drive must resolve positively as remote or fail closed with guidance to use UNC form.
+3. For local filesystem storage, use bounded argument-safe built-in Windows inspection to prove both a different physical disk from the operational database and USB/external identity.
+4. Reject another folder, drive letter, same-disk partition, second internal disk, unavailable/readonly destination, and every ambiguous or failed inspection without describing it as protected.
+5. Persist the validated non-secret destination through the existing settings infrastructure and show off-device health as needing attention until a verified copy succeeds.
+6. Reverify the destination whenever a copy or current-health check depends on it; drive-letter history is never permanent trust.
+
+Changing this setting does not itself create or restore a backup. Whole-database restore may rewind or remove it.
 
 ---
 

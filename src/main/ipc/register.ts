@@ -8,6 +8,11 @@ import { getDatabaseStatus } from '../database/status';
 import { runNativeSqliteCheck } from '../diagnostics/nativeSqliteCheck';
 import type { ProductionDatabase as ProductionDatabaseType } from '../database/database';
 import type { GoogleConfigService } from '../google/googleConfigService';
+import type { BackupService } from '../backup/backupService';
+import type { RestoreService } from '../backup/restoreService';
+import type { MaintenanceCoordinator } from '../maintenance/maintenanceCoordinator';
+import { registerBackupIpcHandlers } from './backupIpc';
+import { registerMaintenanceIpcHandlers } from './maintenanceIpc';
 import { registerCheckoutIpcHandlers } from './checkoutIpc';
 import { registerCustomerIpcHandlers } from './customerIpc';
 import { registerGoogleIpcHandlers } from './googleIpc';
@@ -32,6 +37,19 @@ export interface IpcContext {
   readonly appVersion: string;
   /** The one production database, or `null` while/if initialization has not succeeded. */
   readonly getDatabase: () => ProductionDatabase | null;
+  /**
+   * Phase 2L `BackupService`, or `null` while/if database initialization has
+   * not succeeded (backup needs the authoritative connection).
+   */
+  readonly getBackupService: () => BackupService | null;
+  /** Phase 2L-B `RestoreService`, or `null` before the database is ready. */
+  readonly getRestoreService: () => RestoreService | null;
+  /** Phase 2L-C native directory dialog for OFF_DEVICE setup; `null` = cancelled. */
+  readonly showOffDeviceDirectoryDialog?: () => Promise<string | null>;
+  /** Phase 2L-C native file dialog for "Browse for a backup file…"; `null` = cancelled. */
+  readonly showBackupFileDialog?: () => Promise<string | null>;
+  /** The one maintenance coordinator (`ARCHITECTURE.md §42.3`). */
+  readonly maintenanceCoordinator: MaintenanceCoordinator;
   /**
    * Phase 2J.1 Google wiring — one config-service factory assembled in
    * `index.ts` and shared with the export worker + startup reconciliation.
@@ -88,6 +106,7 @@ export function registerIpcHandlers(context: IpcContext): void {
     logger: context.logger,
     getDatabase: context.getDatabase,
     appVersion: context.appVersion,
+    coordinator: context.maintenanceCoordinator,
   });
 
   registerReconciliationIpcHandlers({
@@ -99,6 +118,7 @@ export function registerIpcHandlers(context: IpcContext): void {
     logger: context.logger,
     getDatabase: context.getDatabase,
     appVersion: context.appVersion,
+    coordinator: context.maintenanceCoordinator,
   });
 
   registerReportsIpcHandlers({
@@ -115,6 +135,21 @@ export function registerIpcHandlers(context: IpcContext): void {
   registerPrintingIpcHandlers({
     logger: context.logger,
     getDatabase: context.getDatabase,
+  });
+
+  registerBackupIpcHandlers({
+    logger: context.logger,
+    getBackupService: context.getBackupService,
+    getRestoreService: context.getRestoreService,
+    ...(context.showOffDeviceDirectoryDialog
+      ? { showOffDeviceDirectoryDialog: context.showOffDeviceDirectoryDialog }
+      : {}),
+    ...(context.showBackupFileDialog ? { showBackupFileDialog: context.showBackupFileDialog } : {}),
+  });
+
+  registerMaintenanceIpcHandlers({
+    logger: context.logger,
+    coordinator: context.maintenanceCoordinator,
   });
 
   registerGoogleIpcHandlers({
