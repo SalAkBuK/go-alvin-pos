@@ -1,24 +1,18 @@
-import { appendFileSync, mkdirSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
-/**
- * Structured logging foundation (SUPPORT_DIAGNOSTICS.md Sections 6-9;
- * ARCHITECTURE.md Section 46).
- *
- * Invariants:
- *   - A logging call MUST NOT throw into its caller, whatever the field values
- *     contain (BigInt, circular references, `Error`, throwing `toJSON`, etc.).
- *   - Obviously credential-like fields are redacted before anything is written,
- *     recursively through nested objects and arrays.
- *
- * Not implemented yet (deliberately): log rotation, correlation IDs, crash
- * evidence, support-bundle collection.
- */
-
+/** Trusted main-process structured diagnostics; audit events stay in SQLite. */
 export const LOG_LEVELS = ['debug', 'info', 'warn', 'error', 'fatal'] as const;
 export type LogLevel = (typeof LOG_LEVELS)[number];
 
-/** Log categories from SUPPORT_DIAGNOSTICS.md Section 8. */
 export const LOG_CATEGORIES = [
   'application',
   'authentication',
@@ -37,14 +31,27 @@ export const LOG_CATEGORIES = [
 ] as const;
 export type LogCategory = (typeof LOG_CATEGORIES)[number];
 
+export const CORRELATION_ID_KEYS = [
+  'correlationId',
+  'checkoutRequestId',
+  'saleId',
+  'receiptNumber',
+  'exportJobId',
+  'supportReportId',
+] as const;
+export type CorrelationIdKey = (typeof CORRELATION_ID_KEYS)[number];
+export type CorrelationIds = Partial<Record<CorrelationIdKey, string>>;
 export type LogFields = Record<string, unknown>;
 
 export interface LogRecord {
-  readonly time: string;
+  readonly timestamp: string;
   readonly level: LogLevel;
   readonly category: LogCategory;
   readonly event: string;
-  readonly fields: LogFields;
+  readonly installationId: string;
+  readonly correlationIds?: CorrelationIds;
+  readonly errorCode?: string;
+  readonly context: LogFields;
 }
 
 const LEVEL_RANK: Record<LogLevel, number> = {
@@ -55,50 +62,109 @@ const LEVEL_RANK: Record<LogLevel, number> = {
   fatal: 50,
 };
 
+export const DEFAULT_LOG_MAX_BYTES = 10 * 1024 * 1024;
+export const DEFAULT_LOG_MAX_ROTATED_FILES = 10;
+export const DEFAULT_LOG_MAX_AGE_DAYS = 30;
 export const REDACTED = '[redacted]';
 
-/** Bounds on the safe-sanitize walk, so a hostile/huge object can never hang or overflow. */
+const ACTIVE_LOG_NAME = 'main.log';
 const MAX_DEPTH = 8;
 const MAX_ENTRIES_PER_CONTAINER = 200;
 const MAX_TOTAL_NODES = 5000;
+const MAX_STRING_LENGTH = 32_768;
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
-/**
- * Substrings that unambiguously mark a credential when they appear anywhere in
- * a normalized (lowercased, separator-stripped) key.
- */
 const SENSITIVE_KEY_SUBSTRINGS = [
   'password',
   'passwd',
-  'pwd',
   'passphrase',
   'secret',
   'token',
   'credential',
   'apikey',
+  'clientsecret',
   'privatekey',
+  'accesstoken',
+  'refreshtoken',
+  'idtoken',
+  'tokenresponse',
+  'authorizationcode',
+  'oauthcode',
+  'codeverifier',
+  'oauthresponse',
+  'oauthclientconfig',
+  'developeroauthclient',
+  'paymentcredential',
+  'clovercredential',
+  'cardnumber',
+  'primaryaccountnumber',
+  'magneticstripe',
+  'magstripe',
+  'trackdata',
+  'track1',
+  'track2',
+  'customerphone',
+  'customername',
+  'customeremail',
+  'accountemail',
 ];
 
-/**
- * Keys that are sensitive as a whole word but whose substrings would wrongly
- * flag ordinary fields (e.g. `auth` is a substring of `author`).
- */
-const SENSITIVE_KEY_EXACT = new Set(['auth', 'authorization', 'bearer']);
+const SENSITIVE_KEY_EXACT = new Set([
+  'auth',
+  'authorization',
+  'bearer',
+  'credential',
+  'credentials',
+  'secret',
+  'secrets',
+  'token',
+  'apikey',
+  'pwd',
+  'passwordhash',
+  'hash',
+  'pan',
+  'cvv',
+  'cvv2',
+  'cvc',
+  'track1',
+  'track2',
+  'phone',
+  'phonenumber',
+  'telephone',
+  'email',
+  'clientconfig',
+]);
+
+const SECRET_ASSIGNMENT_PATTERN =
+  /\b(authorization|access[_ -]?token|refresh[_ -]?token|id[_ -]?token|authorization[_ -]?code|code[_ -]?verifier|client[_ -]?secret|private[_ -]?key|password|cvv2?|cvc|card[_ -]?number)\b(\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&#]+)/gi;
+const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi;
+const CARD_NUMBER_PATTERN = /\b(?:\d[ -]*?){13,19}\b/g;
+
+function normalizeKey(key: string): string {
+  return key.toLowerCase().replace(/[\s_.-]/g, '');
+}
 
 export function isSensitiveKey(key: string): boolean {
-  const normalized = key.toLowerCase().replace(/[\s_-]/g, '');
+  const normalized = normalizeKey(key);
   if (SENSITIVE_KEY_EXACT.has(normalized)) {
     return true;
   }
   return SENSITIVE_KEY_SUBSTRINGS.some((needle) => normalized.includes(needle));
 }
 
-/**
- * Produce a JSON-safe copy of `value`: primitives pass through, `BigInt`
- * becomes a string, functions/symbols become tags, `Error` becomes a plain
- * object, cycles become `"[circular]"`, and anything that throws while being
- * read becomes `"[unserializable]"`. Depth and per-container breadth are
- * bounded.
- */
+/** Scrub common secret-bearing text so errors and URLs cannot bypass key redaction. */
+export function redactString(value: string): string {
+  const truncated =
+    value.length > MAX_STRING_LENGTH ? `${value.slice(0, MAX_STRING_LENGTH)}[truncated]` : value;
+  return truncated
+    .replace(BEARER_PATTERN, `Bearer ${REDACTED}`)
+    .replace(
+      SECRET_ASSIGNMENT_PATTERN,
+      (_match, key: string, separator: string) => `${key}${separator}${REDACTED}`,
+    )
+    .replace(CARD_NUMBER_PATTERN, REDACTED);
+}
+
 interface SanitizeBudget {
   nodes: number;
 }
@@ -117,7 +183,10 @@ function safeSanitize(
   }
 
   const kind = typeof value;
-  if (kind === 'string' || kind === 'boolean') {
+  if (kind === 'string') {
+    return redactString(value as string);
+  }
+  if (kind === 'boolean') {
     return value;
   }
   if (kind === 'number') {
@@ -133,14 +202,10 @@ function safeSanitize(
     return (value as symbol).toString();
   }
 
-  // Objects and arrays.
   if (depth >= MAX_DEPTH) {
     return '[max depth]';
   }
   const container = value as object;
-  // Permanent (not path-scoped) visited set: guarantees O(n) work and no
-  // stack/loop blow-up. A value reused in sibling positions renders as
-  // "[circular]" on the second encounter — acceptable for logs.
   if (seen.has(container)) {
     return '[circular]';
   }
@@ -150,8 +215,8 @@ function safeSanitize(
     if (value instanceof Error) {
       return {
         name: value.name,
-        message: value.message,
-        ...(typeof value.stack === 'string' ? { stack: value.stack } : {}),
+        message: redactString(value.message),
+        ...(typeof value.stack === 'string' ? { stack: redactString(value.stack) } : {}),
       };
     }
 
@@ -175,7 +240,6 @@ function safeSanitize(
     }
     return out;
   } catch {
-    // Throwing getters, exotic proxies, etc.
     return '[unserializable]';
   }
 }
@@ -192,19 +256,54 @@ export function sanitizeFields(fields: LogFields): LogFields {
   }
 }
 
+function splitRecordFields(fields: LogFields): {
+  readonly correlationIds?: CorrelationIds;
+  readonly errorCode?: string;
+  readonly context: LogFields;
+} {
+  const sanitized = sanitizeFields(fields);
+  const context = { ...sanitized };
+  const correlationIds: CorrelationIds = {};
+
+  for (const key of CORRELATION_ID_KEYS) {
+    const value = sanitized[key];
+    if (typeof value === 'string' && value.trim() !== '') {
+      correlationIds[key] = value;
+    }
+    delete context[key];
+  }
+
+  const rawErrorCode = sanitized['errorCode'] ?? sanitized['failureCode'];
+  const errorCode =
+    typeof rawErrorCode === 'string' && rawErrorCode.trim() !== '' ? rawErrorCode : undefined;
+  delete context['errorCode'];
+  delete context['failureCode'];
+
+  return {
+    ...(Object.keys(correlationIds).length > 0 ? { correlationIds } : {}),
+    ...(errorCode ? { errorCode } : {}),
+    context,
+  };
+}
+
 export function buildLogRecord(
   level: LogLevel,
   category: LogCategory,
   event: string,
   fields: LogFields = {},
   now: Date = new Date(),
+  installationId = 'INST-UNKNOWN',
 ): LogRecord {
+  const stableEvent = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/.test(event)
+    ? event
+    : 'diagnostics.invalid_event_name';
   return {
-    time: now.toISOString(),
+    timestamp: now.toISOString(),
     level,
     category,
-    event,
-    fields: sanitizeFields(fields),
+    event: stableEvent,
+    installationId,
+    ...splitRecordFields(fields),
   };
 }
 
@@ -213,60 +312,132 @@ export function formatLogLine(record: LogRecord): string {
     return JSON.stringify(record);
   } catch {
     return JSON.stringify({
-      time: record.time,
+      timestamp: record.timestamp,
       level: record.level,
       category: record.category,
       event: record.event,
-      fields: { note: '[unserializable log fields]' },
+      installationId: record.installationId,
+      context: { note: '[unserializable log fields]' },
     });
   }
 }
 
 export interface LoggerOptions {
-  /** Directory that receives `main.log`. Created on demand. */
   readonly dir: string;
-  /** Lowest level that is emitted. Defaults to `info`. */
+  readonly installationId: string;
   readonly minLevel?: LogLevel;
-  /** Also mirror records to the console. Defaults to `false`. */
   readonly console?: boolean;
+  readonly maxFileBytes?: number;
+  readonly maxRotatedFiles?: number;
+  readonly maxAgeDays?: number;
+  readonly now?: () => Date;
 }
 
-export class Logger {
+export interface ContextLogger {
+  debug(category: LogCategory, event: string, fields?: LogFields): void;
+  info(category: LogCategory, event: string, fields?: LogFields): void;
+  warn(category: LogCategory, event: string, fields?: LogFields): void;
+  error(category: LogCategory, event: string, fields?: LogFields): void;
+  fatal(category: LogCategory, event: string, fields?: LogFields): void;
+}
+
+function rotatedLogName(index: number): string {
+  return `${ACTIVE_LOG_NAME}.${index}`;
+}
+
+export class Logger implements ContextLogger {
   private readonly file: string;
   private readonly minRank: number;
   private readonly mirrorConsole: boolean;
+  private readonly maxFileBytes: number;
+  private readonly maxRotatedFiles: number;
+  private readonly maxAgeMs: number;
+  private readonly now: () => Date;
   private dirReady = false;
+  private lastRetentionCheckAt: number | null = null;
 
   constructor(private readonly options: LoggerOptions) {
-    this.file = join(options.dir, 'main.log');
+    this.file = join(options.dir, ACTIVE_LOG_NAME);
     this.minRank = LEVEL_RANK[options.minLevel ?? 'info'];
     this.mirrorConsole = options.console ?? false;
+    this.maxFileBytes = Math.max(1, options.maxFileBytes ?? DEFAULT_LOG_MAX_BYTES);
+    this.maxRotatedFiles = Math.max(0, options.maxRotatedFiles ?? DEFAULT_LOG_MAX_ROTATED_FILES);
+    this.maxAgeMs =
+      Math.max(0, options.maxAgeDays ?? DEFAULT_LOG_MAX_AGE_DAYS) * MILLISECONDS_PER_DAY;
+    this.now = options.now ?? (() => new Date());
+  }
+
+  withContext(fields: LogFields): ContextLogger {
+    const call = (level: LogLevel, category: LogCategory, event: string, extra?: LogFields): void =>
+      this.write(level, category, event, { ...fields, ...(extra ?? {}) });
+    return {
+      debug: (category, event, extra) => call('debug', category, event, extra),
+      info: (category, event, extra) => call('info', category, event, extra),
+      warn: (category, event, extra) => call('warn', category, event, extra),
+      error: (category, event, extra) => call('error', category, event, extra),
+      fatal: (category, event, extra) => call('fatal', category, event, extra),
+    };
   }
 
   debug(category: LogCategory, event: string, fields?: LogFields): void {
     this.write('debug', category, event, fields);
   }
-
   info(category: LogCategory, event: string, fields?: LogFields): void {
     this.write('info', category, event, fields);
   }
-
   warn(category: LogCategory, event: string, fields?: LogFields): void {
     this.write('warn', category, event, fields);
   }
-
   error(category: LogCategory, event: string, fields?: LogFields): void {
     this.write('error', category, event, fields);
   }
-
   fatal(category: LogCategory, event: string, fields?: LogFields): void {
     this.write('fatal', category, event, fields);
   }
 
-  /**
-   * Build, sanitize, serialize, and write one record. The entire path is
-   * wrapped: a logging call never throws into the application.
-   */
+  private ensureDirectory(): void {
+    if (!this.dirReady) {
+      mkdirSync(this.options.dir, { recursive: true });
+      this.dirReady = true;
+    }
+  }
+
+  private cleanupRetention(nowMs: number): void {
+    const cutoff = nowMs - this.maxAgeMs;
+    for (const name of readdirSync(this.options.dir)) {
+      const match = /^main\.log\.(\d+)$/.exec(name);
+      if (!match) {
+        continue;
+      }
+      const index = Number(match[1]);
+      const path = join(this.options.dir, name);
+      if (index > this.maxRotatedFiles || statSync(path).mtimeMs < cutoff) {
+        rmSync(path, { force: true });
+      }
+    }
+    this.lastRetentionCheckAt = nowMs;
+  }
+
+  private rotateIfNeeded(incomingBytes: number): void {
+    if (!existsSync(this.file) || statSync(this.file).size + incomingBytes <= this.maxFileBytes) {
+      return;
+    }
+
+    if (this.maxRotatedFiles === 0) {
+      rmSync(this.file, { force: true });
+      return;
+    }
+
+    rmSync(join(this.options.dir, rotatedLogName(this.maxRotatedFiles)), { force: true });
+    for (let index = this.maxRotatedFiles - 1; index >= 1; index -= 1) {
+      const source = join(this.options.dir, rotatedLogName(index));
+      if (existsSync(source)) {
+        renameSync(source, join(this.options.dir, rotatedLogName(index + 1)));
+      }
+    }
+    renameSync(this.file, join(this.options.dir, rotatedLogName(1)));
+  }
+
   private write(
     level: LogLevel,
     category: LogCategory,
@@ -278,27 +449,36 @@ export class Logger {
         return;
       }
 
-      const line = formatLogLine(buildLogRecord(level, category, event, fields ?? {}));
+      const now = this.now();
+      const line = formatLogLine(
+        buildLogRecord(level, category, event, fields ?? {}, now, this.options.installationId),
+      );
 
       if (this.mirrorConsole) {
         const sink = level === 'error' || level === 'fatal' ? console.error : console.log;
         sink(line);
       }
 
-      if (!this.dirReady) {
-        mkdirSync(this.options.dir, { recursive: true });
-        this.dirReady = true;
+      this.ensureDirectory();
+      const nowMs = now.getTime();
+      if (
+        this.lastRetentionCheckAt === null ||
+        nowMs < this.lastRetentionCheckAt ||
+        nowMs - this.lastRetentionCheckAt >= MILLISECONDS_PER_DAY
+      ) {
+        this.cleanupRetention(nowMs);
       }
-      appendFileSync(this.file, `${line}\n`, 'utf8');
+      const output = `${line}\n`;
+      this.rotateIfNeeded(Buffer.byteLength(output, 'utf8'));
+      appendFileSync(this.file, output, 'utf8');
     } catch (error) {
-      // Logging must never crash the POS. Best-effort console notice, then continue.
       try {
         console.error(
           'logger: failed to emit log record',
-          error instanceof Error ? error.message : error,
+          error instanceof Error ? redactString(error.message) : '[unknown error]',
         );
       } catch {
-        /* nothing else we can safely do */
+        /* no safe fallback remains */
       }
     }
   }

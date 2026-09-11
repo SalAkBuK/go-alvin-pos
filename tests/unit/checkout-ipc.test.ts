@@ -105,6 +105,15 @@ describe('checkout IPC registration', () => {
     })) as { ok: false; error: { code: string; message: string } };
     expect(result.ok).toBe(false);
     expect(result.error.code).toBe('DATABASE_UNAVAILABLE');
+    expect(logger.warn).toHaveBeenCalledWith(
+      'checkout',
+      'checkout.validation_failed',
+      expect.objectContaining({
+        checkoutRequestId: 'r1',
+        paymentMethod: 'CASH',
+        errorCode: 'DATABASE_UNAVAILABLE',
+      }),
+    );
   });
 
   it.each([IPC.checkoutBeginCard, IPC.checkoutCompleteCard] as const)(

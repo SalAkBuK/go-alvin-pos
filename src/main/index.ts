@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3';
 import { app, BrowserWindow, shell } from 'electron';
 import { pinUserDataPath, resolveAppPaths } from './app/paths';
 import { Logger } from './app/logger';
+import { loadOrCreateInstallationId } from './app/installationIdentity';
 import { createMainWindow } from './app/window';
 import { resolveRendererEntry } from './app/rendererEntry';
 import { focusExistingWindow } from './app/singleInstance';
@@ -46,13 +47,15 @@ import { createSheetsTransport } from './google/sheetsTransport';
 
 // (1) Pin userData FIRST — before the single-instance lock, the logger, or any
 // other code can create a file under Electron's implicit default location.
-const userDataDir = pinUserDataPath();
+pinUserDataPath();
 
 const isDev = !app.isPackaged;
 const paths = resolveAppPaths();
 const rendererEntry = resolveRendererEntry();
+const installationId = loadOrCreateInstallationId(paths.installationIdentityFile);
 const logger = new Logger({
   dir: paths.logs,
+  installationId,
   minLevel: isDev ? 'debug' : 'info',
   console: isDev,
 });
@@ -338,7 +341,7 @@ if (!app.requestSingleInstanceLock()) {
         version: app.getVersion(),
         packaged: app.isPackaged,
         electron: process.versions.electron,
-        userData: userDataDir,
+        storageLocation: 'LOCAL_APP_DATA',
         databaseReady: productionDatabase !== null,
       });
     })

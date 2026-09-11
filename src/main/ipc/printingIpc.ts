@@ -5,7 +5,7 @@ import type { ProductionDatabase } from '../database/database';
 import { createElectronPrintAdapter } from '../printing/electronPrintAdapter';
 import { createPrintingService } from '../printing/printingService';
 import type { PrintAdapter } from '../printing/printingService';
-import { appErrors } from '../shared/appError';
+import { appErrors, isAppError } from '../shared/appError';
 import { registerTrustedInvoke } from './trustedInvoke';
 
 /**
@@ -53,7 +53,21 @@ export function registerPrintingIpcHandlers(context: PrintingIpcContext): void {
   registerTrustedInvoke(IPC.printingSelectPrinter, trusted, (input) =>
     service().selectPrinter(input),
   );
-  registerTrustedInvoke(IPC.printingPrintReceipt, trusted, (saleId) =>
-    service().printReceipt(saleId),
-  );
+  registerTrustedInvoke(IPC.printingPrintReceipt, trusted, async (saleId) => {
+    try {
+      const result = await service().printReceipt(saleId);
+      context.logger.info('printing', 'printing.completed', {
+        saleId: result.saleId,
+        receiptNumber: result.receiptNumber,
+        voided: result.voided,
+      });
+      return result;
+    } catch (error) {
+      context.logger.error('printing', 'printing.failed', {
+        ...(typeof saleId === 'string' ? { saleId } : {}),
+        errorCode: isAppError(error) ? error.code : 'PRINT_FAILED',
+      });
+      throw error;
+    }
+  });
 }

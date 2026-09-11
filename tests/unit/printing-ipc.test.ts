@@ -86,4 +86,13 @@ describe('printing IPC registration', () => {
       expect(result.error.message).not.toMatch(/sqlite|C:\\|SELECT/i);
     },
   );
+
+  it('records a stable, correlated diagnostic event for a print failure', async () => {
+    await handlers.get(IPC.printingPrintReceipt)!(trustedEvent(), 'sale-1');
+
+    expect(logger.error).toHaveBeenCalledWith('printing', 'printing.failed', {
+      saleId: 'sale-1',
+      errorCode: 'DATABASE_UNAVAILABLE',
+    });
+  });
 });

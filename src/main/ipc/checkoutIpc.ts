@@ -7,7 +7,7 @@ import { createCheckoutService } from '../checkout/checkoutService';
 import { createReceiptService } from '../checkout/receiptService';
 import { createSaleService } from '../checkout/saleService';
 import type { MaintenanceCoordinator } from '../maintenance/maintenanceCoordinator';
-import { appErrors } from '../shared/appError';
+import { appErrors, isAppError } from '../shared/appError';
 import { registerTrustedInvoke } from './trustedInvoke';
 
 /**
@@ -62,14 +62,58 @@ export function registerCheckoutIpcHandlers(context: CheckoutIpcContext): void {
     return context.coordinator ? context.coordinator.runGuardedTransaction(fn) : fn();
   }
 
+  function requestIdFrom(request: unknown): string | undefined {
+    if (typeof request !== 'object' || request === null || Array.isArray(request)) {
+      return undefined;
+    }
+    const requestId = (request as Record<string, unknown>)['requestId'];
+    return typeof requestId === 'string' && requestId.trim() !== '' ? requestId : undefined;
+  }
+
+  function completeWithDiagnostics<T extends { saleId: string; receiptNumber: string }>(
+    request: unknown,
+    paymentMethod: 'CASH' | 'CARD',
+    complete: () => T,
+  ): T {
+    const startedAt = Date.now();
+    const checkoutRequestId = requestIdFrom(request);
+    try {
+      const result = complete();
+      context.logger.info('checkout', 'checkout.completed', {
+        checkoutRequestId,
+        saleId: result.saleId,
+        receiptNumber: result.receiptNumber,
+        paymentMethod,
+        durationMs: Date.now() - startedAt,
+      });
+      return result;
+    } catch (error) {
+      const errorCode = isAppError(error) ? error.code : 'SALE_COMMIT_FAILED';
+      const fields = {
+        checkoutRequestId,
+        paymentMethod,
+        errorCode,
+        durationMs: Date.now() - startedAt,
+      };
+      if (errorCode === 'SALE_COMMIT_FAILED' || errorCode === 'CARD_LOCAL_COMMIT_FAILURE') {
+        context.logger.error('checkout', 'checkout.failed', fields);
+      } else {
+        context.logger.warn('checkout', 'checkout.validation_failed', fields);
+      }
+      throw error;
+    }
+  }
+
   registerTrustedInvoke(IPC.checkoutReview, trusted, (request) =>
     createCheckoutService({ db: database() }).review(request),
   );
 
   registerTrustedInvoke(IPC.checkoutCompleteCash, trusted, (request) =>
-    guarded(() =>
-      createSaleService({ db: database(), appVersion: context.appVersion }).completeCashSale(
-        request,
+    completeWithDiagnostics(request, 'CASH', () =>
+      guarded(() =>
+        createSaleService({ db: database(), appVersion: context.appVersion }).completeCashSale(
+          request,
+        ),
       ),
     ),
   );
@@ -81,7 +125,9 @@ export function registerCheckoutIpcHandlers(context: CheckoutIpcContext): void {
     guarded(() => cardService().beginCard(request)),
   );
   registerTrustedInvoke(IPC.checkoutCompleteCard, trusted, (request) =>
-    guarded(() => cardService().completeCard(request)),
+    completeWithDiagnostics(request, 'CARD', () =>
+      guarded(() => cardService().completeCard(request)),
+    ),
   );
   registerTrustedInvoke(IPC.checkoutDeclineCard, trusted, (request) =>
     guarded(() => cardService().declineCard(request)),

@@ -80,6 +80,8 @@ export function pinUserDataPath(): string {
 export interface AppPaths {
   /** Root per-user application-data directory (the pinned `userData`). */
   readonly userData: string;
+  /** Stable, non-secret installation identity stored outside the business database. */
+  readonly installationIdentityFile: string;
   /** Structured-log output directory. */
   readonly logs: string;
   /** Support/diagnostics working directory. */
@@ -100,6 +102,7 @@ export function resolveAppPaths(): AppPaths {
   const userData = app.getPath('userData');
   return {
     userData,
+    installationIdentityFile: join(userData, 'installation-id'),
     logs: join(userData, 'logs'),
     diagnostics: join(userData, 'diagnostics'),
     backups: join(userData, 'backups'),

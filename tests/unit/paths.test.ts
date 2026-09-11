@@ -89,6 +89,7 @@ describe('resolveAppPaths', () => {
     pinUserDataPath();
     const paths = resolveAppPaths();
 
+    expect(paths.installationIdentityFile).toBe(join(paths.userData, 'installation-id'));
     expect(paths.logs).toBe(join(paths.userData, 'logs'));
     expect(paths.diagnostics).toBe(join(paths.userData, 'diagnostics'));
     expect(paths.databaseFile).toBe(join(paths.userData, 'gophones.sqlite'));
