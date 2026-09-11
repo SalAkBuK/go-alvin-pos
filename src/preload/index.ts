@@ -20,6 +20,8 @@ const api: PosApi = {
   diagnostics: {
     checkNativeSqlite: () => ipcRenderer.invoke(IPC.nativeSqliteCheck),
     databaseStatus: () => ipcRenderer.invoke(IPC.databaseStatus),
+    getSummary: () => ipcRenderer.invoke(IPC.diagnosticsGetSummary),
+    run: () => ipcRenderer.invoke(IPC.diagnosticsRun),
   },
   products: {
     create: (input) => ipcRenderer.invoke(IPC.productsCreate, input),

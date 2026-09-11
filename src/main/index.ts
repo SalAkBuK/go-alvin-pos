@@ -274,6 +274,7 @@ if (!app.requestSingleInstanceLock()) {
         logger,
         paths,
         appVersion: app.getVersion(),
+        installationId,
         getDatabase: () => productionDatabase,
         getBackupService: () => backupService,
         getRestoreService: () => restoreService,
@@ -286,6 +287,7 @@ if (!app.requestSingleInstanceLock()) {
         // main-owned the same way.
         showOffDeviceDirectoryDialog: createOffDeviceDirectoryDialogOpener(() => mainWindow),
         google: {
+          getService: () => googleConfigService,
           createService: buildGoogleConfigService,
         },
       });

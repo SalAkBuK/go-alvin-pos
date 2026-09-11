@@ -34,6 +34,18 @@ async function loadExposedApi(): Promise<PosApi> {
 }
 
 describe('preload backup bridge', () => {
+  it('exposes and forwards the two narrow diagnostics methods', async () => {
+    const { IPC } = await import('../../src/shared/ipc');
+    const api = await loadExposedApi();
+    expect(Object.keys(api.diagnostics).sort()).toEqual(
+      ['checkNativeSqlite', 'databaseStatus', 'getSummary', 'run'].sort(),
+    );
+    await api.diagnostics.getSummary();
+    expect(electron.ipcRenderer.invoke).toHaveBeenLastCalledWith(IPC.diagnosticsGetSummary);
+    await api.diagnostics.run();
+    expect(electron.ipcRenderer.invoke).toHaveBeenLastCalledWith(IPC.diagnosticsRun);
+  });
+
   it('exposes exactly the declared backup methods — no more, no fewer', async () => {
     const api = await loadExposedApi();
     expect(Object.keys(api.backup).sort()).toEqual(

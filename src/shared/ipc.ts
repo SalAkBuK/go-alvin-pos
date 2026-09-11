@@ -14,6 +14,7 @@
  */
 
 import type { BackupHealth, ManualBackupResult, OffDeviceBackupConfiguration } from './backup';
+import type { DiagnosticSnapshot } from './diagnostics';
 import type { CheckoutActivityInput, MaintenanceState } from './maintenance';
 import type {
   RestoreCandidate,
@@ -90,6 +91,10 @@ export const IPC = {
    * visible rather than silent.
    */
   databaseStatus: 'diagnostics:database-status',
+  /** Sanitized read-only health snapshot; does not run the deeper quick_check. */
+  diagnosticsGetSummary: 'diagnostics:get-summary',
+  /** Owner-initiated sanitized snapshot including the safe read-only quick_check. */
+  diagnosticsRun: 'diagnostics:run',
 
   // ── Phase 2B: Products + Inventory ──────────────────────────────────────────
   productsCreate: 'products:create',
@@ -286,6 +291,8 @@ export interface PosApi {
   readonly diagnostics: {
     checkNativeSqlite(): Promise<NativeSqliteCheckResult>;
     databaseStatus(): Promise<DatabaseStatus>;
+    getSummary(): Promise<IpcResult<DiagnosticSnapshot>>;
+    run(): Promise<IpcResult<DiagnosticSnapshot>>;
   };
   readonly products: {
     create(input: CreateProductInput): Promise<IpcResult<ProductRecord>>;

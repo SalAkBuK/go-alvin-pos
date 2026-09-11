@@ -8,6 +8,8 @@ describe('IPC contract', () => {
       [
         'appInfo',
         'databaseStatus',
+        'diagnosticsGetSummary',
+        'diagnosticsRun',
         'inventoryAdjust',
         'inventoryMovements',
         'nativeSqliteCheck',
@@ -115,7 +117,7 @@ describe('IPC contract', () => {
     // such as `raw`, `invoke`, `send`, `ipcRenderer`, or a SQL passthrough.
     const surface: Record<keyof PosApi, readonly string[]> = {
       app: ['getInfo'],
-      diagnostics: ['checkNativeSqlite', 'databaseStatus'],
+      diagnostics: ['checkNativeSqlite', 'databaseStatus', 'getSummary', 'run'],
       products: ['create', 'update', 'archive', 'list', 'search', 'findByBarcode'],
       inventory: ['adjust', 'movements'],
       customers: ['create', 'update', 'list', 'search', 'get', 'purchaseHistory'],

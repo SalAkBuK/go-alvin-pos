@@ -15,6 +15,7 @@ import { registerBackupIpcHandlers } from './backupIpc';
 import { registerMaintenanceIpcHandlers } from './maintenanceIpc';
 import { registerCheckoutIpcHandlers } from './checkoutIpc';
 import { registerCustomerIpcHandlers } from './customerIpc';
+import { registerDiagnosticsIpcHandlers } from './diagnosticsIpc';
 import { registerGoogleIpcHandlers } from './googleIpc';
 import { registerPrintingIpcHandlers } from './printingIpc';
 import { registerProductIpcHandlers } from './productIpc';
@@ -35,6 +36,7 @@ export interface IpcContext {
   readonly logger: Logger;
   readonly paths: AppPaths;
   readonly appVersion: string;
+  readonly installationId: string;
   /** The one production database, or `null` while/if initialization has not succeeded. */
   readonly getDatabase: () => ProductionDatabase | null;
   /**
@@ -55,6 +57,7 @@ export interface IpcContext {
    * `index.ts` and shared with the export worker + startup reconciliation.
    */
   readonly google: {
+    readonly getService: () => GoogleConfigService | null;
     readonly createService: (
       db: ProductionDatabaseType['connection'],
       appVersion: string,
@@ -90,6 +93,17 @@ export function registerIpcHandlers(context: IpcContext): void {
   });
 
   ipcMain.handle(IPC.databaseStatus, (): DatabaseStatus => getDatabaseStatus());
+
+  registerDiagnosticsIpcHandlers({
+    logger: context.logger,
+    appVersion: context.appVersion,
+    installationId: context.installationId,
+    storagePath: context.paths.userData,
+    getDatabase: context.getDatabase,
+    getDatabaseStatus,
+    getBackupService: context.getBackupService,
+    getGoogleConfigService: context.google.getService,
+  });
 
   registerProductIpcHandlers({
     logger: context.logger,
