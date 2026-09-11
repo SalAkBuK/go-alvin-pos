@@ -904,6 +904,22 @@ claim, never the email address.
   reconcilable on the next launch. **"Connected"** means a usable encrypted
   OAuth credential exists and matches the locally active credential
   generation/configuration.
+- Because the encrypted credential wrapper lives outside SQLite, a whole-database
+  restore (`DATA_MODEL.md` Section 52A) can rewind the locally active credential
+  generation behind the wrapper's actual generation — the same observable shape
+  ordinary crash recovery reconciles, but with no interrupted write behind it,
+  so generation comparison alone cannot prove the wrapper still belongs to the
+  account/configuration the restored snapshot represents. Immediately after a
+  completed restore, before any other Google reconciliation or network work: if
+  the restored configuration is active, the application always requires an
+  explicit `Connect Google Account` before treating it as connected, regardless
+  of whether the wrapper's generation matches, leads, or lags; if the restored
+  configuration is disconnected, it requires explicit reconnection only when the
+  wrapper's generation leads the restored generation (the shape ordinary crash
+  recovery would otherwise adopt), never for an absent, equal, or lagging
+  wrapper. This quarantine is recorded in exactly one non-secret local setting
+  (`DATA_MODEL.md` Section 52A, step 7) and is cleared only by an explicit
+  `Connect Google Account` or `Disconnect Google Account`.
 - The wrapper may hold only the minimum needed for safe operation: credential
   generation/version, the refresh token, the Google `sub` if retained, and the
   account email for display. Access tokens are short-lived runtime values and
@@ -1393,7 +1409,7 @@ Every V1 automatic and pre-migration backup defaults to the same disk as the ope
 
 ## Restore Safety
 
-A whole-database restore never silently replaces the active database. Before restoring, the trusted layer preserves a SQLite-consistent snapshot of the current database (not a raw file copy — see above), compares the candidate backup's metadata and latest sale timestamp against the current database's latest sale timestamp, warns and requires explicit confirmation if the current database is newer, and validates the restored database before reopening checkout — falling back to the preserved pre-restore copy if validation fails. V1 restore is a whole-database replace-or-abort operation with no record-level merge (`DATA_MODEL.md` Section 52A).
+A whole-database restore never silently replaces the active database. Before restoring, the trusted layer preserves a SQLite-consistent snapshot of the current database (not a raw file copy — see above), reads the candidate backup's metadata, and identifies completed sales the current database holds that the backup does not by immutable Sale ID (never by comparing timestamps alone, which a clock anomaly could move backward). It always requires one explicit confirmation before replacing the active database, whether or not a newer completed sale is found; when one is found, the confirmation additionally names the exact transaction count and date range that would be lost. It then validates the restored database before reopening checkout — falling back to the preserved pre-restore copy if validation fails. V1 restore is a whole-database replace-or-abort operation with no record-level merge (`DATA_MODEL.md` Section 52A).
 
 ---
 

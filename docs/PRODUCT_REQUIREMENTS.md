@@ -1593,7 +1593,7 @@ The application and its documentation must not describe a same-disk (default) ba
 
 **Priority:** MUST
 
-Before replacing the active database with a backup, the application must: preserve a timestamped copy of the current (pre-restore) database; inspect the candidate backup's metadata (schema version, source app version, creation time); detect and clearly warn when the current database contains completed sales newer than the backup; require explicit confirmation before proceeding when data would be lost; and validate the restored database before reopening checkout, falling back to the preserved pre-restore copy if validation fails. V1 restore is a whole-database replace-or-abort operation; it does not implement record-level merge between the current database and the restored backup.
+Before replacing the active database with a backup, the application must: preserve a timestamped copy of the current (pre-restore) database; inspect the candidate backup's metadata (schema version, source app version, creation time); always require one explicit, unambiguous confirmation before replacing the active database, whether or not newer data is detected — restoring a backup is never a silent or default-confirmed action; detect and clearly warn, with the exact transaction count and date range, when the current database contains completed sales — identified by immutable Sale ID, never by comparing `completed_at` timestamps alone — that the backup does not; and validate the restored database before reopening checkout, falling back to the preserved pre-restore copy if validation fails. V1 restore is a whole-database replace-or-abort operation; it does not implement record-level merge between the current database and the restored backup.
 
 ---
 
@@ -2374,7 +2374,19 @@ No completed sale exists; the checkout attempt (payment method, intended total, 
 
 Expected:
 
-The application detects that current data is newer than the backup, warns how many transactions would be lost, and requires explicit confirmation before proceeding; a pre-restore recovery copy is preserved regardless of the outcome.
+The application identifies, by immutable Sale ID, the completed sales the current database holds that the backup does not, warns how many transactions would be lost and their date range, and requires explicit confirmation before proceeding; a pre-restore recovery copy is preserved regardless of the outcome.
+
+---
+
+## ACCEPT-013 — Restore Always Requires Confirmation, Even Without a Newer Sale
+
+1. Take a backup at time T with no sales completed after it.
+2. Without completing any further sale, change other business data (for example void an existing sale, adjust inventory, edit a product or customer, or change the tax rate).
+3. Attempt to restore the backup from T.
+
+Expected:
+
+The application still requires one explicit confirmation before replacing the active database, even though no completed sale would be lost — the confirmation states that the operation replaces the current database with the selected backup. Restore never silently proceeds merely because no newer completed sale was detected.
 
 ---
 

@@ -2852,23 +2852,35 @@ Expected:
 
 ---
 
-## TEST-BACKUP-017 — Full Table-Set Restore Verification
+## TEST-BACKUP-017 — Full Table-Set Restore Verification (General Fidelity Contract)
 
 Populate every table listed in `DATA_MODEL.md` Section 52 (`products`, `customers`, `sales`, `sale_items`, `payments`, `inventory_movements`, `settings`, `google_sheet_export_jobs`, `checkout_requests`, `counters`, `audit_events`, `backup_records`, `schema_migrations`) with representative rows, back up, then restore into a test environment.
 
 Expected:
 
-Every table's row count and representative content match the source exactly after restore, including the receipt-number counter and durable audit history — not just the subset already covered by `TEST-BACKUP-004` through `TEST-BACKUP-006`.
+The selected backup's contents restore faithfully: every canonical table's row count and content match the source exactly after restore — including the receipt-number counter, the `audit_sequence` counter, durable audit history, and every setting — not just the subset already covered by `TEST-BACKUP-004` through `TEST-BACKUP-006`. No row is appended, rewritten, or deleted in any table.
+
+The sole V1 exception: when the restore triggers the restore-specific Google credential quarantine (`DATA_MODEL.md` Section 52A step 7; `ARCHITECTURE.md` Section 27.4), the **only** permitted post-restore SQLite delta is the single `settings` row `google_restore_reconnect_required`. Even then: no audit event is appended merely because quarantine was entered — `audit_events` and `counters.audit_sequence` still match the backup exactly — and every other setting, Google or otherwise, still matches the backup exactly. This is not a general permission for runtime/system-metadata mutation; it is this one named key, in this one named circumstance. `TEST-BACKUP-022` is the concrete integration scenario that proves this exact exception end-to-end through the production restore/Google lifecycle.
+
+---
+
+## TEST-BACKUP-022 — Google-Quarantine Branch of TEST-BACKUP-017
+
+Back up a database with an active Google configuration (connected, a spreadsheet configured). Before restoring, change the external encrypted credential so it no longer safely matches the backup's Google configuration (e.g., connect a different account). Restore that backup through the production restore lifecycle (coordinator, swap, reopen, validate, `prepareRestoredCredentialState`).
+
+Expected:
+
+The restore triggers the quarantine named as `TEST-BACKUP-017`'s sole exception. Comparing the final live restored database against the selected backup, every canonical table and every setting other than `google_restore_reconnect_required` matches exactly, per `TEST-BACKUP-017`; `google_restore_reconnect_required` is absent from the backup and `true` in the restored database; no `GOOGLE_CONFIGURATION_CHANGED` or other audit event is appended merely for entering quarantine.
 
 ---
 
 ## TEST-BACKUP-018 — Restore Safety: Newer Local Data Detected
 
-Take a backup, then complete additional sales, then attempt to restore the earlier backup.
+Take a backup, then complete additional sales, then attempt to restore the earlier backup. Include a variant where the system clock moves backward between the backup and the additional sales, and a variant where a later sale's `completed_at` coincides exactly with the candidate's latest sale.
 
 Expected:
 
-The application detects that the current database is newer, warns with the specific transaction count/date range that would be lost, and does not proceed without explicit confirmation; a pre-restore recovery copy of the current database is preserved regardless of the outcome (`DATA_MODEL.md` Section 52A).
+The application identifies the completed sales the current database holds that the candidate does not, by immutable Sale ID — not by comparing `completed_at` timestamps, so a clock moving backward or two sales sharing a timestamp cannot hide a sale — warns with the specific transaction count/date range that would be lost, and does not proceed without explicit confirmation; a pre-restore recovery copy of the current database is preserved regardless of the outcome (`DATA_MODEL.md` Section 52A).
 
 ---
 
@@ -2879,6 +2891,16 @@ Force the restored database to fail validation after replacement (e.g., simulate
 Expected:
 
 The application restores the preserved pre-restore copy and reports a stable error code rather than leaving the database in the failed-validation state.
+
+---
+
+## TEST-BACKUP-021 — Generic Whole-Database Restore Confirmation
+
+Take a backup with no sales completed after it, then change only non-sale business state (for example void an existing sale, adjust inventory, edit a product or customer, or change the tax rate), then attempt to restore the backup. Separately, attempt to restore a backup against which nothing changed at all.
+
+Expected:
+
+The first Restore Database attempt always returns a required confirmation, even though no completed sale would be lost — restore is never a silent or default-confirmed action. The confirmation states that the operation replaces the current database with the selected backup. A stale confirmation (anything in the material restore-state fingerprint changed since the warning was issued) is rejected and a fresh confirmation is issued; a confirmation reused when only secondary bookkeeping (Google export-job delivery state, Google connectivity settings, automatic-backup records, or backup/Google audit events) changed in between remains valid.
 
 ---
 
@@ -4634,7 +4656,7 @@ This matrix supersedes the prior partial matrix (which covered only Void/Audit/E
 | `REQ-BACKUP-008` | `TEST-BACKUP-012`, `TEST-BACKUP-013` |
 | `REQ-BACKUP-009` | `TEST-BACKUP-015` |
 | `REQ-BACKUP-010` | `TEST-BACKUP-020` |
-| `REQ-BACKUP-011` | `TEST-BACKUP-017` through `TEST-BACKUP-019` |
+| `REQ-BACKUP-011` | `TEST-BACKUP-017` through `TEST-BACKUP-019`, `TEST-BACKUP-021`, `TEST-BACKUP-022` |
 | `REQ-AUTH-001` | `TEST-AUTH-001` |
 | `REQ-AUTH-002` | `TEST-AUTH-003` |
 | `REQ-AUTH-003` | `TEST-AUTH-004` |

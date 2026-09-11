@@ -1821,10 +1821,10 @@ The shared user selects `Restore Database` and chooses a backup to restore from.
 
 1. Confirm no checkout is active or in flight; if one is, defer until idle (Section 102).
 2. Preserve a SQLite-consistent snapshot/backup copy (`DATA_MODEL.md` Section 54, "Backup and Recovery-Copy Safety Under WAL" — not a raw file copy) of the **current** database before touching anything.
-3. Read the selected backup's metadata: schema version, source app version, creation time, and its latest contained sale timestamp.
-4. Compare the backup's latest sale timestamp against the current database's latest sale timestamp.
-5. If the current database is newer, warn clearly, naming how many transactions and what date range would be lost, and require an explicit, unambiguous confirmation before proceeding. There is no default-confirmed or silent path when data would be lost.
-6. Replace the active database with the backup only after any required confirmation.
+3. Read the selected backup's metadata: schema version, source app version, and creation time.
+4. Identify completed sales the current database holds that the backup does not, by each sale's immutable Sale ID — not by comparing `completed_at` timestamps, which a clock anomaly could move backward or make coincide across sales.
+5. Always require one explicit, unambiguous confirmation before proceeding — there is no default-confirmed or silent restore path, whether or not a newer completed sale is found. When the current database holds completed sales the backup does not, the warning additionally names the exact transaction count and date range that would be lost. When none is found, the warning still clearly states that proceeding replaces the current database with the selected backup.
+6. Replace the active database with the backup only after that confirmation.
 7. Validate the restored database (schema version, foreign keys enabled, critical tables readable) before reopening checkout.
 8. If validation fails, restore the pre-restore copy from step 2 and report a stable error code and recovery guidance.
 9. On success, record the restore outcome in diagnostics and reopen checkout.
