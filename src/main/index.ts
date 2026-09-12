@@ -23,6 +23,7 @@ import { createMaintenanceCoordinator } from './maintenance/maintenanceCoordinat
 import type { MaintenanceCoordinator } from './maintenance/maintenanceCoordinator';
 import { ProductionDatabase, DatabaseInitializationError } from './database/database';
 import { targetSchemaVersion } from './database/migrations';
+import { resolveActiveMigrations } from './database/migrations/e3MigrationConfig';
 import { setDatabaseStatus } from './database/status';
 import { createElectronSecureCrypto } from './google/electronSafeStorage';
 import { createExportWorker } from './google/exportWorker';
@@ -76,7 +77,11 @@ const isDev = !app.isPackaged;
 const paths = resolveAppPaths();
 const rendererEntry = resolveRendererEntry();
 const installationId = loadOrCreateInstallationId(paths.installationIdentityFile);
-const buildIdentity = loadBuildIdentity(app.getVersion(), targetSchemaVersion());
+// Phase 2N-E3: the one build-time migration-set authority every trusted
+// component below agrees with — `null` (== `PRODUCTION_MIGRATIONS`) in every
+// ordinary build (`database/migrations/e3MigrationConfig.ts`).
+const activeMigrations = resolveActiveMigrations();
+const buildIdentity = loadBuildIdentity(app.getVersion(), targetSchemaVersion(activeMigrations));
 const logger = new Logger({
   dir: paths.logs,
   installationId,
@@ -336,7 +341,7 @@ if (!app.requestSingleInstanceLock()) {
         databaseFile: paths.databaseFile,
         backupsRoot: paths.backups,
         userDataDir: paths.userData,
-        targetSchemaVersion: targetSchemaVersion(),
+        targetSchemaVersion: targetSchemaVersion(activeMigrations),
         coordinator: maintenanceCoordinator,
         getCurrentDatabase: () => productionDatabase,
         quiesceBackgroundWork,
@@ -346,6 +351,7 @@ if (!app.requestSingleInstanceLock()) {
             backupDir: paths.backups,
             logger,
             appVersion: app.getVersion(),
+            migrations: activeMigrations,
           }),
         activateDatabase: (pdb, context) => {
           wireDatabaseBackedServices(pdb as ProductionDatabase);
@@ -408,7 +414,7 @@ if (!app.requestSingleInstanceLock()) {
           userDataDir: paths.userData,
           backupsRoot: paths.backups,
           databaseFile: paths.databaseFile,
-          targetSchemaVersion: targetSchemaVersion(),
+          targetSchemaVersion: targetSchemaVersion(activeMigrations),
           logger,
         });
         if (recovery.kind === 'failed') {
@@ -429,6 +435,7 @@ if (!app.requestSingleInstanceLock()) {
           backupDir: paths.backups,
           logger,
           appVersion: app.getVersion(),
+          migrations: activeMigrations,
         });
         wireDatabaseBackedServices(pdb);
         startBackgroundWork();

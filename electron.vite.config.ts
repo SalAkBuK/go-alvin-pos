@@ -7,6 +7,10 @@ import { parseOAuthClientConfig } from './src/main/google/oauthClientConfig';
 import { parseUpdateFeedUrl } from './src/main/updater/updateFeedConfig';
 import { targetSchemaVersion } from './src/main/database/migrations';
 import { validateUpdateInstallE2eBuildConfig } from './src/main/updater/updateInstallE2eConfig';
+import {
+  migrationsForE3Mode,
+  validateE3MigrationModeBuildConfig,
+} from './src/main/database/migrations/e3MigrationConfig';
 import packageJson from './package.json';
 
 /**
@@ -66,10 +70,14 @@ function embeddedBuildIdentity(): string {
   const version = process.env['GO_PHONES_RELEASE_VERSION']?.trim() || packageJson.version;
   const sourceRevision = process.env['GO_PHONES_BUILD_SOURCE_REVISION']?.trim() || null;
   const buildTimestamp = process.env['GO_PHONES_BUILD_TIMESTAMP']?.trim() || null;
+  // Phase 2N-E3: an E3 build's embedded schema-version claim must agree with
+  // what its migration set actually converges to (`e3MigrationConfig.ts`'s
+  // module docstring) — never the production default in that one case.
+  const e3Mode = validateE3MigrationModeBuildConfig(process.env);
   return JSON.stringify({
     format: 'GO_PHONES_BUILD_IDENTITY/v1',
     version,
-    schemaVersion: targetSchemaVersion(),
+    schemaVersion: targetSchemaVersion(migrationsForE3Mode(e3Mode)),
     sourceRevision,
     buildTimestamp,
   });
@@ -88,6 +96,7 @@ export default defineConfig({
       __UPDATE_INSTALL_E2E_PROFILE__: JSON.stringify(
         validateUpdateInstallE2eBuildConfig(process.env).profile,
       ),
+      __E3_MIGRATION_MODE__: JSON.stringify(validateE3MigrationModeBuildConfig(process.env)),
     },
     build: {
       outDir: 'out/main',

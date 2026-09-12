@@ -387,6 +387,33 @@ if (process.env.GO_PHONES_UPDATE_INSTALL_E2E_BUILD === '1') {
   pass('electron-builder identity is the real production identity (appId, productName)');
 }
 
+// (10) Phase 2N-E3: outside an explicit E3 migration build, the packaged main
+// bundle must not contain the deliberate-failure migration's marker string,
+// and `PRODUCTION_MIGRATIONS`/`targetSchemaVersion()` must still converge to
+// exactly schema 1 (no `e2e_schema2_probe` migration reachable). The success
+// probe's table name is intentionally NOT checked for byte-absence here — it
+// would also appear in a genuine future real migration 002 for unrelated
+// reasons — the failure marker string is unique enough to be a reliable
+// canary, and schema-version convergence is asserted directly.
+if (process.env.GO_PHONES_E3_MIGRATION_MODE) {
+  pass('skipping E3 migration-absence check: this run explicitly requested an E3 migration build');
+} else {
+  try {
+    const mainBundle = extractFile(asarPath, join('out', 'main', 'index.js')).toString('utf8');
+    if (mainBundle.includes('PHASE_2N_E3_DELIBERATE_MIGRATION_FAILURE')) {
+      fail(
+        'packaged main bundle contains the compile-time-only E3 deliberate-migration-failure marker',
+      );
+    } else {
+      pass(
+        'compile-time-only E3 deliberate-migration-failure marker absent from production package',
+      );
+    }
+  } catch (error) {
+    fail(`could not scan out/main/index.js for the E3 migration-failure marker: ${error.message}`);
+  }
+}
+
 console.log('');
 if (failures > 0) {
   console.error(`verify-packaging: ${failures} check(s) FAILED`);

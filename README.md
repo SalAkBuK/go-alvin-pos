@@ -37,20 +37,21 @@ What exists:
 
 ## Scripts
 
-| Script                             | Purpose                                                                                                                  |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `npm run dev`                      | Run the app in development (electron-vite, HMR)                                                                          |
-| `npm run build`                    | Production bundle of main/preload/renderer into `out/`                                                                   |
-| `npm start`                        | Preview the production bundle                                                                                            |
-| `npm run lint`                     | ESLint over the whole project                                                                                            |
-| `npm run typecheck`                | `tsc --noEmit` for the Node and web TypeScript projects                                                                  |
-| `npm test`                         | Vitest unit + integration run                                                                                            |
-| `npm run test:update:e2e:download` | Build two genuine NSIS versions and verify packaged update discovery/download over isolated loopback HTTPS               |
-| `npm run test:update:e2e:install`  | Real install-A → real update-install-B round trip (genuine NSIS install/uninstall) with business-data preservation proof |
-| `npm run format`                   | Prettier write                                                                                                           |
-| `npm run pack:win`                 | Build + package an unpacked Windows app into `release/`, then `verify:packaging`                                         |
-| `npm run dist:win`                 | Build + package a Windows distributable into `release/`, then `verify:packaging`                                         |
-| `npm run verify:packaging`         | Assert the packaged runtime loads `better-sqlite3` and ships the production CSP                                          |
+| Script                              | Purpose                                                                                                                                |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run dev`                       | Run the app in development (electron-vite, HMR)                                                                                        |
+| `npm run build`                     | Production bundle of main/preload/renderer into `out/`                                                                                 |
+| `npm start`                         | Preview the production bundle                                                                                                          |
+| `npm run lint`                      | ESLint over the whole project                                                                                                          |
+| `npm run typecheck`                 | `tsc --noEmit` for the Node and web TypeScript projects                                                                                |
+| `npm test`                          | Vitest unit + integration run                                                                                                          |
+| `npm run test:update:e2e:download`  | Build two genuine NSIS versions and verify packaged update discovery/download over isolated loopback HTTPS                             |
+| `npm run test:update:e2e:install`   | Real install-A → real update-install-B round trip (genuine NSIS install/uninstall) with business-data preservation proof               |
+| `npm run test:update:e2e:migration` | Real install-A(schema1) → install-B(schema2) round trip proving pre-migration backup, migration safety, and apply/backup failure paths |
+| `npm run format`                    | Prettier write                                                                                                                         |
+| `npm run pack:win`                  | Build + package an unpacked Windows app into `release/`, then `verify:packaging`                                                       |
+| `npm run dist:win`                  | Build + package a Windows distributable into `release/`, then `verify:packaging`                                                       |
+| `npm run verify:packaging`          | Assert the packaged runtime loads `better-sqlite3` and ships the production CSP                                                        |
 
 ## Security boundaries (see `docs/ARCHITECTURE.md` §§6, 29)
 
@@ -97,6 +98,10 @@ for its Windows-only prerequisites, isolation guarantees, and evidence contract.
 The packaged update **install** E2E — a real installed-A → real installed-B
 update, with real NSIS install/uninstall — is documented separately in
 [`docs/PACKAGED_UPDATE_INSTALL_E2E.md`](docs/PACKAGED_UPDATE_INSTALL_E2E.md).
+The packaged update **migration safety** E2E — success, migration-apply-
+failure, and pre-migration-backup-failure, all through the real transactional
+migration runner — is documented in
+[`docs/PACKAGED_UPDATE_MIGRATION_E2E.md`](docs/PACKAGED_UPDATE_MIGRATION_E2E.md).
 
 ## Native dependencies
 

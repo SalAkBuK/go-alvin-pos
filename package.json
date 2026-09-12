@@ -29,6 +29,7 @@
     "test:watch": "vitest",
     "test:update:e2e:download": "node scripts/test-update-download-e2e.mjs",
     "test:update:e2e:install": "node scripts/test-update-install-e2e.mjs",
+    "test:update:e2e:migration": "node scripts/test-update-migration-e2e.mjs",
     "verify:packaging": "node scripts/verify-packaging.mjs",
     "verify:packaging:installer": "node scripts/verify-packaging.mjs --require-installer",
     "stage:release:test": "node scripts/stage-release.mjs",
