@@ -29,6 +29,10 @@
     "test:watch": "vitest",
     "verify:packaging": "node scripts/verify-packaging.mjs",
     "verify:packaging:installer": "node scripts/verify-packaging.mjs --require-installer",
+    "stage:release:test": "node scripts/stage-release.mjs",
+    "verify:release:test": "node scripts/verify-release.mjs",
+    "verify:release": "node scripts/verify-release.mjs --production",
+    "release:win": "node scripts/release-win.mjs",
     "pack:win": "npm run build && electron-builder --win --dir && npm run verify:packaging",
     "dist:win": "npm run build && electron-builder --win --publish never && npm run verify:packaging:installer"
   },

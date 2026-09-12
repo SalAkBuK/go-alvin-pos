@@ -479,6 +479,18 @@ export function DiagnosticsSnapshotView({
               <dd>{snapshot.application.buildIdentifier}</dd>
             </div>
           )}
+          {snapshot.application.sourceRevision && (
+            <div>
+              <dt>Source revision</dt>
+              <dd>{snapshot.application.sourceRevision}</dd>
+            </div>
+          )}
+          {snapshot.application.buildTimestamp && (
+            <div>
+              <dt>Built</dt>
+              <dd>{formatDiagnosticTimestamp(snapshot.application.buildTimestamp)}</dd>
+            </div>
+          )}
           <div>
             <dt>Database schema</dt>
             <dd>{database.schemaVersion === null ? 'Unavailable' : database.schemaVersion}</dd>

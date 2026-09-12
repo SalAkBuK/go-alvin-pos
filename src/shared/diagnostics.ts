@@ -121,6 +121,8 @@ export interface DiagnosticSnapshot {
   readonly application: {
     readonly version: string;
     readonly buildIdentifier: string | null;
+    readonly sourceRevision?: string | null;
+    readonly buildTimestamp?: string | null;
     readonly installationId: string;
   };
   readonly runtime: {

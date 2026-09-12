@@ -18,6 +18,9 @@ import { registerTrustedInvoke } from './trustedInvoke';
 export interface DiagnosticsIpcContext {
   readonly logger: Logger;
   readonly appVersion: string;
+  readonly buildIdentifier?: string | null;
+  readonly sourceRevision?: string | null;
+  readonly buildTimestamp?: string | null;
   readonly installationId: string;
   readonly storagePath: string;
   readonly getDatabase: () => ProductionDatabase | null;
@@ -37,6 +40,9 @@ export function createIpcDiagnosticsService(context: DiagnosticsIpcContext) {
   const printerAdapter = context.printerAdapter ?? createElectronPrintAdapter();
   return createDiagnosticsService({
     appVersion: context.appVersion,
+    buildIdentifier: context.buildIdentifier ?? null,
+    sourceRevision: context.sourceRevision ?? null,
+    buildTimestamp: context.buildTimestamp ?? null,
     installationId: context.installationId,
     storagePath: context.storagePath,
     logger: context.logger,

@@ -42,6 +42,7 @@ import { createUpdateService } from './updater/updateService';
 import type { UpdateService } from './updater/updateService';
 import { loadUpdateFeedConfig } from './updater/updateFeedConfig';
 import { createUpdaterStateInspector } from './updater/updateDiagnosticsBridge';
+import { loadBuildIdentity } from './app/buildIdentity';
 
 /**
  * Electron main-process entry point (ARCHITECTURE.md Sections 5, 7, 38, 39, 42.4).
@@ -63,6 +64,7 @@ const isDev = !app.isPackaged;
 const paths = resolveAppPaths();
 const rendererEntry = resolveRendererEntry();
 const installationId = loadOrCreateInstallationId(paths.installationIdentityFile);
+const buildIdentity = loadBuildIdentity(app.getVersion(), targetSchemaVersion());
 const logger = new Logger({
   dir: paths.logs,
   installationId,
@@ -361,6 +363,7 @@ if (!app.requestSingleInstanceLock()) {
         logger,
         paths,
         appVersion: app.getVersion(),
+        buildIdentity,
         installationId,
         crashEvidence,
         activityHistory,

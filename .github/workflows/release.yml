@@ -1,0 +1,54 @@
+name: Production Windows release candidate
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: gate · build · sign · verify · stage
+    runs-on: windows-latest
+    env:
+      GO_PHONES_RELEASE_TAG: ${{ github.ref_name }}
+      GO_PHONES_BUILD_SOURCE_REVISION: ${{ github.sha }}
+      GO_PHONES_UPDATE_FEED_URL: ${{ vars.GO_PHONES_UPDATE_FEED_URL }}
+      GO_PHONES_WINDOWS_PUBLISHER_NAME: ${{ vars.GO_PHONES_WINDOWS_PUBLISHER_NAME }}
+      CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout immutable release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Derive release version from tag
+        shell: pwsh
+        run: |
+          if ($env:GO_PHONES_RELEASE_TAG -notmatch '^v(.+)$') { throw 'Invalid release tag.' }
+          "GO_PHONES_RELEASE_VERSION=$($Matches[1])" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Run release-blocking gates and create signed candidate
+        run: npm run release:win
+
+      - name: Retain verified provider-independent feed bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-phones-pos-feed-${{ github.ref_name }}
+          path: release-feed/
+          if-no-files-found: error
+          retention-days: 30

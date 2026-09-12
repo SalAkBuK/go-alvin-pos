@@ -289,6 +289,10 @@ export interface AppInfo {
   readonly chrome: string;
   readonly node: string;
   readonly packaged: boolean;
+  readonly schemaVersion: number;
+  readonly sourceRevision: string | null;
+  readonly buildTimestamp: string | null;
+  readonly buildIdentifier: string | null;
 }
 
 export type NativeSqliteCheckResult =

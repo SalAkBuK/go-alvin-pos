@@ -12,6 +12,7 @@ import { registerTrustedInvoke } from './trustedInvoke';
 export interface SupportIpcContext {
   readonly logger: Logger;
   readonly appVersion: string;
+  readonly buildIdentifier?: string | null;
   readonly installationId: string;
   readonly reportsRoot: string;
   readonly logsRoot: string;
@@ -27,6 +28,7 @@ export interface SupportIpcContext {
 export function registerSupportIpcHandlers(context: SupportIpcContext): void {
   const service = createSupportBundleService({
     appVersion: context.appVersion,
+    buildIdentifier: context.buildIdentifier ?? null,
     installationId: context.installationId,
     reportsRoot: context.reportsRoot,
     logsRoot: context.logsRoot,

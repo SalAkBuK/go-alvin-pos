@@ -23,7 +23,14 @@ import { UPDATE_FEED_URL_ENV } from '../../src/main/updater/updateFeedConfig';
  */
 
 interface ElectronBuilderConfig {
-  readonly win?: { readonly target?: string | string[] };
+  readonly win?: {
+    readonly target?: string | string[];
+    readonly signAndEditExecutable?: boolean;
+    readonly signExecutable?: boolean;
+    readonly verifyUpdateCodeSignature?: boolean;
+    readonly publisherName?: string;
+  };
+  readonly nsis?: { readonly artifactName?: string };
   readonly publish?: Array<Record<string, unknown>>;
 }
 
@@ -45,6 +52,7 @@ function targetsOf(config: ElectronBuilderConfig): string[] {
 describe('electron-builder.js (Phase 2N-B download-path configuration)', () => {
   afterEach(() => {
     delete process.env[UPDATE_FEED_URL_ENV];
+    delete process.env.GO_PHONES_WINDOWS_PUBLISHER_NAME;
   });
 
   it('includes an auto-updatable installer target (nsis) — required for electron-builder to ever generate app-update.yml', () => {
@@ -53,6 +61,23 @@ describe('electron-builder.js (Phase 2N-B download-path configuration)', () => {
 
   it('still keeps the dir target so the existing fast `pack:win` dev loop is unaffected', () => {
     expect(targetsOf(loadConfig())).toContain('dir');
+  });
+
+  it('uses the supported Windows signing/update-signature settings and deterministic NSIS name', () => {
+    const config = loadConfig();
+    expect(config.win).toMatchObject({
+      signAndEditExecutable: true,
+      signExecutable: true,
+      verifyUpdateCodeSignature: true,
+    });
+    expect(config.nsis?.artifactName).toBe('Go Phones POS Setup ${version}.${ext}');
+  });
+
+  it('takes the expected publisher from non-secret release configuration only when supplied', () => {
+    process.env.GO_PHONES_WINDOWS_PUBLISHER_NAME = 'Go Phones LLC';
+    expect(loadConfig().win?.publisherName).toBe('Go Phones LLC');
+    delete process.env.GO_PHONES_WINDOWS_PUBLISHER_NAME;
+    expect(loadConfig().win?.publisherName).toBeUndefined();
   });
 
   it("explicitly configures the generic provider — overriding electron-builder's GitHub-repository auto-detection", () => {

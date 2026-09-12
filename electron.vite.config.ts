@@ -5,6 +5,8 @@ import react from '@vitejs/plugin-react';
 import { productionCspPlugin } from './build/cspPlugin';
 import { parseOAuthClientConfig } from './src/main/google/oauthClientConfig';
 import { parseUpdateFeedUrl } from './src/main/updater/updateFeedConfig';
+import { targetSchemaVersion } from './src/main/database/migrations';
+import packageJson from './package.json';
 
 /**
  * Build-time embedding of the developer OAuth "Desktop app" public-client
@@ -54,12 +56,31 @@ function embeddedUpdateFeedUrl(): string {
   }
 }
 
+/**
+ * Compile-time release provenance. Production release scripts supply the three
+ * environment values after validating tag/version/SHA; ordinary development
+ * builds remain honest by carrying null source/timestamp fields.
+ */
+function embeddedBuildIdentity(): string {
+  const version = process.env['GO_PHONES_RELEASE_VERSION']?.trim() || packageJson.version;
+  const sourceRevision = process.env['GO_PHONES_BUILD_SOURCE_REVISION']?.trim() || null;
+  const buildTimestamp = process.env['GO_PHONES_BUILD_TIMESTAMP']?.trim() || null;
+  return JSON.stringify({
+    format: 'GO_PHONES_BUILD_IDENTITY/v1',
+    version,
+    schemaVersion: targetSchemaVersion(),
+    sourceRevision,
+    buildTimestamp,
+  });
+}
+
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
     define: {
       __GOOGLE_OAUTH_CLIENT_CONFIG__: JSON.stringify(embeddedOAuthClientConfig()),
       __UPDATE_FEED_URL__: JSON.stringify(embeddedUpdateFeedUrl()),
+      __GO_PHONES_BUILD_IDENTITY__: JSON.stringify(embeddedBuildIdentity()),
     },
     build: {
       outDir: 'out/main',

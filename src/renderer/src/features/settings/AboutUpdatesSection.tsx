@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { UpdateInstallResultCode, UpdateServiceSnapshot } from '../../../../shared/update';
+import type { AppInfo } from '../../../../shared/ipc';
 import {
   UPDATE_UNAVAILABLE_MESSAGE,
   createManualCheckAction,
@@ -34,6 +35,10 @@ function pos() {
 export interface AboutUpdatesViewProps {
   readonly snapshot: UpdateServiceSnapshot;
   readonly schemaVersion: number | null;
+  readonly buildIdentity?: Pick<
+    AppInfo,
+    'buildIdentifier' | 'sourceRevision' | 'buildTimestamp' | 'schemaVersion'
+  > | null;
   readonly checking?: boolean;
   readonly checkError?: string | null;
   readonly installBusy?: boolean;
@@ -47,6 +52,7 @@ export interface AboutUpdatesViewProps {
 export function AboutUpdatesView({
   snapshot,
   schemaVersion,
+  buildIdentity = null,
   checking = false,
   checkError = null,
   installBusy = false,
@@ -70,6 +76,24 @@ export function AboutUpdatesView({
           <dt>Database schema</dt>
           <dd>{schemaVersion === null ? 'Unavailable' : schemaVersion}</dd>
         </div>
+        {buildIdentity?.buildIdentifier && (
+          <div>
+            <dt>Build</dt>
+            <dd>{buildIdentity.buildIdentifier}</dd>
+          </div>
+        )}
+        {buildIdentity?.sourceRevision && (
+          <div>
+            <dt>Source revision</dt>
+            <dd>{buildIdentity.sourceRevision}</dd>
+          </div>
+        )}
+        {buildIdentity?.buildTimestamp && (
+          <div>
+            <dt>Built</dt>
+            <dd>{formatLastChecked(buildIdentity.buildTimestamp)}</dd>
+          </div>
+        )}
         <div>
           <dt>Last checked</dt>
           <dd>{formatLastChecked(snapshot.lastCheckedAt)}</dd>
@@ -125,6 +149,7 @@ export function AboutUpdatesView({
 export function AboutUpdatesSection() {
   const [snapshot, setSnapshot] = useState<UpdateServiceSnapshot | null>(null);
   const [schemaVersion, setSchemaVersion] = useState<number | null>(null);
+  const [buildIdentity, setBuildIdentity] = useState<AppInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
@@ -150,6 +175,15 @@ export function AboutUpdatesSection() {
       })
       .catch(() => {
         /* schema version is a nice-to-have display field; never blocks the section */
+      });
+
+    void api.app
+      .getInfo()
+      .then((info) => {
+        if (active) setBuildIdentity(info);
+      })
+      .catch(() => {
+        /* optional identity details never block update controls */
       });
 
     const poll = (): void => {
@@ -241,6 +275,7 @@ export function AboutUpdatesSection() {
         <AboutUpdatesView
           snapshot={snapshot}
           schemaVersion={schemaVersion}
+          buildIdentity={buildIdentity}
           checking={checking}
           checkError={checkError}
           installBusy={installBusy}

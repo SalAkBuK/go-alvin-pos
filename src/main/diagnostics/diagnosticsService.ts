@@ -33,6 +33,8 @@ export interface ConnectivityInspector {
 export interface DiagnosticsServiceDeps {
   readonly appVersion: string;
   readonly buildIdentifier?: string | null;
+  readonly sourceRevision?: string | null;
+  readonly buildTimestamp?: string | null;
   readonly installationId: string;
   /** Trusted path used only as input to statfs; it never crosses IPC or enters logs. */
   readonly storagePath: string;
@@ -401,6 +403,8 @@ export function createDiagnosticsService(deps: DiagnosticsServiceDeps): Diagnost
       application: {
         version: deps.appVersion,
         buildIdentifier: deps.buildIdentifier ?? null,
+        sourceRevision: deps.sourceRevision ?? null,
+        buildTimestamp: deps.buildTimestamp ?? null,
         installationId: deps.installationId,
       },
       runtime,

@@ -41,6 +41,7 @@
  */
 
 const FALLBACK_UPDATE_FEED_URL = 'https://updates.invalid.example/gophones-pos/';
+const windowsPublisherName = process.env.GO_PHONES_WINDOWS_PUBLISHER_NAME?.trim();
 
 /** @type {import('electron-builder').Configuration} */
 module.exports = {
@@ -51,6 +52,13 @@ module.exports = {
   asarUnpack: ['**/node_modules/better-sqlite3/**'],
   win: {
     target: ['nsis', 'dir'],
+    signAndEditExecutable: true,
+    signExecutable: true,
+    verifyUpdateCodeSignature: true,
+    ...(windowsPublisherName ? { publisherName: windowsPublisherName } : {}),
+  },
+  nsis: {
+    artifactName: 'Go Phones POS Setup ${version}.${ext}',
   },
   publish: [
     {

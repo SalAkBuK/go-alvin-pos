@@ -16,6 +16,7 @@ import type { CrashEvidenceService } from '../diagnostics/crashEvidence';
 import type { ActivityHistoryService } from '../diagnostics/activityHistory';
 import type { UpdateStateInspector } from '../diagnostics/updateHealth';
 import type { UpdateService } from '../updater/updateService';
+import type { BuildIdentity } from '../app/buildIdentity';
 import { registerBackupIpcHandlers } from './backupIpc';
 import { registerMaintenanceIpcHandlers } from './maintenanceIpc';
 import { registerUpdatesIpcHandlers } from './updatesIpc';
@@ -43,6 +44,7 @@ export interface IpcContext {
   readonly logger: Logger;
   readonly paths: AppPaths;
   readonly appVersion: string;
+  readonly buildIdentity: BuildIdentity;
   readonly installationId: string;
   readonly crashEvidence: CrashEvidenceService;
   /** Phase 2M-F1 friendly activity/error history (`REQ-DIAG-002`). */
@@ -90,6 +92,10 @@ export function registerIpcHandlers(context: IpcContext): void {
       chrome: process.versions.chrome,
       node: process.versions.node,
       packaged: app.isPackaged,
+      schemaVersion: context.buildIdentity.schemaVersion,
+      sourceRevision: context.buildIdentity.sourceRevision,
+      buildTimestamp: context.buildIdentity.buildTimestamp,
+      buildIdentifier: context.buildIdentity.buildIdentifier,
     };
   });
 
@@ -113,6 +119,9 @@ export function registerIpcHandlers(context: IpcContext): void {
   registerDiagnosticsIpcHandlers({
     logger: context.logger,
     appVersion: context.appVersion,
+    buildIdentifier: context.buildIdentity.buildIdentifier,
+    sourceRevision: context.buildIdentity.sourceRevision,
+    buildTimestamp: context.buildIdentity.buildTimestamp,
     installationId: context.installationId,
     storagePath: context.paths.userData,
     getDatabase: context.getDatabase,
@@ -125,6 +134,9 @@ export function registerIpcHandlers(context: IpcContext): void {
   const supportDiagnostics = createIpcDiagnosticsService({
     logger: context.logger,
     appVersion: context.appVersion,
+    buildIdentifier: context.buildIdentity.buildIdentifier,
+    sourceRevision: context.buildIdentity.sourceRevision,
+    buildTimestamp: context.buildIdentity.buildTimestamp,
     installationId: context.installationId,
     storagePath: context.paths.userData,
     getDatabase: context.getDatabase,
@@ -136,6 +148,7 @@ export function registerIpcHandlers(context: IpcContext): void {
   registerSupportIpcHandlers({
     logger: context.logger,
     appVersion: context.appVersion,
+    buildIdentifier: context.buildIdentity.buildIdentifier,
     installationId: context.installationId,
     reportsRoot: join(context.paths.diagnostics, 'problem-reports'),
     logsRoot: context.paths.logs,

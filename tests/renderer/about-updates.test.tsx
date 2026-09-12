@@ -310,6 +310,25 @@ describe('AboutUpdatesView — presentational states', () => {
     );
     expect(html).toContain('Unavailable');
   });
+
+  it('shows safe bundled source/build identity without redesigning update controls', () => {
+    const html = renderToStaticMarkup(
+      <AboutUpdatesView
+        snapshot={{ ...base, state: 'IDLE' }}
+        schemaVersion={7}
+        buildIdentity={{
+          schemaVersion: 7,
+          sourceRevision: 'cace83641e666bfaeb72647040eb589b206e1b85',
+          buildTimestamp: '2026-09-12T12:00:00.000Z',
+          buildIdentifier: '1.2.3+cace83641e66.schema7',
+        }}
+      />,
+    );
+    expect(html).toContain('Source revision');
+    expect(html).toContain('cace83641e666bfaeb72647040eb589b206e1b85');
+    expect(html).toContain('1.2.3+cace83641e66.schema7');
+    expect(html).not.toMatch(/C:\\|github\.com|token/i);
+  });
 });
 
 describe('AboutUpdatesSection / SettingsPage integration', () => {
