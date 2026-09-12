@@ -87,6 +87,34 @@ export interface ConnectivityDiagnostic {
   readonly issueCode: 'INTERNET_OFFLINE' | 'CONNECTIVITY_INSPECTION_FAILED' | null;
 }
 
+/**
+ * V1 has no update-check/download/install mechanism yet (`UPDATE_RELEASE_STRATEGY.md`
+ * describes the target design; none of it is implemented). `supported: false` /
+ * `state: 'UNKNOWN'` is therefore the only value V1 ever actually produces —
+ * honest, not fabricated. The full state set is defined so a future updater can
+ * populate this component without another DTO redesign.
+ */
+export const UPDATE_STATES = [
+  'UP_TO_DATE',
+  'AVAILABLE',
+  'PENDING',
+  'DEFERRED',
+  'FAILED',
+  'UNKNOWN',
+] as const;
+export type UpdateState = (typeof UPDATE_STATES)[number];
+
+export interface UpdateDiagnostic {
+  /** Update checking is secondary/external and therefore never CRITICAL. */
+  readonly status: Exclude<HealthStatus, 'CRITICAL'>;
+  readonly supported: boolean;
+  readonly state: UpdateState;
+  readonly currentVersion: string;
+  readonly availableVersion: string | null;
+  readonly lastCheckedAt: string | null;
+  readonly issueCode: 'UPDATE_CHECK_FAILED' | 'UPDATE_INSTALL_FAILED' | null;
+}
+
 export interface DiagnosticSnapshot {
   readonly generatedAt: string;
   readonly mode: 'SUMMARY' | 'MANUAL';
@@ -111,5 +139,6 @@ export interface DiagnosticSnapshot {
     readonly cardReconciliation: CardReconciliationDiagnostic;
     readonly printer: PrinterDiagnostic;
     readonly connectivity: ConnectivityDiagnostic;
+    readonly update: UpdateDiagnostic;
   };
 }

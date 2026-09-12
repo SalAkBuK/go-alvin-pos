@@ -161,6 +161,15 @@ describe('diagnostic snapshot', () => {
     expect(summary.components.database.quickCheck).toBe('NOT_RUN');
     expect(summary.components.connectivity).toMatchObject({ supported: false, state: 'UNKNOWN' });
     expect(summary.components.printer.printHistorySupported).toBe(false);
+    expect(summary.components.update).toEqual({
+      status: 'HEALTHY',
+      supported: false,
+      state: 'UNKNOWN',
+      currentVersion: '1.2.3',
+      availableVersion: null,
+      lastCheckedAt: null,
+      issueCode: null,
+    });
 
     const manual = await service.runDiagnostics();
     expect(manual.mode).toBe('MANUAL');
@@ -350,5 +359,144 @@ describe('diagnostic snapshot', () => {
     );
     expect(changesAfter.n).toBe(changesBefore.n);
     expect(countsAfter).toEqual(countsBefore);
+  });
+});
+
+describe('update-health diagnostics', () => {
+  let db: Database.Database;
+  beforeEach(async () => {
+    db = await createMigratedDb();
+  });
+  afterEach(() => db.close());
+
+  it('is honestly unsupported/UNKNOWN with no injected inspector — no updater exists yet', async () => {
+    const result = await createDiagnosticsService(serviceDeps(db)).getSummary();
+    expect(result.components.update).toEqual({
+      status: 'HEALTHY',
+      supported: false,
+      state: 'UNKNOWN',
+      currentVersion: '1.2.3',
+      availableVersion: null,
+      lastCheckedAt: null,
+      issueCode: null,
+    });
+    expect(Object.keys(result.components.update).sort()).toEqual(
+      [
+        'status',
+        'supported',
+        'state',
+        'currentVersion',
+        'availableVersion',
+        'lastCheckedAt',
+        'issueCode',
+      ].sort(),
+    );
+  });
+
+  it.each(['UP_TO_DATE', 'AVAILABLE', 'PENDING', 'DEFERRED'] as const)(
+    'keeps a supported %s state HEALTHY and never elevates overall status',
+    async (state) => {
+      const result = await createDiagnosticsService(
+        serviceDeps(db, {
+          updateStateInspector: {
+            inspect: () =>
+              Promise.resolve({
+                supported: true,
+                state,
+                currentVersion: '1.2.3',
+                availableVersion: state === 'UP_TO_DATE' ? null : '1.3.0',
+                lastCheckedAt: '2026-09-12T09:00:00.000Z',
+              }),
+          },
+        }),
+      ).getSummary();
+      expect(result.components.update.status).toBe('HEALTHY');
+      expect(result.components.update.issueCode).toBeNull();
+      expect(result.overallStatus).toBe('HEALTHY');
+    },
+  );
+
+  it('reports a FAILED update state as WARNING and contributes overall WARNING, never CRITICAL', async () => {
+    const result = await createDiagnosticsService(
+      serviceDeps(db, {
+        updateStateInspector: {
+          inspect: () =>
+            Promise.resolve({
+              supported: true,
+              state: 'FAILED',
+              currentVersion: '1.2.3',
+              issueCode: 'UPDATE_INSTALL_FAILED',
+            }),
+        },
+      }),
+    ).getSummary();
+    expect(result.components.update).toMatchObject({
+      status: 'WARNING',
+      state: 'FAILED',
+      issueCode: 'UPDATE_INSTALL_FAILED',
+    });
+    expect(result.overallStatus).toBe('WARNING');
+  });
+
+  it('never produces CRITICAL from update state alone, even alongside other WARNING components', async () => {
+    const result = await createDiagnosticsService(
+      serviceDeps(db, {
+        getPrinterConfig: () =>
+          Promise.resolve({
+            selectedDeviceName: 'missing',
+            selectedDisplayName: null,
+            selectedIsAvailable: false,
+          }),
+        updateStateInspector: {
+          inspect: () =>
+            Promise.resolve({ supported: true, state: 'FAILED', currentVersion: '1.2.3' }),
+        },
+      }),
+    ).getSummary();
+    expect(result.components.update.status).toBe('WARNING');
+    expect(result.components.printer.status).toBe('WARNING');
+    expect(result.overallStatus).toBe('WARNING');
+  });
+
+  it('fails open to the unsupported/UNKNOWN diagnostic and logs safely when the inspector throws', async () => {
+    const capture = createCapturingLogger();
+    const result = await createDiagnosticsService(
+      serviceDeps(db, {
+        logger: capture.logger,
+        updateStateInspector: {
+          inspect: () => Promise.reject(new Error('C:\\secret\\feed-internal-url')),
+        },
+      }),
+    ).getSummary();
+    expect(result.components.update).toMatchObject({ status: 'HEALTHY', state: 'UNKNOWN' });
+    expect(result.overallStatus).toBe('HEALTHY');
+    expect(
+      capture.records.some(
+        (entry) =>
+          entry.event === 'diagnostics.component.failed' && entry.fields?.component === 'update',
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(capture.records)).not.toContain('C:\\secret');
+    expect(JSON.stringify(capture.records)).not.toContain('feed-internal-url');
+  });
+
+  it('checkout/database-critical diagnostics remain unaffected by update state', async () => {
+    const result = await createDiagnosticsService(
+      serviceDeps(db, {
+        getDatabase: () => null,
+        getDatabaseStatus: () => ({
+          state: 'unavailable',
+          schemaVersion: null,
+          failureCode: 'DB_OPEN_FAILED',
+        }),
+        updateStateInspector: {
+          inspect: () =>
+            Promise.resolve({ supported: true, state: 'UP_TO_DATE', currentVersion: '1.2.3' }),
+        },
+      }),
+    ).getSummary();
+    expect(result.components.database.status).toBe('CRITICAL');
+    expect(result.overallStatus).toBe('CRITICAL');
+    expect(result.components.update.status).toBe('HEALTHY');
   });
 });

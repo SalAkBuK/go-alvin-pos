@@ -9,6 +9,7 @@ import type {
   GoogleDiagnostic,
   HealthStatus,
   PrinterDiagnostic,
+  UpdateDiagnostic,
 } from '../../shared/diagnostics';
 import type { GoogleConfig } from '../../shared/google';
 import type { PrinterConfig } from '../../shared/printing';
@@ -22,6 +23,8 @@ import { createReconciliationService } from '../reconciliation/reconciliationSer
 import { classifyDiskSpace, createDiskSpaceInspector, failedDiskInspection } from './diskSpace';
 import type { DiskSpaceInspector } from './diskSpace';
 import { inspectDatabaseHealth, unavailableDatabaseDiagnostic } from './databaseHealth';
+import { buildUpdateDiagnostic, unsupportedUpdateDiagnostic } from './updateHealth';
+import type { UpdateStateInspector } from './updateHealth';
 
 export interface ConnectivityInspector {
   inspect(): Promise<'ONLINE' | 'OFFLINE'>;
@@ -42,6 +45,8 @@ export interface DiagnosticsServiceDeps {
   readonly diskInspector?: DiskSpaceInspector;
   /** Omit when no reliable existing online/offline signal exists. */
   readonly connectivityInspector?: ConnectivityInspector;
+  /** Omit when no real update-check mechanism exists (true for all of V1 — see `updateHealth.ts`). */
+  readonly updateStateInspector?: UpdateStateInspector;
   readonly now?: () => Date;
   readonly runtime?: {
     readonly platform: string;
@@ -348,14 +353,30 @@ export function createDiagnosticsService(deps: DiagnosticsServiceDeps): Diagnost
       }
     })();
 
-    const [disk, backup, google, cardReconciliation, printer, connectivity] = await Promise.all([
-      diskPromise,
-      backupPromise,
-      googlePromise,
-      reconciliationPromise,
-      printerPromise,
-      connectivityPromise,
-    ]);
+    const updatePromise = (async (): Promise<UpdateDiagnostic> => {
+      if (!deps.updateStateInspector) return unsupportedUpdateDiagnostic(deps.appVersion);
+      try {
+        const input = await deps.updateStateInspector.inspect();
+        return buildUpdateDiagnostic(input);
+      } catch {
+        deps.logger.warn('diagnostics', 'diagnostics.component.failed', {
+          component: 'update',
+          errorCode: 'UPDATE_CHECK_FAILED',
+        });
+        return unsupportedUpdateDiagnostic(deps.appVersion);
+      }
+    })();
+
+    const [disk, backup, google, cardReconciliation, printer, connectivity, update] =
+      await Promise.all([
+        diskPromise,
+        backupPromise,
+        googlePromise,
+        reconciliationPromise,
+        printerPromise,
+        connectivityPromise,
+        updatePromise,
+      ]);
 
     if (disk.issueCode === 'DISK_SPACE_LOW' || disk.issueCode === 'DISK_SPACE_CRITICAL') {
       deps.logger.warn('diagnostics', 'diagnostics.disk-space.low', {
@@ -372,6 +393,7 @@ export function createDiagnosticsService(deps: DiagnosticsServiceDeps): Diagnost
       cardReconciliation.status,
       printer.status,
       connectivity.status,
+      update.status,
     ]);
     const result: DiagnosticSnapshot = {
       generatedAt: now().toISOString(),
@@ -391,6 +413,7 @@ export function createDiagnosticsService(deps: DiagnosticsServiceDeps): Diagnost
         cardReconciliation,
         printer,
         connectivity,
+        update,
       },
     };
 

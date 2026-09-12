@@ -7,6 +7,7 @@ import type { DatabaseStatus } from '../../shared/ipc';
 import { createDiagnosticsService } from '../diagnostics/diagnosticsService';
 import type { ConnectivityInspector } from '../diagnostics/diagnosticsService';
 import type { DiskSpaceInspector } from '../diagnostics/diskSpace';
+import type { UpdateStateInspector } from '../diagnostics/updateHealth';
 import type { GoogleConfigService } from '../google/googleConfigService';
 import { createElectronPrintAdapter } from '../printing/electronPrintAdapter';
 import type { PrintAdapter } from '../printing/printingService';
@@ -27,6 +28,8 @@ export interface DiagnosticsIpcContext {
   readonly printerAdapter?: PrintAdapter;
   readonly diskInspector?: DiskSpaceInspector;
   readonly connectivityInspector?: ConnectivityInspector;
+  /** Omit when no real update-check mechanism exists (true for all of V1). */
+  readonly updateStateInspector?: UpdateStateInspector;
 }
 
 /** Two narrow, pathless, read-only diagnostic capabilities for the next UI slice. */
@@ -68,6 +71,7 @@ export function createIpcDiagnosticsService(context: DiagnosticsIpcContext) {
     ...(context.connectivityInspector
       ? { connectivityInspector: context.connectivityInspector }
       : {}),
+    ...(context.updateStateInspector ? { updateStateInspector: context.updateStateInspector } : {}),
   });
 }
 

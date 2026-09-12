@@ -17,6 +17,7 @@ import type {
   GoogleDiagnostic,
   HealthStatus,
   PrinterDiagnostic,
+  UpdateDiagnostic,
 } from '../../src/shared/diagnostics';
 import type { IpcResult } from '../../src/shared/products';
 
@@ -87,6 +88,16 @@ const connectivity: ConnectivityDiagnostic = {
   issueCode: null,
 };
 
+const update: UpdateDiagnostic = {
+  status: 'HEALTHY',
+  supported: false,
+  state: 'UNKNOWN',
+  currentVersion: '1.2.3',
+  availableVersion: null,
+  lastCheckedAt: null,
+  issueCode: null,
+};
+
 interface SnapshotOverrides {
   readonly overallStatus?: HealthStatus;
   readonly mode?: DiagnosticSnapshot['mode'];
@@ -97,6 +108,7 @@ interface SnapshotOverrides {
   readonly cardReconciliation?: Partial<CardReconciliationDiagnostic>;
   readonly printer?: Partial<PrinterDiagnostic>;
   readonly connectivity?: Partial<ConnectivityDiagnostic>;
+  readonly update?: Partial<UpdateDiagnostic>;
 }
 
 function snapshot(overrides: SnapshotOverrides = {}): DiagnosticSnapshot {
@@ -124,6 +136,7 @@ function snapshot(overrides: SnapshotOverrides = {}): DiagnosticSnapshot {
       cardReconciliation: { ...cardReconciliation, ...overrides.cardReconciliation },
       printer: { ...printer, ...overrides.printer },
       connectivity: { ...connectivity, ...overrides.connectivity },
+      update: { ...update, ...overrides.update },
     },
   };
 }
@@ -366,6 +379,93 @@ describe('component health presentation', () => {
     expect(unsupported).toContain('Print history');
     expect(unsupported).toContain('Not supported by current diagnostics');
     expect(unsupported).toContain('Connectivity checking is unsupported right now');
+  });
+});
+
+describe('Updates health card (Phase 2M-F2)', () => {
+  it('renders the honest V1 unsupported/unknown state by default — no updater exists yet', () => {
+    const html = markup(snapshot());
+    expect(html).toContain('Updates');
+    expect(html).toContain('Update status unavailable');
+    expect(html).toContain('not available in this version');
+    expect(html).toContain('1.2.3');
+  });
+
+  it('renders an up-to-date state plainly, with no attention copy', () => {
+    const html = markup(
+      snapshot({
+        update: { status: 'HEALTHY', supported: true, state: 'UP_TO_DATE', issueCode: null },
+      }),
+    );
+    expect(html).toContain('Up to date');
+    expect(html).not.toContain('needs attention');
+  });
+
+  it('renders an available update and shows the available version', () => {
+    const html = markup(
+      snapshot({
+        update: {
+          status: 'HEALTHY',
+          supported: true,
+          state: 'AVAILABLE',
+          availableVersion: '1.3.0',
+          issueCode: null,
+        },
+      }),
+    );
+    expect(html).toContain('Update available');
+    expect(html).toContain('Available version');
+    expect(html).toContain('1.3.0');
+  });
+
+  it('renders a failed update as a WARNING card with attention copy, never CRITICAL styling', () => {
+    const html = markup(
+      snapshot({
+        overallStatus: 'WARNING',
+        update: {
+          status: 'WARNING',
+          supported: true,
+          state: 'FAILED',
+          issueCode: 'UPDATE_INSTALL_FAILED',
+        },
+      }),
+    );
+    expect(html).toContain('Update needs attention');
+    expect(html).toContain('diagnostics-card-warning');
+    expect(html).not.toContain('diagnostics-card-critical');
+    expect(html).toContain('Local sales are unaffected');
+  });
+
+  it('never shows raw technical detail — no feed URL, path, or issue-code leakage beyond the stable code itself', () => {
+    const html = markup(
+      snapshot({
+        update: {
+          status: 'WARNING',
+          supported: true,
+          state: 'FAILED',
+          issueCode: 'UPDATE_INSTALL_FAILED',
+        },
+      }),
+    );
+    expect(html).not.toMatch(/https?:\/\//);
+    expect(html).not.toContain('C:\\');
+    expect(html).not.toContain('Error:');
+  });
+
+  it('does not disturb the existing diagnostics cards or Report a Problem/Export Support Bundle actions', () => {
+    // The full Settings page's first render is pre-effect (no jsdom here), so
+    // the diagnostics grid itself (Updates included) is not yet mounted — only
+    // the always-rendered Report a Problem / Export Support Bundle / Recent
+    // Activity headings are. `markup(snapshot())` above already proves the
+    // Updates card renders once a snapshot is available.
+    const html = renderToStaticMarkup(<SettingsPage />);
+    expect(html).toContain('Support &amp; Diagnostics');
+    expect(html).toContain('Report a Problem');
+    expect(html).toContain('Export Support Bundle');
+    expect(html).toContain('Recent Activity');
+
+    const withSnapshot = markup(snapshot());
+    expect(withSnapshot).toContain('Updates');
   });
 });
 

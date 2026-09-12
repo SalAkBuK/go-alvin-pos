@@ -86,6 +86,15 @@ function diagnostics(): DiagnosticSnapshot {
         state: 'OFFLINE',
         issueCode: 'INTERNET_OFFLINE',
       },
+      update: {
+        status: 'HEALTHY',
+        supported: false,
+        state: 'UNKNOWN',
+        currentVersion: '1.2.3',
+        availableVersion: null,
+        lastCheckedAt: null,
+        issueCode: null,
+      },
     },
   };
 }

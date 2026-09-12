@@ -9,6 +9,7 @@ import type {
   GoogleDiagnostic,
   HealthStatus,
   PrinterDiagnostic,
+  UpdateDiagnostic,
 } from '../../../../shared/diagnostics';
 import type { IpcResult } from '../../../../shared/products';
 import { ActivityHistorySection } from './ActivityHistorySection';
@@ -374,6 +375,58 @@ function ConnectivityHealth({ diagnostic }: { readonly diagnostic: ConnectivityD
   );
 }
 
+function updateStateLabel(diagnostic: UpdateDiagnostic): string {
+  if (!diagnostic.supported) return 'Update status unavailable';
+  switch (diagnostic.state) {
+    case 'UP_TO_DATE':
+      return 'Up to date';
+    case 'AVAILABLE':
+      return 'Update available';
+    case 'PENDING':
+      return 'Update ready to install';
+    case 'DEFERRED':
+      return 'Update deferred';
+    case 'FAILED':
+      return 'Update needs attention';
+    case 'UNKNOWN':
+      return 'Update status unavailable';
+  }
+}
+
+function UpdateHealth({ diagnostic }: { readonly diagnostic: UpdateDiagnostic }) {
+  return (
+    <HealthCard title="Updates" status={diagnostic.status}>
+      <dl className="diagnostics-details">
+        <div>
+          <dt>Status</dt>
+          <dd>{updateStateLabel(diagnostic)}</dd>
+        </div>
+        <div>
+          <dt>Installed version</dt>
+          <dd>{diagnostic.currentVersion}</dd>
+        </div>
+        {diagnostic.availableVersion && (
+          <div>
+            <dt>Available version</dt>
+            <dd>{diagnostic.availableVersion}</dd>
+          </div>
+        )}
+      </dl>
+      {!diagnostic.supported && (
+        <p className="diagnostics-secondary-copy">
+          Update checking is not available in this version. Go Phones POS continues to work normally
+          and does not require an update to keep operating.
+        </p>
+      )}
+      {diagnostic.supported && diagnostic.state === 'FAILED' && (
+        <p className="diagnostics-secondary-copy">
+          Updating is secondary. Local sales are unaffected while this is resolved.
+        </p>
+      )}
+    </HealthCard>
+  );
+}
+
 function platformName(platform: string): string {
   if (platform === 'win32') return 'Windows';
   return platform;
@@ -464,6 +517,7 @@ export function DiagnosticsSnapshotView({
           <CardReconciliationHealth diagnostic={snapshot.components.cardReconciliation} />
           <PrinterHealth diagnostic={snapshot.components.printer} />
           <ConnectivityHealth diagnostic={snapshot.components.connectivity} />
+          <UpdateHealth diagnostic={snapshot.components.update} />
         </div>
       </section>
     </>
