@@ -15,9 +15,11 @@
 // `@electron/asar` is already present via electron-builder.
 
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import yaml from 'js-yaml';
 import { extractFile, listPackage } from '@electron/asar';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -25,10 +27,16 @@ const appDir = join(repoRoot, 'release', 'win-unpacked');
 const asarPath = join(appDir, 'resources', 'app.asar');
 const unpackedRoot = join(appDir, 'resources', 'app.asar.unpacked');
 const betterSqliteUnpacked = join(unpackedRoot, 'node_modules', 'better-sqlite3');
+const appUpdateYmlPath = join(appDir, 'resources', 'app-update.yml');
 
 const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'));
-const productName = pkg.build?.productName ?? pkg.name;
+// electron-builder config lives in `electron-builder.js` (Phase 2N-B fix —
+// moved out of `package.json`'s "build" field so `publish.url` can compute a
+// safe fallback; see that file's docstring).
+const builderConfig = createRequire(import.meta.url)(join(repoRoot, 'electron-builder.js'));
+const productName = builderConfig.productName ?? pkg.name;
 const exePath = join(appDir, `${productName}.exe`);
+const requireInstallerConfig = process.argv.includes('--require-installer');
 
 let failures = 0;
 const pass = (msg) => console.log(`  PASS  ${msg}`);
@@ -272,6 +280,73 @@ if (existsSync(exePath)) {
   } catch (error) {
     fail(`packaged runtime could not load electron-updater: ${error.stderr || error.message}`);
   }
+}
+
+// (8b) Phase 2N-B follow-up fix: electron-updater's real download path
+// (`getOrCreateDownloadHelper()` → `configOnDisk` → `loadUpdateConfig()`)
+// unconditionally reads `resources/app-update.yml` from disk for
+// `updaterCacheDirName`, REGARDLESS of the runtime `setFeedURL()` call —
+// confirmed by reading `node_modules/electron-updater/out/AppUpdater.js`.
+// Missing entirely, that read throws ENOENT and the automatic download
+// fails (safely, as a normal `'error'` event — see `updateService.ts`'s
+// module docstring — but it fails). electron-builder only generates this
+// file for an auto-updatable installer target (nsis here), never for the
+// `dir` target `npm run pack:win` still uses for fast iteration — so its
+// absence there is EXPECTED and informational, not a failure; only the
+// installer-producing build (`npm run dist:win`, no `--dir`) is expected to
+// have it, and that expectation is asserted strictly via `--require-installer`.
+if (existsSync(appUpdateYmlPath)) {
+  try {
+    const parsed = yaml.load(readFileSync(appUpdateYmlPath, 'utf8'));
+    const problems = [];
+    if (parsed.provider !== 'generic') {
+      problems.push(
+        `provider is "${parsed.provider}", expected "generic" (no GitHub/vendor lock-in)`,
+      );
+    }
+    if (typeof parsed.url !== 'string' || !/^https:\/\//.test(parsed.url)) {
+      problems.push(`url "${parsed.url}" is not a plain https:// URL`);
+    }
+    if (typeof parsed.url === 'string' && /^https:\/\/[^/]*:[^/@]*@/.test(parsed.url)) {
+      problems.push('url appears to embed credentials');
+    }
+    if (
+      typeof parsed.updaterCacheDirName !== 'string' ||
+      parsed.updaterCacheDirName.trim() === ''
+    ) {
+      problems.push(
+        'updaterCacheDirName is missing — this is the exact field whose absence caused ENOENT/fallback in getOrCreateDownloadHelper()',
+      );
+    }
+    const allowedKeys = new Set([
+      'provider',
+      'url',
+      'channel',
+      'updaterCacheDirName',
+      'publisherName',
+    ]);
+    const unexpectedKeys = Object.keys(parsed).filter((key) => !allowedKeys.has(key));
+    if (unexpectedKeys.length > 0) {
+      problems.push(`unexpected key(s) in app-update.yml: ${unexpectedKeys.join(', ')}`);
+    }
+    if (problems.length > 0) {
+      for (const problem of problems) fail(`app-update.yml: ${problem}`);
+    } else {
+      pass(
+        `app-update.yml present with safe generic-provider config (updaterCacheDirName=${parsed.updaterCacheDirName})`,
+      );
+    }
+  } catch (error) {
+    fail(`could not parse app-update.yml: ${error.message}`);
+  }
+} else if (requireInstallerConfig) {
+  fail(
+    'app-update.yml missing from an installer-producing build — the real download path (getOrCreateDownloadHelper) would fail with ENOENT',
+  );
+} else {
+  pass(
+    'app-update.yml intentionally absent (dir-only fast-iteration build; run `npm run dist:win` to produce and verify the installer-generated updater config)',
+  );
 }
 
 // (8) no accidental production update-feed secret embedded in the packaged

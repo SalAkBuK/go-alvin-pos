@@ -33,6 +33,7 @@ export default tseslint.config(
       'build/**/*.ts',
       'scripts/**/*.{js,mjs}',
       'electron.vite.config.ts',
+      'electron-builder.js',
       'vitest.config.ts',
       'eslint.config.mjs',
     ],
