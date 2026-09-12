@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { app } from 'electron';
+import { embeddedUpdateInstallE2eProfile } from '../updater/updateInstallE2eConfig';
 
 /**
  * Application-data location strategy (ARCHITECTURE.md Sections 13, 46; DATA_MODEL.md Section 54).
@@ -69,7 +70,9 @@ function localAppDataRoot(): string {
  * ever created under the implicit default location.
  */
 export function pinUserDataPath(): string {
-  const pinned = join(localAppDataRoot(), APP_DATA_DIRECTORY_NAME);
+  const pinned =
+    embeddedUpdateInstallE2eProfile(app.getName()) ??
+    join(localAppDataRoot(), APP_DATA_DIRECTORY_NAME);
   // `app.setPath('userData', …)` requires the target directory to exist on some
   // platforms; creating our own container directory here is intentional.
   mkdirSync(pinned, { recursive: true });

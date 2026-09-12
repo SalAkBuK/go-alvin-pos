@@ -15,11 +15,12 @@ const electron = vi.hoisted(() => {
     setPath: vi.fn((name: string, value: string): void => {
       if (name === 'userData') state.userData = value;
     }),
+    getName: vi.fn((): string => 'go-phones-pos'),
   };
 });
 
 vi.mock('electron', () => ({
-  app: { getPath: electron.getPath, setPath: electron.setPath },
+  app: { getPath: electron.getPath, setPath: electron.setPath, getName: electron.getName },
 }));
 
 vi.mock('node:fs', async (importOriginal) => {
@@ -77,7 +78,11 @@ describe('pinUserDataPath', () => {
   });
 
   it('leaf directory name stays "GoPhonesPOS" regardless of app naming metadata', () => {
-    // getName / productName are never consulted.
+    // `app.getName()` IS consulted (Phase 2N-E2: it gates the packaged
+    // update-install E2E profile override — see `updateInstallE2eConfig.ts`),
+    // but outside that compile-time-only E2E build it is inert and the
+    // pinned leaf/root are still driven purely by LOCALAPPDATA, never by
+    // `app.getName()`/productName.
     const pinned = pinUserDataPath();
     expect(pinned.split(sep).pop()).toBe('GoPhonesPOS');
     expect(electron.getPath).not.toHaveBeenCalledWith('exe');

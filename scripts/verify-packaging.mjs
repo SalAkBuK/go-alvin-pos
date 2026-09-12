@@ -359,8 +359,32 @@ try {
   } else {
     pass('no embedded update-feed credentials found in packaged main bundle');
   }
+  if (
+    mainBundle.includes('GO_PHONES_UPDATE_INSTALL_E2E_RUNTIME') ||
+    mainBundle.includes('update-install-e2e.trigger')
+  ) {
+    fail('packaged main bundle contains the compile-time-only update-install E2E trigger');
+  } else {
+    pass('compile-time-only update-install E2E trigger absent from production package');
+  }
 } catch (error) {
   fail(`could not scan out/main/index.js for embedded update-feed credentials: ${error.message}`);
+}
+
+// (9) Phase 2N-E2: outside an explicit E2E build, electron-builder's identity
+// must be the real, permanent production identity — never the distinct
+// update-install E2E test identity (`electron-builder.js`).
+if (process.env.GO_PHONES_UPDATE_INSTALL_E2E_BUILD === '1') {
+  pass('skipping production-identity check: this run explicitly requested the E2E build identity');
+} else if (
+  builderConfig.appId !== 'com.gophones.pos' ||
+  builderConfig.productName !== 'Go Phones POS'
+) {
+  fail(
+    `electron-builder identity is not the production identity (appId=${builderConfig.appId}, productName=${builderConfig.productName})`,
+  );
+} else {
+  pass('electron-builder identity is the real production identity (appId, productName)');
 }
 
 console.log('');

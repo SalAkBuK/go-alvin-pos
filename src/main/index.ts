@@ -43,6 +43,13 @@ import type { UpdateService } from './updater/updateService';
 import { loadUpdateFeedConfig } from './updater/updateFeedConfig';
 import { createUpdaterStateInspector } from './updater/updateDiagnosticsBridge';
 import { loadBuildIdentity } from './app/buildIdentity';
+import {
+  installUpdateInstallE2eTrigger,
+  type UpdateInstallE2eTrigger,
+} from './updater/updateInstallE2eTrigger';
+import { applyUpdateInstallE2eAppName } from './updater/updateInstallE2eConfig';
+
+declare const __UPDATE_INSTALL_E2E_ENABLED__: boolean | undefined;
 
 /**
  * Electron main-process entry point (ARCHITECTURE.md Sections 5, 7, 38, 39, 42.4).
@@ -55,6 +62,11 @@ import { loadBuildIdentity } from './app/buildIdentity';
  *
  * No POS service/worker/feature is started here — there are none yet.
  */
+
+// (0) Packaged update-install E2E only (Phase 2N-E2): force `app.getName()`
+// to the distinct E2E product name BEFORE anything reads it. No-op in every
+// ordinary build.
+applyUpdateInstallE2eAppName(app);
 
 // (1) Pin userData FIRST — before the single-instance lock, the logger, or any
 // other code can create a file under Electron's implicit default location.
@@ -79,6 +91,7 @@ let googleConfigService: GoogleConfigService | null = null;
 let backupService: BackupService | null = null;
 let backupScheduler: BackupScheduler | null = null;
 let restoreService: RestoreService | null = null;
+let updateInstallE2eTrigger: UpdateInstallE2eTrigger | null = null;
 
 const crashEvidence = createCrashEvidenceService({
   diagnosticsRoot: paths.diagnostics,
@@ -209,6 +222,7 @@ if (!app.requestSingleInstanceLock()) {
     backupScheduler?.stopSync();
     clockWatcher.stopSync();
     updateService.stopSync();
+    updateInstallE2eTrigger?.stopSync();
     productionDatabase?.close();
     crashEvidence.markCleanShutdown();
   });
@@ -441,6 +455,24 @@ if (!app.requestSingleInstanceLock()) {
         storageLocation: 'LOCAL_APP_DATA',
         databaseReady: productionDatabase !== null,
       });
+
+      if (
+        typeof __UPDATE_INSTALL_E2E_ENABLED__ === 'boolean' &&
+        __UPDATE_INSTALL_E2E_ENABLED__ &&
+        productionDatabase !== null
+      ) {
+        updateInstallE2eTrigger = installUpdateInstallE2eTrigger({
+          buildEnabled: true,
+          isPackaged: app.isPackaged,
+          appName: app.getName(),
+          userData: paths.userData,
+          localAppData: process.env['LOCALAPPDATA'],
+          diagnosticsRoot: paths.diagnostics,
+          logger,
+          maintenanceCoordinator,
+          updateService,
+        });
+      }
     })
     .catch((error: unknown) => {
       logger.fatal('application', 'application.start-failed', {

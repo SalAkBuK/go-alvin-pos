@@ -6,6 +6,7 @@ import { productionCspPlugin } from './build/cspPlugin';
 import { parseOAuthClientConfig } from './src/main/google/oauthClientConfig';
 import { parseUpdateFeedUrl } from './src/main/updater/updateFeedConfig';
 import { targetSchemaVersion } from './src/main/database/migrations';
+import { validateUpdateInstallE2eBuildConfig } from './src/main/updater/updateInstallE2eConfig';
 import packageJson from './package.json';
 
 /**
@@ -81,6 +82,12 @@ export default defineConfig({
       __GOOGLE_OAUTH_CLIENT_CONFIG__: JSON.stringify(embeddedOAuthClientConfig()),
       __UPDATE_FEED_URL__: JSON.stringify(embeddedUpdateFeedUrl()),
       __GO_PHONES_BUILD_IDENTITY__: JSON.stringify(embeddedBuildIdentity()),
+      __UPDATE_INSTALL_E2E_ENABLED__: JSON.stringify(
+        validateUpdateInstallE2eBuildConfig(process.env).enabled,
+      ),
+      __UPDATE_INSTALL_E2E_PROFILE__: JSON.stringify(
+        validateUpdateInstallE2eBuildConfig(process.env).profile,
+      ),
     },
     build: {
       outDir: 'out/main',
