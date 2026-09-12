@@ -6,6 +6,7 @@ import type { DiagnosticSnapshot } from '../../src/shared/diagnostics';
 import type { ProductionDatabase } from '../../src/main/database/database';
 import { createSupportBundleService } from '../../src/main/support/supportBundleService';
 import { collectRecentSanitizedLogs } from '../../src/main/support/recentLogs';
+import { createCrashEvidenceService } from '../../src/main/diagnostics/crashEvidence';
 import { createMigratedDb, createCapturingLogger, makeTempDir } from '../helpers/database';
 
 const NOW = new Date('2026-09-12T15:30:00.000Z');
@@ -107,6 +108,63 @@ function readZipEntries(archive: Buffer): Map<string, Buffer> {
 }
 
 describe('problem reports and support bundles', () => {
+  it('includes re-sanitized recent crash evidence when available', async () => {
+    const temp = makeTempDir('gpp-support-crash-evidence-');
+    const capture = createCapturingLogger();
+    try {
+      const crashEvidence = createCrashEvidenceService({
+        diagnosticsRoot: join(temp.path, 'diagnostics'),
+        appVersion: '1.2.3',
+        installationId: 'INST-12345678-1234-4123-8123-123456789ABC',
+        logger: capture.logger,
+        now: () => NOW,
+        createId: () => '11111111-1111-4111-8111-111111111111',
+      });
+      crashEvidence.record({
+        processType: 'RENDERER',
+        eventType: 'renderer_process_gone',
+        errorCode: 'RENDERER_PROCESS_GONE',
+        termination: { reason: 'crashed', exitCode: 9 },
+        details: {
+          customer: { name: 'Private Customer', phone: '281-555-2222' },
+          access_token: 'bundle-token-sentinel',
+          path: 'C:\\Users\\Alice\\renderer.js',
+        },
+      });
+      const service = createSupportBundleService({
+        appVersion: '1.2.3',
+        installationId: 'INST-TESTSAFE',
+        reportsRoot: join(temp.path, 'reports'),
+        logsRoot: join(temp.path, 'logs'),
+        logger: capture.logger,
+        getDatabase: () => null,
+        getDiagnostics: () => Promise.resolve(diagnostics()),
+        getCrashEvidence: () => crashEvidence.collectRecent(),
+        now: () => NOW,
+        randomHex: () => '0123456789abcdef',
+      });
+
+      const entries = readZipEntries((await service.prepareBundle()).archive);
+      expect(entries.has('crash-evidence.json')).toBe(true);
+      const crashText = entries.get('crash-evidence.json')!.toString('utf8');
+      expect(crashText).toContain('renderer_process_gone');
+      expect(crashText).toContain('INST-12345678-1234-4123-8123-123456789ABC');
+      for (const unsafe of [
+        'Private Customer',
+        '281-555-2222',
+        'bundle-token-sentinel',
+        'C:\\Users\\Alice',
+      ]) {
+        expect(crashText).not.toContain(unsafe);
+      }
+      expect(entries.get('bundle-manifest.json')!.toString('utf8')).toContain(
+        '"crashEvidence": true',
+      );
+    } finally {
+      temp.cleanup();
+    }
+  });
+
   it('creates a sanitized offline report with diagnostics and no business-data mutation', async () => {
     const temp = makeTempDir('gpp-support-report-');
     const db = await createMigratedDb();

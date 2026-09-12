@@ -3,6 +3,7 @@ import { IPC } from '../../shared/ipc';
 import type { ExportSupportBundleResult, ProblemReport } from '../../shared/support';
 import type { Logger } from '../app/logger';
 import type { ProductionDatabase } from '../database/database';
+import type { CrashEvidenceCollection } from '../diagnostics/crashEvidence';
 import { createSupportBundleService } from '../support/supportBundleService';
 import type { RendererEntry } from '../app/rendererEntry';
 import { registerTrustedInvoke } from './trustedInvoke';
@@ -15,6 +16,7 @@ export interface SupportIpcContext {
   readonly logsRoot: string;
   readonly getDatabase: () => ProductionDatabase | null;
   readonly getDiagnostics: () => Promise<DiagnosticSnapshot>;
+  readonly getCrashEvidence?: () => CrashEvidenceCollection;
   readonly showSaveDialog: (suggestedFileName: string) => Promise<string | null>;
   readonly rendererEntry?: RendererEntry;
 }
@@ -29,6 +31,7 @@ export function registerSupportIpcHandlers(context: SupportIpcContext): void {
     logger: context.logger,
     getDatabase: context.getDatabase,
     getDiagnostics: context.getDiagnostics,
+    ...(context.getCrashEvidence ? { getCrashEvidence: context.getCrashEvidence } : {}),
   });
   const trusted = {
     logger: context.logger,

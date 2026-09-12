@@ -22,8 +22,33 @@ export function sanitizeSupportText(value: string): string {
 
 type PiiContext = 'CUSTOMER' | 'PAYMENT' | null;
 
+const STABLE_IDENTIFIER_KEYS = new Set([
+  'supportreportid',
+  'bundlecorrelationid',
+  'installationid',
+  'correlationid',
+  'checkoutrequestid',
+  'saleid',
+  'receiptnumber',
+  'exportjobid',
+  'evidenceid',
+  'sessionid',
+  'previoussessionid',
+  'webcontentsid',
+  'buildidentifier',
+]);
+const SAFE_IDENTIFIER_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+
 function normalized(key: string): string {
   return key.toLowerCase().replace(/[\s_.-]/g, '');
+}
+
+function isStableIdentifier(key: string, value: unknown): value is string {
+  return (
+    STABLE_IDENTIFIER_KEYS.has(normalized(key)) &&
+    typeof value === 'string' &&
+    SAFE_IDENTIFIER_PATTERN.test(value)
+  );
 }
 
 function sanitizeStrings(value: unknown, context: PiiContext = null): unknown {
@@ -33,16 +58,6 @@ function sanitizeStrings(value: unknown, context: PiiContext = null): unknown {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>).map(([key, child]) => {
         const normalizedKey = normalized(key);
-        const stableIdentifier = [
-          'supportreportid',
-          'bundlecorrelationid',
-          'installationid',
-          'correlationid',
-          'checkoutrequestid',
-          'saleid',
-          'receiptnumber',
-          'exportjobid',
-        ].includes(normalizedKey);
         const childContext: PiiContext =
           context ??
           (normalizedKey === 'customer' || normalizedKey === 'customerdata'
@@ -63,7 +78,7 @@ function sanitizeStrings(value: unknown, context: PiiContext = null): unknown {
           key,
           isSensitiveKey(key) || contextualSecret || directContextValue
             ? '[redacted]'
-            : stableIdentifier && typeof child === 'string' && /^[A-Za-z0-9-]{1,100}$/.test(child)
+            : isStableIdentifier(key, child)
               ? child
               : sanitizeStrings(child, childContext),
         ];
@@ -75,7 +90,45 @@ function sanitizeStrings(value: unknown, context: PiiContext = null): unknown {
 
 /** Sanitize arbitrary nested data before it can enter a report or archive. */
 export function sanitizeSupportValue(value: unknown): unknown {
-  return sanitizeStrings(sanitizeFields({ value })['value']);
+  const preserved = new Map<string, string>();
+  let nextPlaceholder = 0;
+  const seen = new WeakSet<object>();
+
+  const protectIdentifiers = (child: unknown): unknown => {
+    if (Array.isArray(child)) return child.map(protectIdentifiers);
+    if (!child || typeof child !== 'object' || child instanceof Error) return child;
+    if (seen.has(child)) return '[circular]';
+    seen.add(child);
+    try {
+      return Object.fromEntries(
+        Object.entries(child as Record<string, unknown>).map(([key, entry]) => {
+          if (!isStableIdentifier(key, entry)) return [key, protectIdentifiers(entry)];
+          const placeholder = `GPP_SAFE_IDENTIFIER_${nextPlaceholder++}_VALUE`;
+          preserved.set(placeholder, entry);
+          return [key, placeholder];
+        }),
+      );
+    } catch {
+      return child;
+    }
+  };
+
+  const restoreIdentifiers = (child: unknown): unknown => {
+    if (typeof child === 'string') return preserved.get(child) ?? child;
+    if (Array.isArray(child)) return child.map(restoreIdentifiers);
+    if (child && typeof child === 'object') {
+      return Object.fromEntries(
+        Object.entries(child as Record<string, unknown>).map(([key, entry]) => [
+          key,
+          restoreIdentifiers(entry),
+        ]),
+      );
+    }
+    return child;
+  };
+
+  const centrallySanitized = sanitizeFields({ value: protectIdentifiers(value) })['value'];
+  return restoreIdentifiers(sanitizeStrings(centrallySanitized));
 }
 
 const UNSAFE_VALUE_PATTERNS = [

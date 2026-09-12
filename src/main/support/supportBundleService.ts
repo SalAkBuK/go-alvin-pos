@@ -5,6 +5,7 @@ import type { DiagnosticSnapshot } from '../../shared/diagnostics';
 import type { ExportSupportBundleResult, ProblemReport } from '../../shared/support';
 import type { Logger } from '../app/logger';
 import type { ProductionDatabase } from '../database/database';
+import type { CrashEvidenceCollection } from '../diagnostics/crashEvidence';
 import { collectRecentSanitizedLogs } from './recentLogs';
 import { assertPrivacySafeText, sanitizeSupportText, sanitizeSupportValue } from './supportPrivacy';
 import {
@@ -44,6 +45,7 @@ export interface SupportBundleServiceDeps {
   readonly logger: Logger;
   readonly getDatabase: () => ProductionDatabase | null;
   readonly getDiagnostics: () => Promise<DiagnosticSnapshot>;
+  readonly getCrashEvidence?: () => CrashEvidenceCollection;
   readonly now?: () => Date;
   readonly randomHex?: () => string;
 }
@@ -186,6 +188,11 @@ export function createSupportBundleService(deps: SupportBundleServiceDeps): Supp
       const diagnostics = sanitizeSupportValue(await deps.getDiagnostics()) as DiagnosticSnapshot;
       const report = supportReportId ? await loadProblemReport(supportReportId) : null;
       const logs = await collectRecentSanitizedLogs(deps.logsRoot);
+      const crashEvidence = deps.getCrashEvidence?.() ?? {
+        records: [],
+        inspectedFiles: 0,
+        issues: [],
+      };
       const migrations = migrationSummary(deps.getDatabase());
       const entries = [
         {
@@ -240,6 +247,12 @@ export function createSupportBundleService(deps: SupportBundleServiceDeps): Supp
               problemReport: report !== null,
               recentLogs: logs.includedRecords > 0,
               migrationHistory: migrations.available,
+              crashEvidence: crashEvidence.records.length > 0,
+            },
+            crashEvidenceCollection: {
+              includedRecords: crashEvidence.records.length,
+              inspectedFiles: crashEvidence.inspectedFiles,
+              issues: crashEvidence.issues,
             },
           }),
         },
@@ -251,6 +264,17 @@ export function createSupportBundleService(deps: SupportBundleServiceDeps): Supp
               {
                 name: 'problem-report.json',
                 content: jsonContent({ formatVersion: REPORT_FORMAT_VERSION, ...report }),
+              },
+            ]
+          : []),
+        ...(crashEvidence.records.length > 0
+          ? [
+              {
+                name: 'crash-evidence.json',
+                content: jsonContent({
+                  formatVersion: 1,
+                  records: crashEvidence.records,
+                }),
               },
             ]
           : []),

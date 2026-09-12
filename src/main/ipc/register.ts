@@ -12,6 +12,7 @@ import type { GoogleConfigService } from '../google/googleConfigService';
 import type { BackupService } from '../backup/backupService';
 import type { RestoreService } from '../backup/restoreService';
 import type { MaintenanceCoordinator } from '../maintenance/maintenanceCoordinator';
+import type { CrashEvidenceService } from '../diagnostics/crashEvidence';
 import { registerBackupIpcHandlers } from './backupIpc';
 import { registerMaintenanceIpcHandlers } from './maintenanceIpc';
 import { registerCheckoutIpcHandlers } from './checkoutIpc';
@@ -39,6 +40,7 @@ export interface IpcContext {
   readonly paths: AppPaths;
   readonly appVersion: string;
   readonly installationId: string;
+  readonly crashEvidence: CrashEvidenceService;
   /** The one production database, or `null` while/if initialization has not succeeded. */
   readonly getDatabase: () => ProductionDatabase | null;
   /**
@@ -127,6 +129,7 @@ export function registerIpcHandlers(context: IpcContext): void {
     logsRoot: context.paths.logs,
     getDatabase: context.getDatabase,
     getDiagnostics: () => supportDiagnostics.getSummary(),
+    getCrashEvidence: () => context.crashEvidence.collectRecent(),
     showSaveDialog: context.showSupportBundleSaveDialog,
   });
 

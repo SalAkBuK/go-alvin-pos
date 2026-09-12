@@ -33,6 +33,8 @@ import { createGoogleCredentialStore } from './google/googleCredentialStore';
 import { createGoogleOAuthClient } from './google/googleOAuthClient';
 import { loadOAuthClientConfig } from './google/oauthClientConfig';
 import { createSheetsTransport } from './google/sheetsTransport';
+import { createCrashEvidenceService } from './diagnostics/crashEvidence';
+import { installCrashEvidenceHandlers } from './diagnostics/crashLifecycle';
 
 /**
  * Electron main-process entry point (ARCHITECTURE.md Sections 5, 7, 38, 39, 42.4).
@@ -68,6 +70,14 @@ let googleConfigService: GoogleConfigService | null = null;
 let backupService: BackupService | null = null;
 let backupScheduler: BackupScheduler | null = null;
 let restoreService: RestoreService | null = null;
+
+const crashEvidence = createCrashEvidenceService({
+  diagnosticsRoot: paths.diagnostics,
+  appVersion: app.getVersion(),
+  installationId,
+  logger,
+  getSchemaVersion: () => productionDatabase?.schemaVersion ?? null,
+});
 
 /**
  * The one maintenance coordinator (`ARCHITECTURE.md §42.3`). Created before the
@@ -124,6 +134,9 @@ if (!app.requestSingleInstanceLock()) {
   // Losing instance: never open the database or touch the shared log file; exit.
   app.quit();
 } else {
+  installCrashEvidenceHandlers(app, process, crashEvidence);
+  crashEvidence.startSession();
+
   app.on('second-instance', () => {
     logger.info('application', 'application.single-instance.focus-existing');
     focusExistingWindow(mainWindow);
@@ -152,6 +165,7 @@ if (!app.requestSingleInstanceLock()) {
     googleExportWorker?.stopSync();
     backupScheduler?.stopSync();
     productionDatabase?.close();
+    crashEvidence.markCleanShutdown();
   });
 
   /**
@@ -276,6 +290,7 @@ if (!app.requestSingleInstanceLock()) {
         paths,
         appVersion: app.getVersion(),
         installationId,
+        crashEvidence,
         getDatabase: () => productionDatabase,
         getBackupService: () => backupService,
         getRestoreService: () => restoreService,
