@@ -27,6 +27,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:update:e2e:download": "node scripts/test-update-download-e2e.mjs",
     "verify:packaging": "node scripts/verify-packaging.mjs",
     "verify:packaging:installer": "node scripts/verify-packaging.mjs --require-installer",
     "stage:release:test": "node scripts/stage-release.mjs",
