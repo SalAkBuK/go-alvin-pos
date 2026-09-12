@@ -4,6 +4,7 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 import react from '@vitejs/plugin-react';
 import { productionCspPlugin } from './build/cspPlugin';
 import { parseOAuthClientConfig } from './src/main/google/oauthClientConfig';
+import { parseUpdateFeedUrl } from './src/main/updater/updateFeedConfig';
 
 /**
  * Build-time embedding of the developer OAuth "Desktop app" public-client
@@ -30,11 +31,35 @@ function embeddedOAuthClientConfig(): string {
   }
 }
 
+/**
+ * Build-time embedding of the generic-HTTPS update-feed URL (Phase 2N-A —
+ * `UPDATE_RELEASE_STRATEGY.md` Sections 6, 41). A feed URL is configuration,
+ * not a secret, so — unlike the OAuth client — the whole value is embedded
+ * verbatim when the build machine sets `GO_PHONES_UPDATE_FEED_URL`. Absent
+ * or invalid, the build produces an empty string and the packaged app's
+ * updater foundation stays inert/`UNKNOWN`.
+ */
+function embeddedUpdateFeedUrl(): string {
+  const raw = process.env['GO_PHONES_UPDATE_FEED_URL'];
+  if (!raw || raw.trim() === '') {
+    return '';
+  }
+  try {
+    return parseUpdateFeedUrl(raw);
+  } catch {
+    console.warn(
+      'GO_PHONES_UPDATE_FEED_URL is set but invalid; building without an embedded update feed.',
+    );
+    return '';
+  }
+}
+
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
     define: {
       __GOOGLE_OAUTH_CLIENT_CONFIG__: JSON.stringify(embeddedOAuthClientConfig()),
+      __UPDATE_FEED_URL__: JSON.stringify(embeddedUpdateFeedUrl()),
     },
     build: {
       outDir: 'out/main',

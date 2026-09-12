@@ -232,6 +232,62 @@ try {
   fail(`could not scan renderer assets for native-module leakage: ${error.message}`);
 }
 
+// (7) Phase 2N-A updater foundation: the packaged runtime can `require`
+// electron-updater (a pure-JS dependency, so it stays inside `app.asar`
+// like google-auth-library) and it exposes the expected generic-provider
+// update surface. This deliberately never touches the `autoUpdater` lazy
+// getter — doing so constructs the real updater, which needs a live
+// Electron `app`; under this ELECTRON_RUN_AS_NODE probe, `require('electron')`
+// throws `MODULE_NOT_FOUND` (a real, confirmed difference from an ordinary
+// `node -e` run, where it instead resolves to a path string), so touching
+// the getter here would fail for a reason specific to this probe harness,
+// not to the packaged app's real launch path. Construction against a real
+// `app` is exercised instead by `updateService.ts`'s own unit tests against
+// a fake adapter.
+if (existsSync(exePath)) {
+  const probe = [
+    "const path = require('path');",
+    "const dir = path.join(process.resourcesPath, 'app.asar', 'node_modules', 'electron-updater');",
+    'const mod = require(dir);',
+    // `mod.autoUpdater` is a LAZY GETTER that constructs the real updater on
+    // first access, which needs a live Electron `app` — unavailable under
+    // this ELECTRON_RUN_AS_NODE probe (and irrelevant to what this step
+    // proves). Check the property descriptor only; never invoke the getter.
+    "const desc = Object.getOwnPropertyDescriptor(mod, 'autoUpdater');",
+    "if (typeof desc?.get !== 'function') { console.error('NO_AUTOUPDATER_GETTER'); process.exit(7); }",
+    "if (typeof mod.NsisUpdater !== 'function') { console.error('NO_NSIS_UPDATER'); process.exit(8); }",
+    "console.log('ELECTRON_UPDATER_OK');",
+  ].join(' ');
+  try {
+    const out = execFileSync(exePath, ['-e', probe], {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      encoding: 'utf8',
+      timeout: 60_000,
+    });
+    if (/ELECTRON_UPDATER_OK/.test(out)) {
+      pass('packaged Electron runtime loaded electron-updater (generic-provider updater present)');
+    } else {
+      fail(`electron-updater probe returned unexpected output: ${out.trim()}`);
+    }
+  } catch (error) {
+    fail(`packaged runtime could not load electron-updater: ${error.stderr || error.message}`);
+  }
+}
+
+// (8) no accidental production update-feed secret embedded in the packaged
+// main bundle. A feed URL is not a secret by contract, but nothing that
+// looks like an embedded token/credential belongs there either.
+try {
+  const mainBundle = extractFile(asarPath, join('out', 'main', 'index.js')).toString('utf8');
+  if (/GO_PHONES_UPDATE_FEED_URL['"]?\s*:\s*['"]https?:\/\/[^'"]*:[^'"@]*@/.test(mainBundle)) {
+    fail('packaged main bundle appears to embed update-feed credentials');
+  } else {
+    pass('no embedded update-feed credentials found in packaged main bundle');
+  }
+} catch (error) {
+  fail(`could not scan out/main/index.js for embedded update-feed credentials: ${error.message}`);
+}
+
 console.log('');
 if (failures > 0) {
   console.error(`verify-packaging: ${failures} check(s) FAILED`);

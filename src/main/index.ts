@@ -38,6 +38,8 @@ import { installCrashEvidenceHandlers } from './diagnostics/crashLifecycle';
 import { installPowerLifecycleHandlers } from './diagnostics/powerLifecycle';
 import { createClockWatcher } from './diagnostics/clockWatcher';
 import { createActivityHistoryService } from './diagnostics/activityHistory';
+import { createUpdateService } from './updater/updateService';
+import { loadUpdateFeedConfig } from './updater/updateFeedConfig';
 
 /**
  * Electron main-process entry point (ARCHITECTURE.md Sections 5, 7, 38, 39, 42.4).
@@ -99,6 +101,25 @@ const activityHistory = createActivityHistoryService({
 const maintenanceCoordinator: MaintenanceCoordinator = createMaintenanceCoordinator({
   logger,
   getDb: () => productionDatabase?.connection ?? null,
+});
+
+/**
+ * Phase 2N-A updater foundation only: construct the trusted `UpdateService`
+ * so its abstraction, feed configuration, and packaged/development gating
+ * are real and exercised. Nothing here checks for, downloads, or installs
+ * an update — that begins in 2N-B. Construction cannot throw
+ * (`updateService.ts`), has no database or checkout dependency, and is
+ * intentionally NOT wired into the Phase 2M diagnostics snapshot yet; that
+ * `updateStateInspector` integration is 2N-B's job.
+ */
+const updateFeedConfig = loadUpdateFeedConfig({
+  onWarn: (message) => logger.warn('application', 'update.feed-config-unavailable', { message }),
+});
+createUpdateService({
+  logger,
+  currentVersion: app.getVersion(),
+  isPackaged: app.isPackaged,
+  feedUrl: updateFeedConfig?.url ?? null,
 });
 
 /**
