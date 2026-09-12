@@ -14,6 +14,7 @@ import type { RestoreService } from '../backup/restoreService';
 import type { MaintenanceCoordinator } from '../maintenance/maintenanceCoordinator';
 import type { CrashEvidenceService } from '../diagnostics/crashEvidence';
 import type { ActivityHistoryService } from '../diagnostics/activityHistory';
+import type { UpdateStateInspector } from '../diagnostics/updateHealth';
 import { registerBackupIpcHandlers } from './backupIpc';
 import { registerMaintenanceIpcHandlers } from './maintenanceIpc';
 import { registerCheckoutIpcHandlers } from './checkoutIpc';
@@ -72,6 +73,8 @@ export interface IpcContext {
       appVersion: string,
     ) => GoogleConfigService;
   };
+  /** Phase 2N-B: the real updater snapshot, bridged for Phase 2M diagnostics. */
+  readonly updateStateInspector?: UpdateStateInspector;
 }
 
 export function registerIpcHandlers(context: IpcContext): void {
@@ -112,6 +115,7 @@ export function registerIpcHandlers(context: IpcContext): void {
     getDatabaseStatus,
     getBackupService: context.getBackupService,
     getGoogleConfigService: context.google.getService,
+    ...(context.updateStateInspector ? { updateStateInspector: context.updateStateInspector } : {}),
   });
 
   const supportDiagnostics = createIpcDiagnosticsService({
@@ -123,6 +127,7 @@ export function registerIpcHandlers(context: IpcContext): void {
     getDatabaseStatus,
     getBackupService: context.getBackupService,
     getGoogleConfigService: context.google.getService,
+    ...(context.updateStateInspector ? { updateStateInspector: context.updateStateInspector } : {}),
   });
   registerSupportIpcHandlers({
     logger: context.logger,

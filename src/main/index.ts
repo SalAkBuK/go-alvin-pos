@@ -39,7 +39,9 @@ import { installPowerLifecycleHandlers } from './diagnostics/powerLifecycle';
 import { createClockWatcher } from './diagnostics/clockWatcher';
 import { createActivityHistoryService } from './diagnostics/activityHistory';
 import { createUpdateService } from './updater/updateService';
+import type { UpdateService } from './updater/updateService';
 import { loadUpdateFeedConfig } from './updater/updateFeedConfig';
+import { createUpdaterStateInspector } from './updater/updateDiagnosticsBridge';
 
 /**
  * Electron main-process entry point (ARCHITECTURE.md Sections 5, 7, 38, 39, 42.4).
@@ -104,23 +106,25 @@ const maintenanceCoordinator: MaintenanceCoordinator = createMaintenanceCoordina
 });
 
 /**
- * Phase 2N-A updater foundation only: construct the trusted `UpdateService`
- * so its abstraction, feed configuration, and packaged/development gating
- * are real and exercised. Nothing here checks for, downloads, or installs
- * an update — that begins in 2N-B. Construction cannot throw
- * (`updateService.ts`), has no database or checkout dependency, and is
- * intentionally NOT wired into the Phase 2M diagnostics snapshot yet; that
- * `updateStateInspector` integration is 2N-B's job.
+ * Phase 2N-A/2N-B updater engine: construct the trusted `UpdateService`
+ * (fail-open, no database/checkout dependency — `updateService.ts`) and wire
+ * its real snapshot into the Phase 2M `updateStateInspector` diagnostics
+ * seam (`updateDiagnosticsBridge.ts`). `updateService.start()` is called
+ * later, inside `whenReady()` alongside `clockWatcher.start()`, so the
+ * (delayed, non-blocking) first update check never competes with window
+ * creation/login — see the `whenReady()` block below. Installation/restart
+ * remain out of scope (Phase 2N-C).
  */
 const updateFeedConfig = loadUpdateFeedConfig({
   onWarn: (message) => logger.warn('application', 'update.feed-config-unavailable', { message }),
 });
-createUpdateService({
+const updateService: UpdateService = createUpdateService({
   logger,
   currentVersion: app.getVersion(),
   isPackaged: app.isPackaged,
   feedUrl: updateFeedConfig?.url ?? null,
 });
+const updateStateInspector = createUpdaterStateInspector(updateService);
 
 /**
  * Phase 2J.1 Google wiring, shared by the IPC handlers, the background export
@@ -197,6 +201,7 @@ if (!app.requestSingleInstanceLock()) {
     googleExportWorker?.stopSync();
     backupScheduler?.stopSync();
     clockWatcher.stopSync();
+    updateService.stopSync();
     productionDatabase?.close();
     crashEvidence.markCleanShutdown();
   });
@@ -277,6 +282,10 @@ if (!app.requestSingleInstanceLock()) {
       installWebContentsHardening(rendererEntry);
 
       clockWatcher.start();
+      // Non-blocking: `start()` only arms a delayed timer (Phase 2N-B —
+      // `DEFAULT_STARTUP_CHECK_DELAY_MS`); it never awaits network I/O here,
+      // so it cannot delay window creation, login, or checkout.
+      updateService.start();
       installPowerLifecycleHandlers(powerMonitor, {
         logger,
         getDatabase: () => productionDatabase?.connection ?? null,
@@ -366,6 +375,7 @@ if (!app.requestSingleInstanceLock()) {
           getService: () => googleConfigService,
           createService: buildGoogleConfigService,
         },
+        updateStateInspector,
       });
 
       // (2) Open the production database — only now that we own the instance.

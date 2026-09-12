@@ -20,13 +20,14 @@ describe('updaterAdapter (Phase 2N-A electron-updater boundary)', () => {
     expect(() => mod.autoUpdater).toThrow();
   });
 
-  it('configureUpdaterAdapter sets the generic feed and disables auto-download/auto-install', () => {
+  it('configureUpdaterAdapter sets the generic feed, enables auto-download, and disables auto-install-on-quit', () => {
     const setFeedURL = vi.fn();
     const fake: ConfigurableAutoUpdater = {
-      autoDownload: true,
+      autoDownload: false,
       autoInstallOnAppQuit: true,
       setFeedURL,
       on: vi.fn() as unknown as ConfigurableAutoUpdater['on'],
+      checkForUpdates: vi.fn() as unknown as ConfigurableAutoUpdater['checkForUpdates'],
     };
 
     const result = configureUpdaterAdapter(fake, 'https://updates.example.com/feed/');
@@ -35,7 +36,9 @@ describe('updaterAdapter (Phase 2N-A electron-updater boundary)', () => {
       provider: 'generic',
       url: 'https://updates.example.com/feed/',
     });
-    expect(fake.autoDownload).toBe(false);
+    // Phase 2N-B: automatic background download once an update is discovered.
+    expect(fake.autoDownload).toBe(true);
+    // Installation/restart stays out of scope (Phase 2N-C).
     expect(fake.autoInstallOnAppQuit).toBe(false);
     expect(result).toBe(fake);
   });

@@ -1,16 +1,22 @@
 /**
  * The only file in this codebase permitted to `require('electron-updater')`
- * (Phase 2N-A — `ARCHITECTURE.md` "Trusted main/application layer"). Nothing
- * outside `updater/` ever imports the library directly, and the renderer
- * never sees it at all — `updateService.ts` only ever consumes the narrow
- * `UpdaterAdapter` interface below, so a real library object can never leak
- * past this one boundary.
+ * (Phase 2N-A/2N-B — `ARCHITECTURE.md` "Trusted main/application layer").
+ * Nothing outside `updater/` ever imports the library directly, and the
+ * renderer never sees it at all — `updateService.ts` only ever consumes the
+ * narrow `UpdaterAdapter` interface below, so a real library object can
+ * never leak past this one boundary.
  *
- * This module does not check for, download, or install anything by itself.
- * It only constructs the library's updater object, points it at the
- * configured generic-HTTPS feed, and disables the two behaviors 2N-A is not
- * ready to own (`autoDownload`, `autoInstallOnAppQuit`) — orchestrating them
- * is 2N-B/2N-C.
+ * This module does not decide WHEN to check (that is `updateService.ts`'s
+ * scheduling, Phase 2N-B). It only constructs the library's updater object,
+ * points it at the configured generic-HTTPS feed via `setFeedURL` (the
+ * canonical, single source of truth for the feed — see `updateFeedConfig.ts`
+ * and `updateService.ts`'s module docstring for the full precedence
+ * explanation), and configures the two behaviors this codebase has an
+ * opinion on: `autoDownload = true` (Phase 2N-B — `UPDATE_RELEASE_STRATEGY.md`
+ * §13, `REQ-UPDATE-003`: once `checkForUpdates()` finds an approved newer
+ * version, electron-updater downloads it automatically, no separate
+ * `downloadUpdate()` call needed) and `autoInstallOnAppQuit = false`
+ * (installation/restart is still out of scope — Phase 2N-C).
  */
 
 export type UpdaterAdapterEvent =
@@ -30,9 +36,9 @@ export interface UpdaterAdapterProgress {
 
 /**
  * The minimal surface `updateService.ts` depends on. Deliberately narrower
- * than electron-updater's real `AppUpdater` — no `checkForUpdates`,
- * `downloadUpdate`, or `quitAndInstall` yet, since this slice never calls
- * them. Event payloads are typed as `unknown`-ish/untrusted; the service
+ * than electron-updater's real `AppUpdater` — no `downloadUpdate` (automatic
+ * via `autoDownload = true`, below) or `quitAndInstall` (Phase 2N-C) yet.
+ * Event payloads are typed as `unknown`-ish/untrusted; the service
  * normalizer is responsible for extracting only safe fields.
  */
 export interface UpdaterAdapter {
@@ -42,6 +48,17 @@ export interface UpdaterAdapter {
   on(event: 'download-progress', listener: (progress: UpdaterAdapterProgress) => void): void;
   on(event: 'update-downloaded', listener: (info: UpdaterAdapterInfo) => void): void;
   on(event: 'error', listener: (error: unknown) => void): void;
+  /**
+   * Ask the configured feed whether a newer approved version exists. The
+   * library internally de-duplicates overlapping calls (returns the
+   * in-flight promise rather than starting a second check/download), and —
+   * with `autoDownload = true` — automatically downloads any discovered
+   * update as part of this same call. Resolution/rejection carries the raw
+   * library result/error; callers must never surface either directly and
+   * must always attach a rejection handler (the library also emits a
+   * normalized `'error'` event for the same failure).
+   */
+  checkForUpdates(): Promise<unknown>;
 }
 
 /** The subset of electron-updater's real `autoUpdater` this module configures. */
@@ -53,18 +70,21 @@ export interface ConfigurableAutoUpdater extends UpdaterAdapter {
 
 /**
  * Point a real `autoUpdater`-shaped object at the configured generic-HTTPS
- * feed and disable the two behaviors 2N-A is not ready to own —
- * `autoDownload` and `autoInstallOnAppQuit` — since orchestrating either is
- * 2N-B/2N-C's job, not this foundation's. A pure configuration step, kept
- * separate from `createElectronUpdaterAdapter` below so it is directly
- * unit-testable against a fake without touching the real library (a raw
- * `require('electron-updater')` cannot be intercepted by a module mock).
+ * feed (`setFeedURL` — the single canonical source; see `updateFeedConfig.ts`
+ * and `updateService.ts` for why no `app-update.yml` is required), enable
+ * automatic background download (`autoDownload = true`, Phase 2N-B —
+ * `REQ-UPDATE-003`), and keep automatic install-on-quit disabled
+ * (`autoInstallOnAppQuit = false` — installation/restart is Phase 2N-C). A
+ * pure configuration step, kept separate from `createElectronUpdaterAdapter`
+ * below so it is directly unit-testable against a fake without touching the
+ * real library (a raw `require('electron-updater')` cannot be intercepted
+ * by a module mock).
  */
 export function configureUpdaterAdapter(
   autoUpdater: ConfigurableAutoUpdater,
   feedUrl: string,
 ): UpdaterAdapter {
-  autoUpdater.autoDownload = false;
+  autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.setFeedURL({ provider: 'generic', url: feedUrl });
   return autoUpdater;

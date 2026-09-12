@@ -1,12 +1,19 @@
-import { describe, expect, it, vi } from 'vitest';
-import { createUpdateService } from '../../src/main/updater/updateService';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  createUpdateService,
+  DEFAULT_STARTUP_CHECK_DELAY_MS,
+  DEFAULT_UPDATE_CHECK_INTERVAL_MS,
+} from '../../src/main/updater/updateService';
 import type { UpdaterAdapter, UpdaterAdapterEvent } from '../../src/main/updater/updaterAdapter';
 import { createCapturingLogger } from '../helpers/database';
 
-/** A controllable fake of the narrow `UpdaterAdapter` surface — never touches electron-updater. */
-function createFakeAdapter(): UpdaterAdapter & {
+type FakeAdapter = UpdaterAdapter & {
   emit: (event: UpdaterAdapterEvent, ...args: unknown[]) => void;
-} {
+  checkForUpdates: ReturnType<typeof vi.fn>;
+};
+
+/** A controllable fake of the narrow `UpdaterAdapter` surface — never touches electron-updater. */
+function createFakeAdapter(): FakeAdapter {
   const listeners = new Map<UpdaterAdapterEvent, Array<(...args: unknown[]) => void>>();
   return {
     on: (event: UpdaterAdapterEvent, listener: (...args: unknown[]) => void): void => {
@@ -19,10 +26,22 @@ function createFakeAdapter(): UpdaterAdapter & {
         listener(...args);
       }
     },
-  } as UpdaterAdapter & { emit: (event: UpdaterAdapterEvent, ...args: unknown[]) => void };
+    // Default: resolves to `undefined` and emits nothing on its own — tests
+    // that care about the event sequence emit explicitly or override this.
+    checkForUpdates: vi.fn(async () => undefined),
+  } as unknown as FakeAdapter;
 }
 
-describe('createUpdateService (Phase 2N-A updater foundation)', () => {
+const emptySnapshot = {
+  state: 'UNKNOWN',
+  currentVersion: '1.0.0',
+  availableVersion: null,
+  progressPercent: null,
+  lastCheckedAt: null,
+  failureCode: null,
+};
+
+describe('createUpdateService — construction and normalization (Phase 2N-A/2N-B)', () => {
   it('stays UNKNOWN and never constructs an adapter when unpackaged (development)', () => {
     const capture = createCapturingLogger();
     const createAdapter = vi.fn();
@@ -35,13 +54,7 @@ describe('createUpdateService (Phase 2N-A updater foundation)', () => {
       createAdapter,
     });
 
-    expect(service.getSnapshot()).toEqual({
-      state: 'UNKNOWN',
-      currentVersion: '1.0.0',
-      availableVersion: null,
-      progressPercent: null,
-      failureCode: null,
-    });
+    expect(service.getSnapshot()).toEqual(emptySnapshot);
     expect(createAdapter).not.toHaveBeenCalled();
   });
 
@@ -88,10 +101,8 @@ describe('createUpdateService (Phase 2N-A updater foundation)', () => {
     }).not.toThrow();
 
     expect(service?.getSnapshot()).toEqual({
+      ...emptySnapshot,
       state: 'FAILED',
-      currentVersion: '1.0.0',
-      availableVersion: null,
-      progressPercent: null,
       failureCode: 'INIT_FAILED',
     });
     // The raw error/message must never appear in a log field.
@@ -120,9 +131,7 @@ describe('createUpdateService (Phase 2N-A updater foundation)', () => {
     expect(afterAvailable.state).toBe('AVAILABLE');
     expect(afterAvailable.availableVersion).toBe('1.1.0');
     // Only the known keys — `releaseNotes` (or any other library field) must never leak through.
-    expect(Object.keys(afterAvailable).sort()).toEqual(
-      ['availableVersion', 'currentVersion', 'failureCode', 'progressPercent', 'state'].sort(),
-    );
+    expect(Object.keys(afterAvailable).sort()).toEqual(Object.keys(emptySnapshot).sort());
 
     fake.emit('download-progress', {
       percent: 42.6,
@@ -197,5 +206,255 @@ describe('createUpdateService (Phase 2N-A updater foundation)', () => {
       expect(typeof value === 'function').toBe(false);
       expect(typeof value === 'object' && value !== null).toBe(false);
     }
+  });
+
+  it('tracks lastCheckedAt only on a completed check, never on an error', () => {
+    const fake = createFakeAdapter();
+    const dates = ['2026-09-13T10:00:00.000Z', '2026-09-13T11:00:00.000Z'];
+    let i = 0;
+    const service = createUpdateService({
+      logger: createCapturingLogger().logger,
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      feedUrl: 'https://updates.example.com/feed/',
+      createAdapter: () => fake,
+      now: () => new Date(dates[i++] ?? dates[dates.length - 1] ?? '2026-01-01T00:00:00.000Z'),
+    });
+
+    expect(service.getSnapshot().lastCheckedAt).toBeNull();
+
+    fake.emit('error', new Error('network down'));
+    expect(service.getSnapshot().lastCheckedAt).toBeNull();
+
+    fake.emit('update-not-available', {});
+    expect(service.getSnapshot().lastCheckedAt).toBe(dates[0]);
+
+    fake.emit('update-available', { version: '2.0.0' });
+    expect(service.getSnapshot().lastCheckedAt).toBe(dates[1]);
+  });
+});
+
+describe('createUpdateService — checkNow() (Phase 2N-B)', () => {
+  it('checkNow() is a safe no-op resolving to the current snapshot when unsupported', async () => {
+    const service = createUpdateService({
+      logger: createCapturingLogger().logger,
+      currentVersion: '1.0.0',
+      isPackaged: false,
+      feedUrl: null,
+    });
+
+    await expect(service.checkNow()).resolves.toEqual(emptySnapshot);
+  });
+
+  it('checkNow() calls the adapter and resolves to the normalized snapshot', async () => {
+    const fake = createFakeAdapter();
+    fake.checkForUpdates.mockImplementation(async () => {
+      fake.emit('checking-for-update');
+      fake.emit('update-available', { version: '1.2.0' });
+    });
+    const service = createUpdateService({
+      logger: createCapturingLogger().logger,
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      feedUrl: 'https://updates.example.com/feed/',
+      createAdapter: () => fake,
+    });
+
+    const result = await service.checkNow();
+    expect(result.state).toBe('AVAILABLE');
+    expect(result.availableVersion).toBe('1.2.0');
+    expect(fake.checkForUpdates).toHaveBeenCalledTimes(1);
+  });
+
+  it('checkNow() never rejects, even when the adapter rejects, and never leaks the raw error', async () => {
+    const fake = createFakeAdapter();
+    fake.checkForUpdates.mockImplementation(() => {
+      fake.emit('error', new Error('secret-internal-detail'));
+      return Promise.reject(new Error('secret-internal-detail'));
+    });
+    const service = createUpdateService({
+      logger: createCapturingLogger().logger,
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      feedUrl: 'https://updates.example.com/feed/',
+      createAdapter: () => fake,
+    });
+
+    await expect(service.checkNow()).resolves.toMatchObject({
+      state: 'FAILED',
+      failureCode: 'CHECK_FAILED',
+    });
+    const snapshot = await service.checkNow();
+    expect(JSON.stringify(snapshot)).not.toContain('secret-internal-detail');
+  });
+
+  it('concurrent checkNow() calls share the one in-flight check (no overlapping checks)', async () => {
+    const fake = createFakeAdapter();
+    let resolveCheck: (() => void) | undefined;
+    // `Once`: only the FIRST call is held open; a later, separate `checkNow()`
+    // (after this one settles) falls back to the default auto-resolving fake.
+    fake.checkForUpdates.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveCheck = resolve;
+        }),
+    );
+    const service = createUpdateService({
+      logger: createCapturingLogger().logger,
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      feedUrl: 'https://updates.example.com/feed/',
+      createAdapter: () => fake,
+    });
+
+    const first = service.checkNow();
+    const second = service.checkNow();
+    expect(fake.checkForUpdates).toHaveBeenCalledTimes(1);
+
+    resolveCheck?.();
+    await Promise.all([first, second]);
+    expect(fake.checkForUpdates).toHaveBeenCalledTimes(1);
+
+    // A later call, after the first has settled, starts a NEW check.
+    await service.checkNow();
+    expect(fake.checkForUpdates).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('createUpdateService — scheduling (Phase 2N-B)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('start() is a no-op when unsupported (no adapter) — no timer, checkForUpdates never called', () => {
+    vi.useFakeTimers();
+    const createAdapter = vi.fn();
+    const service = createUpdateService({
+      logger: createCapturingLogger().logger,
+      currentVersion: '1.0.0',
+      isPackaged: false,
+      feedUrl: null,
+      createAdapter,
+    });
+
+    service.start();
+    expect(service.running).toBe(false);
+    vi.advanceTimersByTime(DEFAULT_UPDATE_CHECK_INTERVAL_MS * 3);
+    expect(createAdapter).not.toHaveBeenCalled();
+  });
+
+  it('performs the startup check only after the configured delay, never immediately', async () => {
+    vi.useFakeTimers();
+    const fake = createFakeAdapter();
+    const service = createUpdateService({
+      logger: createCapturingLogger().logger,
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      feedUrl: 'https://updates.example.com/feed/',
+      createAdapter: () => fake,
+      startupCheckDelayMs: 5_000,
+    });
+
+    service.start();
+    expect(service.running).toBe(true);
+    expect(fake.checkForUpdates).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(fake.checkForUpdates).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fake.checkForUpdates).toHaveBeenCalledTimes(1);
+  });
+
+  it('reschedules a bounded periodic check after each completed check', async () => {
+    vi.useFakeTimers();
+    const fake = createFakeAdapter();
+    const service = createUpdateService({
+      logger: createCapturingLogger().logger,
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      feedUrl: 'https://updates.example.com/feed/',
+      createAdapter: () => fake,
+      startupCheckDelayMs: 1_000,
+      checkIntervalMs: 10_000,
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fake.checkForUpdates).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(fake.checkForUpdates).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fake.checkForUpdates).toHaveBeenCalledTimes(2);
+  });
+
+  it('a failed check does not stop future periodic checks', async () => {
+    vi.useFakeTimers();
+    const fake = createFakeAdapter();
+    fake.checkForUpdates
+      .mockImplementationOnce(() => {
+        fake.emit('error', new Error('temporary feed outage'));
+        return Promise.reject(new Error('temporary feed outage'));
+      })
+      .mockImplementation(async () => {
+        fake.emit('update-not-available', {});
+      });
+    const service = createUpdateService({
+      logger: createCapturingLogger().logger,
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      feedUrl: 'https://updates.example.com/feed/',
+      createAdapter: () => fake,
+      startupCheckDelayMs: 1_000,
+      checkIntervalMs: 5_000,
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(service.getSnapshot().state).toBe('FAILED');
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(fake.checkForUpdates).toHaveBeenCalledTimes(2);
+    expect(service.getSnapshot().state).toBe('IDLE');
+  });
+
+  it('stopSync() stops the pending timer cleanly — no further checks fire', async () => {
+    vi.useFakeTimers();
+    const fake = createFakeAdapter();
+    const service = createUpdateService({
+      logger: createCapturingLogger().logger,
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      feedUrl: 'https://updates.example.com/feed/',
+      createAdapter: () => fake,
+      startupCheckDelayMs: DEFAULT_STARTUP_CHECK_DELAY_MS,
+    });
+
+    service.start();
+    service.stopSync();
+    expect(service.running).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(DEFAULT_STARTUP_CHECK_DELAY_MS + 1);
+    expect(fake.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  it('start() does not schedule twice when called again while already running', async () => {
+    vi.useFakeTimers();
+    const fake = createFakeAdapter();
+    const service = createUpdateService({
+      logger: createCapturingLogger().logger,
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      feedUrl: 'https://updates.example.com/feed/',
+      createAdapter: () => fake,
+      startupCheckDelayMs: 1_000,
+      checkIntervalMs: 10_000,
+    });
+
+    service.start();
+    service.start();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fake.checkForUpdates).toHaveBeenCalledTimes(1);
   });
 });

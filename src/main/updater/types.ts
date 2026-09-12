@@ -1,13 +1,15 @@
 /**
- * Internal update-lifecycle state (Phase 2N-A — `UPDATE_RELEASE_STRATEGY.md`
- * Sections 11-17; `ARCHITECTURE.md §42.3`).
+ * Internal update-lifecycle state (Phase 2N-A/2N-B —
+ * `UPDATE_RELEASE_STRATEGY.md` Sections 11-17; `ARCHITECTURE.md §42.3`).
  *
  * This is a main-process-only, service-internal shape. It is deliberately
  * NOT the renderer/diagnostics-facing `UpdateState`/`UpdateDiagnostic` in
- * `src/shared/diagnostics.ts` (Phase 2M) — that DTO is the honest V1
- * "no real updater exists" surface, and stays as-is until 2N-B wires a real
- * `UpdateStateInspector` on top of this service. Nothing here crosses the
- * IPC boundary in this slice.
+ * `src/shared/diagnostics.ts` (Phase 2M) — that DTO's own vocabulary is
+ * intentionally coarser (no `CHECKING`/`DOWNLOADING` distinction) and is
+ * never extended to match this one; `updateDiagnosticsBridge.ts` maps
+ * between the two. This internal shape itself never crosses the IPC
+ * boundary — only the mapped `UpdateDiagnostic` does, via the pre-existing
+ * `diagnostics:*` channels.
  */
 
 export const UPDATER_STATES = [
@@ -44,6 +46,8 @@ export interface UpdateServiceSnapshot {
   readonly availableVersion: string | null;
   /** 0-100, integer. `null` outside `DOWNLOADING`/`READY`. */
   readonly progressPercent: number | null;
+  /** ISO timestamp of the last check that completed without error (found or not found an update). `null` before any check has completed. */
+  readonly lastCheckedAt: string | null;
   /** Only meaningful when `state === 'FAILED'`. */
   readonly failureCode: UpdaterFailureCode | null;
 }
