@@ -15,8 +15,10 @@ import type { MaintenanceCoordinator } from '../maintenance/maintenanceCoordinat
 import type { CrashEvidenceService } from '../diagnostics/crashEvidence';
 import type { ActivityHistoryService } from '../diagnostics/activityHistory';
 import type { UpdateStateInspector } from '../diagnostics/updateHealth';
+import type { UpdateService } from '../updater/updateService';
 import { registerBackupIpcHandlers } from './backupIpc';
 import { registerMaintenanceIpcHandlers } from './maintenanceIpc';
+import { registerUpdatesIpcHandlers } from './updatesIpc';
 import { registerCheckoutIpcHandlers } from './checkoutIpc';
 import { registerCustomerIpcHandlers } from './customerIpc';
 import { createIpcDiagnosticsService, registerDiagnosticsIpcHandlers } from './diagnosticsIpc';
@@ -75,6 +77,8 @@ export interface IpcContext {
   };
   /** Phase 2N-B: the real updater snapshot, bridged for Phase 2M diagnostics. */
   readonly updateStateInspector?: UpdateStateInspector;
+  /** Phase 2N-C: the one trusted `UpdateService`, for `updates:*`. */
+  readonly updateService: UpdateService;
 }
 
 export function registerIpcHandlers(context: IpcContext): void {
@@ -201,6 +205,11 @@ export function registerIpcHandlers(context: IpcContext): void {
   registerMaintenanceIpcHandlers({
     logger: context.logger,
     coordinator: context.maintenanceCoordinator,
+  });
+
+  registerUpdatesIpcHandlers({
+    logger: context.logger,
+    updateService: context.updateService,
   });
 
   registerGoogleIpcHandlers({

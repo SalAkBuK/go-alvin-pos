@@ -28,6 +28,7 @@ describe('updaterAdapter (Phase 2N-A electron-updater boundary)', () => {
       setFeedURL,
       on: vi.fn() as unknown as ConfigurableAutoUpdater['on'],
       checkForUpdates: vi.fn() as unknown as ConfigurableAutoUpdater['checkForUpdates'],
+      quitAndInstall: vi.fn(),
     };
 
     const result = configureUpdaterAdapter(fake, 'https://updates.example.com/feed/');
@@ -38,7 +39,8 @@ describe('updaterAdapter (Phase 2N-A electron-updater boundary)', () => {
     });
     // Phase 2N-B: automatic background download once an update is discovered.
     expect(fake.autoDownload).toBe(true);
-    // Installation/restart stays out of scope (Phase 2N-C).
+    // Automatic install-on-quit stays off; install is only ever user-controlled
+    // via `updateService.ts`'s `restartAndInstall()` (Phase 2N-C).
     expect(fake.autoInstallOnAppQuit).toBe(false);
     expect(result).toBe(fake);
   });

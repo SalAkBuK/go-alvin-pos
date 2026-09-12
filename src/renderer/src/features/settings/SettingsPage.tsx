@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { IpcResult } from '../../../../shared/products';
 import type { TaxRateConfig } from '../../../../shared/settings';
 import { FormField } from '../../components/FormField';
+import { AboutUpdatesSection } from './AboutUpdatesSection';
 import { BackupSection } from './BackupSection';
 import { OffDeviceSection } from './OffDeviceSection';
 import { RestoreSection } from './RestoreSection';
@@ -204,6 +205,7 @@ export function SettingsPage() {
       <RestoreSection />
       <ReconciliationQueueSection />
       <SupportDiagnosticsSection />
+      <AboutUpdatesSection />
     </>
   );
 }

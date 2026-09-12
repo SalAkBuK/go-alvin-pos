@@ -59,6 +59,19 @@ export interface UpdaterAdapter {
    * normalized `'error'` event for the same failure).
    */
   checkForUpdates(): Promise<unknown>;
+  /**
+   * Quit the application and launch the already-downloaded installer
+   * (Phase 2N-C — `UPDATE_RELEASE_STRATEGY.md §17`). Only ever called by
+   * `updateService.ts`'s `restartAndInstall()` after it has independently
+   * confirmed `state === 'READY'` and the maintenance coordinator reports
+   * `SAFE`. Synchronous and void by electron-updater's own contract: a
+   * successful call quits the process (via `app.quit()` on a later tick,
+   * which still runs this app's normal `will-quit` shutdown handling) before
+   * any caller could observe a "success" return value, and a failure is
+   * reported only through the library's own `'error'` event — never a
+   * thrown exception or a resolved value here.
+   */
+  quitAndInstall(): void;
 }
 
 /** The subset of electron-updater's real `autoUpdater` this module configures. */

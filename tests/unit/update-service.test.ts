@@ -10,6 +10,7 @@ import { createCapturingLogger } from '../helpers/database';
 type FakeAdapter = UpdaterAdapter & {
   emit: (event: UpdaterAdapterEvent, ...args: unknown[]) => void;
   checkForUpdates: ReturnType<typeof vi.fn>;
+  quitAndInstall: ReturnType<typeof vi.fn>;
 };
 
 /** A controllable fake of the narrow `UpdaterAdapter` surface — never touches electron-updater. */
@@ -29,7 +30,31 @@ function createFakeAdapter(): FakeAdapter {
     // Default: resolves to `undefined` and emits nothing on its own — tests
     // that care about the event sequence emit explicitly or override this.
     checkForUpdates: vi.fn(async () => undefined),
+    quitAndInstall: vi.fn(),
   } as unknown as FakeAdapter;
+}
+
+/** Bring a fresh service straight to a READY, install-eligible state. */
+function makeReadyService(overrides?: {
+  readonly getMaintenanceState?: () =>
+    | 'SAFE'
+    | 'CHECKOUT_ACTIVE'
+    | 'TRANSACTION_IN_FLIGHT'
+    | 'MIGRATION_IN_PROGRESS'
+    | 'RESTORE_IN_PROGRESS';
+}): { service: ReturnType<typeof createUpdateService>; fake: FakeAdapter } {
+  const fake = createFakeAdapter();
+  const service = createUpdateService({
+    logger: createCapturingLogger().logger,
+    currentVersion: '1.0.0',
+    isPackaged: true,
+    feedUrl: 'https://updates.example.com/feed/',
+    createAdapter: () => fake,
+    getMaintenanceState: overrides?.getMaintenanceState ?? (() => 'SAFE'),
+  });
+  fake.emit('update-available', { version: '1.1.0' });
+  fake.emit('update-downloaded', { version: '1.1.0' });
+  return { service, fake };
 }
 
 const emptySnapshot = {
@@ -50,6 +75,7 @@ describe('createUpdateService — construction and normalization (Phase 2N-A/2N-
       logger: capture.logger,
       currentVersion: '1.0.0',
       isPackaged: false,
+      getMaintenanceState: () => 'SAFE' as const,
       feedUrl: 'https://updates.example.com/feed/',
       createAdapter,
     });
@@ -64,6 +90,7 @@ describe('createUpdateService — construction and normalization (Phase 2N-A/2N-
       logger: createCapturingLogger().logger,
       currentVersion: '1.0.0',
       isPackaged: true,
+      getMaintenanceState: () => 'SAFE' as const,
       feedUrl: null,
       createAdapter,
     });
@@ -79,6 +106,7 @@ describe('createUpdateService — construction and normalization (Phase 2N-A/2N-
       logger: createCapturingLogger().logger,
       currentVersion: '2.3.4',
       isPackaged: false,
+      getMaintenanceState: () => 'SAFE' as const,
       feedUrl: null,
     });
     expect(service.getSnapshot().currentVersion).toBe('2.3.4');
@@ -93,6 +121,7 @@ describe('createUpdateService — construction and normalization (Phase 2N-A/2N-
         logger: capture.logger,
         currentVersion: '1.0.0',
         isPackaged: true,
+        getMaintenanceState: () => 'SAFE' as const,
         feedUrl: 'https://updates.example.com/feed/',
         createAdapter: () => {
           throw new Error('simulated: electron-updater module failed to load');
@@ -117,6 +146,7 @@ describe('createUpdateService — construction and normalization (Phase 2N-A/2N-
       logger: createCapturingLogger().logger,
       currentVersion: '1.0.0',
       isPackaged: true,
+      getMaintenanceState: () => 'SAFE' as const,
       feedUrl: 'https://updates.example.com/feed/',
       createAdapter: () => fake,
     });
@@ -160,6 +190,7 @@ describe('createUpdateService — construction and normalization (Phase 2N-A/2N-
       logger: createCapturingLogger().logger,
       currentVersion: '1.0.0',
       isPackaged: true,
+      getMaintenanceState: () => 'SAFE' as const,
       feedUrl: 'https://updates.example.com/feed/',
       createAdapter: () => fake,
     });
@@ -193,6 +224,7 @@ describe('createUpdateService — construction and normalization (Phase 2N-A/2N-
       logger: createCapturingLogger().logger,
       currentVersion: '1.0.0',
       isPackaged: true,
+      getMaintenanceState: () => 'SAFE' as const,
       feedUrl: 'https://updates.example.com/feed/',
       createAdapter: () => fake,
     });
@@ -216,6 +248,7 @@ describe('createUpdateService — construction and normalization (Phase 2N-A/2N-
       logger: createCapturingLogger().logger,
       currentVersion: '1.0.0',
       isPackaged: true,
+      getMaintenanceState: () => 'SAFE' as const,
       feedUrl: 'https://updates.example.com/feed/',
       createAdapter: () => fake,
       now: () => new Date(dates[i++] ?? dates[dates.length - 1] ?? '2026-01-01T00:00:00.000Z'),
@@ -240,6 +273,7 @@ describe('createUpdateService — checkNow() (Phase 2N-B)', () => {
       logger: createCapturingLogger().logger,
       currentVersion: '1.0.0',
       isPackaged: false,
+      getMaintenanceState: () => 'SAFE' as const,
       feedUrl: null,
     });
 
@@ -256,6 +290,7 @@ describe('createUpdateService — checkNow() (Phase 2N-B)', () => {
       logger: createCapturingLogger().logger,
       currentVersion: '1.0.0',
       isPackaged: true,
+      getMaintenanceState: () => 'SAFE' as const,
       feedUrl: 'https://updates.example.com/feed/',
       createAdapter: () => fake,
     });
@@ -276,6 +311,7 @@ describe('createUpdateService — checkNow() (Phase 2N-B)', () => {
       logger: createCapturingLogger().logger,
       currentVersion: '1.0.0',
       isPackaged: true,
+      getMaintenanceState: () => 'SAFE' as const,
       feedUrl: 'https://updates.example.com/feed/',
       createAdapter: () => fake,
     });
@@ -303,6 +339,7 @@ describe('createUpdateService — checkNow() (Phase 2N-B)', () => {
       logger: createCapturingLogger().logger,
       currentVersion: '1.0.0',
       isPackaged: true,
+      getMaintenanceState: () => 'SAFE' as const,
       feedUrl: 'https://updates.example.com/feed/',
       createAdapter: () => fake,
     });
@@ -333,6 +370,7 @@ describe('createUpdateService — scheduling (Phase 2N-B)', () => {
       logger: createCapturingLogger().logger,
       currentVersion: '1.0.0',
       isPackaged: false,
+      getMaintenanceState: () => 'SAFE' as const,
       feedUrl: null,
       createAdapter,
     });
@@ -350,6 +388,7 @@ describe('createUpdateService — scheduling (Phase 2N-B)', () => {
       logger: createCapturingLogger().logger,
       currentVersion: '1.0.0',
       isPackaged: true,
+      getMaintenanceState: () => 'SAFE' as const,
       feedUrl: 'https://updates.example.com/feed/',
       createAdapter: () => fake,
       startupCheckDelayMs: 5_000,
@@ -373,6 +412,7 @@ describe('createUpdateService — scheduling (Phase 2N-B)', () => {
       logger: createCapturingLogger().logger,
       currentVersion: '1.0.0',
       isPackaged: true,
+      getMaintenanceState: () => 'SAFE' as const,
       feedUrl: 'https://updates.example.com/feed/',
       createAdapter: () => fake,
       startupCheckDelayMs: 1_000,
@@ -404,6 +444,7 @@ describe('createUpdateService — scheduling (Phase 2N-B)', () => {
       logger: createCapturingLogger().logger,
       currentVersion: '1.0.0',
       isPackaged: true,
+      getMaintenanceState: () => 'SAFE' as const,
       feedUrl: 'https://updates.example.com/feed/',
       createAdapter: () => fake,
       startupCheckDelayMs: 1_000,
@@ -426,6 +467,7 @@ describe('createUpdateService — scheduling (Phase 2N-B)', () => {
       logger: createCapturingLogger().logger,
       currentVersion: '1.0.0',
       isPackaged: true,
+      getMaintenanceState: () => 'SAFE' as const,
       feedUrl: 'https://updates.example.com/feed/',
       createAdapter: () => fake,
       startupCheckDelayMs: DEFAULT_STARTUP_CHECK_DELAY_MS,
@@ -446,6 +488,7 @@ describe('createUpdateService — scheduling (Phase 2N-B)', () => {
       logger: createCapturingLogger().logger,
       currentVersion: '1.0.0',
       isPackaged: true,
+      getMaintenanceState: () => 'SAFE' as const,
       feedUrl: 'https://updates.example.com/feed/',
       createAdapter: () => fake,
       startupCheckDelayMs: 1_000,
@@ -456,5 +499,110 @@ describe('createUpdateService — scheduling (Phase 2N-B)', () => {
     service.start();
     await vi.advanceTimersByTimeAsync(1_000);
     expect(fake.checkForUpdates).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createUpdateService — restartAndInstall() (Phase 2N-C)', () => {
+  it('rejects with UNSUPPORTED when no real adapter is active', () => {
+    const service = createUpdateService({
+      logger: createCapturingLogger().logger,
+      currentVersion: '1.0.0',
+      isPackaged: false,
+      feedUrl: null,
+      getMaintenanceState: () => 'SAFE',
+    });
+
+    expect(service.restartAndInstall()).toEqual({ code: 'UNSUPPORTED' });
+  });
+
+  it('rejects with NOT_READY when state is not READY (e.g. still IDLE)', () => {
+    const fake = createFakeAdapter();
+    const service = createUpdateService({
+      logger: createCapturingLogger().logger,
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      feedUrl: 'https://updates.example.com/feed/',
+      createAdapter: () => fake,
+      getMaintenanceState: () => 'SAFE',
+    });
+
+    expect(service.restartAndInstall()).toEqual({ code: 'NOT_READY' });
+    expect(fake.quitAndInstall).not.toHaveBeenCalled();
+  });
+
+  it('rejects with NOT_READY when only DOWNLOADING, not yet READY', () => {
+    const fake = createFakeAdapter();
+    const service = createUpdateService({
+      logger: createCapturingLogger().logger,
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      feedUrl: 'https://updates.example.com/feed/',
+      createAdapter: () => fake,
+      getMaintenanceState: () => 'SAFE',
+    });
+    fake.emit('update-available', { version: '1.1.0' });
+    fake.emit('download-progress', { percent: 50 });
+
+    expect(service.restartAndInstall()).toEqual({ code: 'NOT_READY' });
+    expect(fake.quitAndInstall).not.toHaveBeenCalled();
+  });
+
+  it('SAFE + READY invokes the real install primitive exactly once and returns INSTALL_ACCEPTED', () => {
+    const { service, fake } = makeReadyService();
+
+    expect(service.restartAndInstall()).toEqual({ code: 'INSTALL_ACCEPTED' });
+    expect(fake.quitAndInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['CHECKOUT_ACTIVE'],
+    ['TRANSACTION_IN_FLIGHT'],
+    ['MIGRATION_IN_PROGRESS'],
+    ['RESTORE_IN_PROGRESS'],
+  ] as const)(
+    'denies install when maintenance state is %s, without calling quitAndInstall',
+    (state) => {
+      const { service, fake } = makeReadyService({ getMaintenanceState: () => state });
+
+      expect(service.restartAndInstall()).toEqual({ code: state });
+      expect(fake.quitAndInstall).not.toHaveBeenCalled();
+    },
+  );
+
+  it('maps a synchronous quitAndInstall failure to INSTALL_FAILED without leaking the raw error', () => {
+    const { service, fake } = makeReadyService();
+    fake.quitAndInstall.mockImplementation(() => {
+      throw new Error('secret-internal-detail');
+    });
+
+    const result = service.restartAndInstall();
+    expect(result).toEqual({ code: 'INSTALL_FAILED' });
+    expect(JSON.stringify(result)).not.toContain('secret-internal-detail');
+  });
+
+  it('race-safety: re-checks maintenance state fresh at call time, not at construction time', () => {
+    let currentState: 'SAFE' | 'CHECKOUT_ACTIVE' = 'CHECKOUT_ACTIVE';
+    const { service, fake } = makeReadyService({ getMaintenanceState: () => currentState });
+
+    // Denied while unsafe.
+    expect(service.restartAndInstall()).toEqual({ code: 'CHECKOUT_ACTIVE' });
+    expect(fake.quitAndInstall).not.toHaveBeenCalled();
+
+    // State becomes safe between calls (e.g. the sale completed) — the SAME
+    // service, with no reconstruction, must now allow it. A stale renderer
+    // snapshot cannot force a restart: only this fresh call matters.
+    currentState = 'SAFE';
+    expect(service.restartAndInstall()).toEqual({ code: 'INSTALL_ACCEPTED' });
+    expect(fake.quitAndInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it('never throws, even when getMaintenanceState itself throws', () => {
+    const { service } = makeReadyService({
+      getMaintenanceState: () => {
+        throw new Error('should not happen, but must not crash the service either');
+      },
+    });
+
+    expect(() => service.restartAndInstall()).not.toThrow();
   });
 });

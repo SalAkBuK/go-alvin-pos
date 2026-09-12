@@ -67,6 +67,9 @@ describe('IPC contract', () => {
         'backupOffDeviceConfiguration',
         'maintenanceStatus',
         'maintenanceCheckoutActivity',
+        'updatesGetStatus',
+        'updatesCheckNow',
+        'updatesRestartAndInstall',
       ].sort(),
     );
   });
@@ -90,6 +93,7 @@ describe('IPC contract', () => {
       'backup',
       'maintenance',
       'support',
+      'updates',
     ];
     for (const name of Object.values(IPC)) {
       const namespace = name.split(':')[0];
@@ -150,6 +154,10 @@ describe('IPC contract', () => {
       ],
       // `maintenance` exposes read-only status + the one narrow draft-cart signal.
       maintenance: ['status', 'noteCheckoutActivity'],
+      // `updates` exposes read-only status, a no-argument manual check, and a
+      // no-argument restart-and-install request — the main process alone
+      // decides READY/maintenance-safety; no URL, version, or path surface.
+      updates: ['getStatus', 'checkNow', 'restartAndInstall'],
       // `settings` exposes only the tax and business sub-objects — no generic setter.
       settings: ['tax.get', 'tax.update', 'business.get', 'business.update'],
       // `printing` exposes only narrow capabilities — no generic settings/query surface.
@@ -182,6 +190,7 @@ describe('IPC contract', () => {
       'salesHistory',
       'settings',
       'support',
+      'updates',
     ]);
     for (const methods of Object.values(surface)) {
       for (const method of methods) {

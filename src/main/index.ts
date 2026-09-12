@@ -106,14 +106,18 @@ const maintenanceCoordinator: MaintenanceCoordinator = createMaintenanceCoordina
 });
 
 /**
- * Phase 2N-A/2N-B updater engine: construct the trusted `UpdateService`
- * (fail-open, no database/checkout dependency — `updateService.ts`) and wire
- * its real snapshot into the Phase 2M `updateStateInspector` diagnostics
- * seam (`updateDiagnosticsBridge.ts`). `updateService.start()` is called
- * later, inside `whenReady()` alongside `clockWatcher.start()`, so the
- * (delayed, non-blocking) first update check never competes with window
- * creation/login — see the `whenReady()` block below. Installation/restart
- * remain out of scope (Phase 2N-C).
+ * Phase 2N-A/B/C updater engine: construct the trusted `UpdateService`
+ * (fail-open, no database dependency — `updateService.ts`), wire its real
+ * snapshot into the Phase 2M `updateStateInspector` diagnostics seam
+ * (`updateDiagnosticsBridge.ts`), and give it a read-only view of the one
+ * maintenance coordinator's state so `restartAndInstall()` can gate a
+ * user-requested install/restart the same way every other exclusive
+ * maintenance decision is gated — this passes only `.status`, never the
+ * coordinator itself, so the updater can query but never claim/mutate
+ * maintenance state. `updateService.start()` is called later, inside
+ * `whenReady()` alongside `clockWatcher.start()`, so the (delayed,
+ * non-blocking) first update check never competes with window
+ * creation/login — see the `whenReady()` block below.
  */
 const updateFeedConfig = loadUpdateFeedConfig({
   onWarn: (message) => logger.warn('application', 'update.feed-config-unavailable', { message }),
@@ -123,6 +127,7 @@ const updateService: UpdateService = createUpdateService({
   currentVersion: app.getVersion(),
   isPackaged: app.isPackaged,
   feedUrl: updateFeedConfig?.url ?? null,
+  getMaintenanceState: () => maintenanceCoordinator.status(),
 });
 const updateStateInspector = createUpdaterStateInspector(updateService);
 
@@ -376,6 +381,7 @@ if (!app.requestSingleInstanceLock()) {
           createService: buildGoogleConfigService,
         },
         updateStateInspector,
+        updateService,
       });
 
       // (2) Open the production database — only now that we own the instance.

@@ -1,64 +1,58 @@
 import type { Logger } from '../app/logger';
+import type { MaintenanceState } from '../maintenance/maintenanceCoordinator';
 import type { UpdaterAdapter, UpdaterAdapterInfo, UpdaterAdapterProgress } from './updaterAdapter';
 import { createElectronUpdaterAdapter } from './updaterAdapter';
-import type { UpdaterFailureCode, UpdaterState, UpdateServiceSnapshot } from './types';
+import type {
+  UpdaterFailureCode,
+  UpdaterState,
+  UpdateServiceSnapshot,
+  UpdateInstallResult,
+} from './types';
 
 /**
- * The trusted main-process update-discovery-and-download engine (Phase 2N-B,
- * built on the Phase 2N-A foundation — `ARCHITECTURE.md §10, §42.3`;
+ * The trusted main-process update engine — discovery, background download
+ * (Phase 2N-B), and user-controlled install (Phase 2N-C) — built on the
+ * Phase 2N-A foundation (`ARCHITECTURE.md §10, §42.3`;
  * `UPDATE_RELEASE_STRATEGY.md` Sections 2, 6, 11-17, 29, 40-41;
  * `PRODUCT_REQUIREMENTS.md` `REQ-UPDATE-001`..`010`).
  *
- * ## Canonical feed configuration (Phase 2N-B Section 2)
+ * ## Canonical feed configuration
  *
  * There is exactly ONE source of truth for the update feed: the generic-HTTPS
  * URL resolved by `updateFeedConfig.ts` (injected value → build-embedded
  * `__UPDATE_FEED_URL__` → `GO_PHONES_UPDATE_FEED_URL` env var), applied via
  * `autoUpdater.setFeedURL({ provider: 'generic', url })` in
- * `updaterAdapter.ts`. This codebase does NOT generate or read an
- * electron-builder `app-update.yml`:
+ * `updaterAdapter.ts`. `setFeedURL()` is documented by electron-updater as the
+ * mechanism to "override configuration in app-update.yml" — it is
+ * authoritative for which provider/URL a check actually uses regardless of
+ * any on-disk yml. `electron-builder.js` generates `app-update.yml` (via the
+ * `nsis` installer target, added in the Phase 2N-B follow-up fix) from the
+ * SAME env var, purely so electron-updater's download path has the
+ * `updaterCacheDirName` it unconditionally requires — never a second,
+ * independently meaningful feed source.
  *
- *   - `setFeedURL()` is documented by electron-updater as the mechanism to
- *     "override configuration in app-update.yml" — it is authoritative for
- *     which provider/URL a check actually uses, regardless of any yml.
- *   - `app-update.yml` generation in electron-builder is tied to
- *     auto-updatable installer targets (nsis/squirrel/appx/dmg/AppImage).
- *     This codebase's `win.target` stays `dir` (2N-A explicitly preserved
- *     existing packaging; changing it to `nsis` is a real installer/signing
- *     change, not an updater-abstraction change). Empirically confirmed
- *     during 2N-B: adding an electron-builder `publish` block does NOT make
- *     `--dir` emit `app-update.yml` — there is no installer target to attach
- *     it to. Generating one without an actual installer target would be a
- *     second, unused source of feed truth, which Section 2 explicitly
- *     forbids.
- *   - The one place electron-updater still reads a file from disk
- *     regardless of `setFeedURL()` is `updaterCacheDirName`, resolved from
- *     `app-update.yml` only when `downloadUpdate()`'s `getOrCreateDownloadHelper()`
- *     runs. In this V1 `dir`-packaged build that file does not exist, so a
- *     REAL download attempt against a REAL feed would fail there today with a
- *     normal, safe `'error'` event — already correctly classified below as
- *     `DOWNLOAD_FAILED` (fail-open, never a crash, never a blocked sale).
- *     This is a known, intentional limitation of V1's `dir`-only packaging,
- *     not a defect in this service; it is resolved whenever a real installer
- *     target + publish pipeline is introduced (reserved for a packaging
- *     slice such as 2N-E, per the task's own scope notes), not by inventing
- *     a second config path here.
+ * ## Scope
  *
- * ## Scope of this slice
+ * Discovery + download (2N-B): a startup check (after a short, non-blocking
+ * delay — never inside database/migration ownership) and a conservative
+ * bounded periodic re-check, both driving the SAME `checkForUpdates()` call
+ * also exposed as `checkNow()` for the manual "Check for Updates" UI (2N-C).
+ * With `autoDownload = true` (`updaterAdapter.ts`), a discovered approved
+ * update downloads automatically.
  *
- * Real packaged update discovery: a startup check (after a short,
- * non-blocking delay — never inside database/migration ownership) and a
- * conservative bounded periodic re-check, both driving the SAME
- * `checkForUpdates()` call also exposed as `checkNow()` for a future manual
- * "Check for Updates" UI (2N-C). With `autoDownload = true`
- * (`updaterAdapter.ts`), a discovered approved update downloads
- * automatically — no separate orchestration needed here. No install, no
- * restart, no renderer IPC.
+ * Install (2N-C): `restartAndInstall()` is the one trusted operation that may
+ * invoke the real `quitAndInstall()` primitive, and only after independently
+ * (synchronously, race-safely) confirming `state === 'READY'` and the
+ * injected `getMaintenanceState()` reports `SAFE`. The renderer never decides
+ * whether it is safe to restart — it can only ask, and this function is the
+ * sole place that decides.
  *
  * Failure isolation (`REQ-UPDATE-006`): construction NEVER throws. Neither
- * `start()`, `checkNow()`, nor any adapter event handler can throw past this
- * module. This service has no database handle and no checkout/maintenance
- * dependency; it cannot hold a lock and nothing here can block a sale.
+ * `start()`, `checkNow()`, `restartAndInstall()`, nor any adapter event
+ * handler can throw past this module. This service still has no database
+ * handle and cannot acquire any exclusive database-lifecycle claim itself —
+ * `getMaintenanceState()` is a read-only status query, the same one
+ * `maintenance:status` already exposes to the renderer, not a new authority.
  */
 
 /** V1 conservative bounded interval — a phone-shop POS does not need aggressive polling. */
@@ -80,6 +74,14 @@ export interface UpdateServiceDeps {
   readonly checkIntervalMs?: number;
   /** Delay before the first startup check. Defaults to {@link DEFAULT_STARTUP_CHECK_DELAY_MS}. */
   readonly startupCheckDelayMs?: number;
+  /**
+   * The one `MaintenanceCoordinator`'s current state (Phase 2N-C —
+   * `ARCHITECTURE.md §42.3`). `restartAndInstall()` consults this
+   * synchronously, immediately before invoking the real install primitive —
+   * required, not optional: there is no safe default value for "is it safe
+   * to restart right now," so every caller must wire the real coordinator.
+   */
+  readonly getMaintenanceState: () => MaintenanceState;
 }
 
 export interface UpdateService {
@@ -101,6 +103,16 @@ export interface UpdateService {
    * Never rejects; always resolves to the current normalized snapshot.
    */
   checkNow(): Promise<UpdateServiceSnapshot>;
+  /**
+   * Phase 2N-C: accept or refuse a user-requested "Restart & Update".
+   * Synchronous and race-safe — the maintenance-state check and the install
+   * invocation happen in the same synchronous turn, so nothing can change
+   * maintenance state between "decided safe" and "installing" (there is no
+   * `await` in between). Never throws; a failed install invocation is
+   * normalized to `INSTALL_FAILED`. The renderer must not expect a response
+   * after `INSTALL_ACCEPTED` — the process may quit before one could arrive.
+   */
+  restartAndInstall(): UpdateInstallResult;
 }
 
 interface MutableSnapshot {
@@ -282,9 +294,48 @@ export function createUpdateService(deps: UpdateServiceDeps): UpdateService {
     }
   }
 
+  function restartAndInstall(): UpdateInstallResult {
+    // Wrapped end-to-end: this operation must NEVER throw, matching every
+    // other entry point on this service (`REQ-UPDATE-006`) — including
+    // against a `getMaintenanceState()` that unexpectedly throws.
+    try {
+      if (!adapter) {
+        return { code: 'UNSUPPORTED' };
+      }
+      if (snapshot.state !== 'READY') {
+        return { code: 'NOT_READY' };
+      }
+
+      // Authoritative, synchronous, immediately-before-install check — the
+      // same synchronous turn as the `quitAndInstall()` call below, so
+      // nothing can change maintenance state in between (Section 5
+      // race-safety). The renderer's own view of maintenance state is never
+      // trusted for this decision, only ever this fresh read.
+      const maintenanceState = deps.getMaintenanceState();
+      if (maintenanceState !== 'SAFE') {
+        log('update.install.deferred', { maintenanceReason: maintenanceState });
+        return { code: maintenanceState };
+      }
+
+      log('update.install.requested', { availableVersion: snapshot.availableVersion });
+      adapter.quitAndInstall();
+      log('update.install.started', {});
+      return { code: 'INSTALL_ACCEPTED' };
+    } catch {
+      // electron-updater's own `quitAndInstall()`/`install()` already catch
+      // their internal errors and report them via the normal `'error'` event
+      // rather than throwing — this catch is pure defence (a fake/future
+      // adapter, or an unexpected `getMaintenanceState()` failure), and must
+      // never surface the raw error.
+      deps.logger.warn('application', 'update.install.failed', {});
+      return { code: 'INSTALL_FAILED' };
+    }
+  }
+
   return {
     getSnapshot,
     checkNow,
+    restartAndInstall,
     start(): void {
       if (!adapter || started || stopping) {
         return;

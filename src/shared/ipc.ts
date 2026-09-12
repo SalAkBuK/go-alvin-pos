@@ -23,6 +23,7 @@ import type {
   ProblemReport,
 } from './support';
 import type { CheckoutActivityInput, MaintenanceState } from './maintenance';
+import type { UpdateInstallResult, UpdateServiceSnapshot } from './update';
 import type {
   RestoreCandidate,
   RestoreCandidateInspection,
@@ -263,6 +264,20 @@ export const IPC = {
   backupClearOffDevice: 'backup:clear-off-device',
   backupOffDeviceConfiguration: 'backup:off-device-configuration',
   backupBrowseRestoreCandidate: 'backup:browse-restore-candidate',
+
+  // ── Phase 2N-C: About & Updates ────────────────────────────────────────
+  // `get-status` / `check-now` are read-only (`check-now` also triggers a
+  // real feed check — never renderer-supplied URL/version/metadata, and the
+  // service de-duplicates overlapping calls itself). `restart-and-install`
+  // takes NO argument: the trusted main process alone decides whether
+  // `UpdateService`'s state is `READY` and the maintenance coordinator is
+  // `SAFE`, immediately before invoking the real updater install/restart
+  // primitive — the renderer can only ask, never decide. A successful
+  // install accepts the request and may quit the process before this
+  // channel's response is observed.
+  updatesGetStatus: 'updates:get-status',
+  updatesCheckNow: 'updates:check-now',
+  updatesRestartAndInstall: 'updates:restart-and-install',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -562,6 +577,30 @@ export interface PosApi {
      * must not be continued.
      */
     noteCheckoutActivity(input: CheckoutActivityInput): Promise<IpcResult<{ accepted: boolean }>>;
+  };
+  readonly updates: {
+    /** The current normalized update-lifecycle snapshot. Read-only, never a raw updater object. */
+    getStatus(): Promise<IpcResult<UpdateServiceSnapshot>>;
+    /**
+     * Manually ask the configured feed for an update right now (Settings →
+     * About & Updates → "Check for Updates"). Takes no argument — there is
+     * no renderer-supplied URL, version, or metadata. Concurrent calls share
+     * the service's one in-flight check. Resolves with the normalized
+     * snapshot even on failure (a check failure is secondary and never an
+     * IPC error).
+     */
+    checkNow(): Promise<IpcResult<UpdateServiceSnapshot>>;
+    /**
+     * "Restart & Update": request installation of an already-downloaded
+     * (`READY`) update. The trusted main process alone decides whether this
+     * is currently safe (updater state `READY` AND maintenance state
+     * `SAFE`), checked fresh at the moment of this call — the renderer's own
+     * view of maintenance state is never trusted for this decision. See
+     * `UpdateInstallResultCode` for every possible outcome. A successful
+     * `INSTALL_ACCEPTED` may be followed by the application quitting before
+     * any further response could be observed.
+     */
+    restartAndInstall(): Promise<IpcResult<UpdateInstallResult>>;
   };
   readonly settings: {
     /** The sales-tax rate only — no generic settings access. */

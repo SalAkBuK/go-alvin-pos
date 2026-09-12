@@ -11,6 +11,7 @@ function fakeService(snapshot: UpdateServiceSnapshot): UpdateService {
     stopSync: () => undefined,
     running: false,
     checkNow: () => Promise.resolve(snapshot),
+    restartAndInstall: () => ({ code: 'UNSUPPORTED' }),
   };
 }
 

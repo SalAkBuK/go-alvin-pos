@@ -98,6 +98,11 @@ const api: PosApi = {
     offDeviceConfiguration: () => ipcRenderer.invoke(IPC.backupOffDeviceConfiguration),
     browseRestoreCandidate: () => ipcRenderer.invoke(IPC.backupBrowseRestoreCandidate),
   },
+  updates: {
+    getStatus: () => ipcRenderer.invoke(IPC.updatesGetStatus),
+    checkNow: () => ipcRenderer.invoke(IPC.updatesCheckNow),
+    restartAndInstall: () => ipcRenderer.invoke(IPC.updatesRestartAndInstall),
+  },
   maintenance: {
     status: () => ipcRenderer.invoke(IPC.maintenanceStatus),
     noteCheckoutActivity: (input) => ipcRenderer.invoke(IPC.maintenanceCheckoutActivity, input),
