@@ -12,6 +12,7 @@ describe('IPC contract', () => {
         'diagnosticsRun',
         'supportCreateReport',
         'supportExportBundle',
+        'supportGetActivityHistory',
         'inventoryAdjust',
         'inventoryMovements',
         'nativeSqliteCheck',
@@ -121,7 +122,7 @@ describe('IPC contract', () => {
     const surface: Record<keyof PosApi, readonly string[]> = {
       app: ['getInfo'],
       diagnostics: ['checkNativeSqlite', 'databaseStatus', 'getSummary', 'run'],
-      support: ['createReport', 'exportBundle'],
+      support: ['createReport', 'exportBundle', 'getActivityHistory'],
       products: ['create', 'update', 'archive', 'list', 'search', 'findByBarcode'],
       inventory: ['adjust', 'movements'],
       customers: ['create', 'update', 'list', 'search', 'get', 'purchaseHistory'],

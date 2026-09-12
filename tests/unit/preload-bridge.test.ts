@@ -46,10 +46,14 @@ describe('preload backup bridge', () => {
     expect(electron.ipcRenderer.invoke).toHaveBeenLastCalledWith(IPC.diagnosticsRun);
   });
 
-  it('exposes only data-shaped support report and export methods', async () => {
+  it('exposes only data-shaped support report, export, and activity-history methods', async () => {
     const { IPC } = await import('../../src/shared/ipc');
     const api = await loadExposedApi();
-    expect(Object.keys(api.support).sort()).toEqual(['createReport', 'exportBundle']);
+    expect(Object.keys(api.support).sort()).toEqual([
+      'createReport',
+      'exportBundle',
+      'getActivityHistory',
+    ]);
     const input = { description: 'Issue', category: 'OTHER' as const };
     await api.support.createReport(input);
     expect(electron.ipcRenderer.invoke).toHaveBeenLastCalledWith(IPC.supportCreateReport, input);
@@ -57,6 +61,9 @@ describe('preload backup bridge', () => {
     expect(electron.ipcRenderer.invoke).toHaveBeenLastCalledWith(IPC.supportExportBundle, {
       supportReportId: null,
     });
+    await api.support.getActivityHistory();
+    expect(electron.ipcRenderer.invoke).toHaveBeenLastCalledWith(IPC.supportGetActivityHistory);
+    expect(electron.ipcRenderer.invoke.mock.calls.at(-1)).toHaveLength(1);
   });
 
   it('exposes exactly the declared backup methods — no more, no fewer', async () => {

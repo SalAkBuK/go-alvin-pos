@@ -1,5 +1,6 @@
 import { open, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { LogRecord } from '../app/logger';
 import { assertPrivacySafeText, sanitizeSupportValue } from './supportPrivacy';
 
 export const SUPPORT_LOG_MAX_BYTES = 1024 * 1024;
@@ -8,6 +9,12 @@ export const SUPPORT_LOG_MAX_FILES = 5;
 export interface RecentLogCollection {
   readonly content: string;
   readonly includedRecords: number;
+  readonly inspectedFiles: number;
+  readonly issues: readonly string[];
+}
+
+export interface RecentLogRecordsCollection {
+  readonly records: readonly LogRecord[];
   readonly inspectedFiles: number;
   readonly issues: readonly string[];
 }
@@ -133,4 +140,73 @@ export async function collectRecentSanitizedLogs(
     inspectedFiles,
     issues: [...issueSet].sort(),
   };
+}
+
+/**
+ * Same bounded, privacy-checked read as `collectRecentSanitizedLogs` — reuses
+ * the same rotating log files, the same per-file byte cap, and the same
+ * shape/redaction checks — but returns parsed structured records (newest
+ * first, bounded by count) instead of a joined text blob. For a consumer that
+ * inspects fields (e.g. the friendly activity history), not one that embeds
+ * raw JSONL into an archive.
+ */
+export async function collectRecentSanitizedLogRecords(
+  logDir: string,
+  maxRecords: number,
+  maxFiles = SUPPORT_LOG_MAX_FILES,
+): Promise<RecentLogRecordsCollection> {
+  const issueSet = new Set<string>();
+  let names: string[];
+  try {
+    names = (await readdir(logDir))
+      .map((name) => ({ name, rank: logRank(name) }))
+      .filter((entry): entry is { name: string; rank: number } => entry.rank !== null)
+      .sort((a, b) => a.rank - b.rank)
+      .slice(0, maxFiles)
+      .map(({ name }) => name);
+  } catch {
+    return { records: [], inspectedFiles: 0, issues: ['LOG_DIRECTORY_UNAVAILABLE'] };
+  }
+
+  const bound = Math.max(0, maxRecords);
+  const newestFirst: LogRecord[] = [];
+  let inspectedFiles = 0;
+  for (const name of names) {
+    if (newestFirst.length >= bound) break;
+    let raw: string;
+    try {
+      const read = await readBoundedTail(join(logDir, name), SUPPORT_LOG_MAX_BYTES);
+      raw = read.text;
+      if (read.truncated) issueSet.add('LOG_INPUT_TRUNCATED');
+      inspectedFiles += 1;
+    } catch {
+      issueSet.add('LOG_FILE_UNREADABLE');
+      continue;
+    }
+    const lines = raw.split(/\r?\n/).filter((line) => line.trim() !== '');
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      if (newestFirst.length >= bound) break;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(lines[index]!);
+      } catch {
+        issueSet.add('LOG_RECORD_SKIPPED');
+        continue;
+      }
+      if (!isStructuredLogRecord(parsed)) {
+        issueSet.add('LOG_RECORD_SKIPPED');
+        continue;
+      }
+      const sanitized = sanitizeSupportValue(parsed);
+      try {
+        assertPrivacySafeText(JSON.stringify(sanitized));
+      } catch {
+        issueSet.add('LOG_RECORD_PRIVACY_REJECTED');
+        continue;
+      }
+      newestFirst.push(sanitized as LogRecord);
+    }
+  }
+
+  return { records: newestFirst, inspectedFiles, issues: [...issueSet].sort() };
 }

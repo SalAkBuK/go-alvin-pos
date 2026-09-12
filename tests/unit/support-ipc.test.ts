@@ -120,6 +120,8 @@ beforeEach(() => {
     logsRoot: `${temp.path}\\logs`,
     getDatabase: () => null,
     getDiagnostics: () => Promise.resolve(snapshot),
+    getActivityHistory: () =>
+      Promise.resolve({ generatedAt: '2026-09-12T00:00:00.000Z', entries: [] }),
     showSaveDialog,
     rendererEntry: entry,
   });
@@ -131,9 +133,9 @@ afterEach(() => {
 });
 
 describe('support IPC', () => {
-  it('registers only report creation and bundle export capabilities', () => {
+  it('registers report creation, bundle export, and activity-history capabilities', () => {
     expect([...handlers.keys()].sort()).toEqual(
-      [IPC.supportCreateReport, IPC.supportExportBundle].sort(),
+      [IPC.supportCreateReport, IPC.supportExportBundle, IPC.supportGetActivityHistory].sort(),
     );
   });
 
@@ -170,5 +172,13 @@ describe('support IPC', () => {
     for (const handler of handlers.values()) {
       await expect(handler(untrustedEvent())).rejects.toThrow(/untrusted sender/i);
     }
+  });
+
+  it('forwards the activity-history channel to the injected service with no arguments accepted', async () => {
+    const result = await handlers.get(IPC.supportGetActivityHistory)!(trustedEvent());
+    expect(result).toEqual({
+      ok: true,
+      data: { generatedAt: '2026-09-12T00:00:00.000Z', entries: [] },
+    });
   });
 });

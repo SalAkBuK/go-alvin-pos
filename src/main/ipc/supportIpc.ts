@@ -1,3 +1,4 @@
+import type { ActivityHistory } from '../../shared/activityHistory';
 import type { DiagnosticSnapshot } from '../../shared/diagnostics';
 import { IPC } from '../../shared/ipc';
 import type { ExportSupportBundleResult, ProblemReport } from '../../shared/support';
@@ -17,11 +18,12 @@ export interface SupportIpcContext {
   readonly getDatabase: () => ProductionDatabase | null;
   readonly getDiagnostics: () => Promise<DiagnosticSnapshot>;
   readonly getCrashEvidence?: () => CrashEvidenceCollection;
+  readonly getActivityHistory: () => Promise<ActivityHistory>;
   readonly showSaveDialog: (suggestedFileName: string) => Promise<string | null>;
   readonly rendererEntry?: RendererEntry;
 }
 
-/** Two narrow support capabilities. Neither accepts a path or source-file list. */
+/** Three narrow support capabilities. None accepts a path, source-file list, or query. */
 export function registerSupportIpcHandlers(context: SupportIpcContext): void {
   const service = createSupportBundleService({
     appVersion: context.appVersion,
@@ -50,5 +52,8 @@ export function registerSupportIpcHandlers(context: SupportIpcContext): void {
       if (destination === null) return { status: 'CANCELLED' };
       return service.writePreparedBundle(prepared, destination);
     },
+  );
+  registerTrustedInvoke(IPC.supportGetActivityHistory, trusted, (): Promise<ActivityHistory> =>
+    context.getActivityHistory(),
   );
 }

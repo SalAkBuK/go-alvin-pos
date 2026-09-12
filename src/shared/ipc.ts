@@ -14,6 +14,7 @@
  */
 
 import type { BackupHealth, ManualBackupResult, OffDeviceBackupConfiguration } from './backup';
+import type { ActivityHistory } from './activityHistory';
 import type { DiagnosticSnapshot } from './diagnostics';
 import type {
   CreateProblemReportInput,
@@ -107,6 +108,9 @@ export const IPC = {
   // owns report storage, log discovery, bundle inputs, and the native Save dialog.
   supportCreateReport: 'support:create-report',
   supportExportBundle: 'support:export-bundle',
+  // Phase 2M-F1: bounded, plain-language recent activity/error history
+  // (`REQ-DIAG-002`). No query, filter, path, or paging-token surface.
+  supportGetActivityHistory: 'support:get-activity-history',
 
   // ── Phase 2B: Products + Inventory ──────────────────────────────────────────
   productsCreate: 'products:create',
@@ -309,6 +313,7 @@ export interface PosApi {
   readonly support: {
     createReport(input: CreateProblemReportInput): Promise<IpcResult<ProblemReport>>;
     exportBundle(input?: ExportSupportBundleInput): Promise<IpcResult<ExportSupportBundleResult>>;
+    getActivityHistory(): Promise<IpcResult<ActivityHistory>>;
   };
   readonly products: {
     create(input: CreateProductInput): Promise<IpcResult<ProductRecord>>;

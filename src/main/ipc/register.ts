@@ -13,6 +13,7 @@ import type { BackupService } from '../backup/backupService';
 import type { RestoreService } from '../backup/restoreService';
 import type { MaintenanceCoordinator } from '../maintenance/maintenanceCoordinator';
 import type { CrashEvidenceService } from '../diagnostics/crashEvidence';
+import type { ActivityHistoryService } from '../diagnostics/activityHistory';
 import { registerBackupIpcHandlers } from './backupIpc';
 import { registerMaintenanceIpcHandlers } from './maintenanceIpc';
 import { registerCheckoutIpcHandlers } from './checkoutIpc';
@@ -41,6 +42,8 @@ export interface IpcContext {
   readonly appVersion: string;
   readonly installationId: string;
   readonly crashEvidence: CrashEvidenceService;
+  /** Phase 2M-F1 friendly activity/error history (`REQ-DIAG-002`). */
+  readonly activityHistory: ActivityHistoryService;
   /** The one production database, or `null` while/if initialization has not succeeded. */
   readonly getDatabase: () => ProductionDatabase | null;
   /**
@@ -130,6 +133,7 @@ export function registerIpcHandlers(context: IpcContext): void {
     getDatabase: context.getDatabase,
     getDiagnostics: () => supportDiagnostics.getSummary(),
     getCrashEvidence: () => context.crashEvidence.collectRecent(),
+    getActivityHistory: () => context.activityHistory.getRecent(),
     showSaveDialog: context.showSupportBundleSaveDialog,
   });
 

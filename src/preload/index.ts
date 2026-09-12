@@ -26,6 +26,7 @@ const api: PosApi = {
   support: {
     createReport: (input) => ipcRenderer.invoke(IPC.supportCreateReport, input),
     exportBundle: (input) => ipcRenderer.invoke(IPC.supportExportBundle, input),
+    getActivityHistory: () => ipcRenderer.invoke(IPC.supportGetActivityHistory),
   },
   products: {
     create: (input) => ipcRenderer.invoke(IPC.productsCreate, input),

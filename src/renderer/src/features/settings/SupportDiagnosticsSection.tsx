@@ -11,6 +11,7 @@ import type {
   PrinterDiagnostic,
 } from '../../../../shared/diagnostics';
 import type { IpcResult } from '../../../../shared/products';
+import { ActivityHistorySection } from './ActivityHistorySection';
 import { SupportActions } from './SupportActions';
 
 export const DIAGNOSTICS_ERROR_MESSAGE =
@@ -555,6 +556,7 @@ export function SupportDiagnosticsSection() {
           onRun={onRun}
         />
       )}
+      <ActivityHistorySection />
       <SupportActions />
     </section>
   );

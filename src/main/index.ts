@@ -37,6 +37,7 @@ import { createCrashEvidenceService } from './diagnostics/crashEvidence';
 import { installCrashEvidenceHandlers } from './diagnostics/crashLifecycle';
 import { installPowerLifecycleHandlers } from './diagnostics/powerLifecycle';
 import { createClockWatcher } from './diagnostics/clockWatcher';
+import { createActivityHistoryService } from './diagnostics/activityHistory';
 
 /**
  * Electron main-process entry point (ARCHITECTURE.md Sections 5, 7, 38, 39, 42.4).
@@ -83,6 +84,12 @@ const crashEvidence = createCrashEvidenceService({
 
 /** Significant wall-clock-jump detection (`SUPPORT_DIAGNOSTICS.md §33`). Rebaselined on resume so elapsed sleep is never mistaken for a clock jump. */
 const clockWatcher = createClockWatcher({ logger });
+
+/** Friendly activity/error history (`REQ-DIAG-002`) — reads the same bounded Phase 2M-A log files; no database, no new logging system. */
+const activityHistory = createActivityHistoryService({
+  logsRoot: paths.logs,
+  logger,
+});
 
 /**
  * The one maintenance coordinator (`ARCHITECTURE.md §42.3`). Created before the
@@ -321,6 +328,7 @@ if (!app.requestSingleInstanceLock()) {
         appVersion: app.getVersion(),
         installationId,
         crashEvidence,
+        activityHistory,
         getDatabase: () => productionDatabase,
         getBackupService: () => backupService,
         getRestoreService: () => restoreService,
