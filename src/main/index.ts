@@ -1,12 +1,12 @@
 import { join } from 'node:path';
 import type Database from 'better-sqlite3';
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, powerMonitor, shell } from 'electron';
 import { pinUserDataPath, resolveAppPaths } from './app/paths';
 import { Logger } from './app/logger';
 import { loadOrCreateInstallationId } from './app/installationIdentity';
 import { createMainWindow } from './app/window';
 import { resolveRendererEntry } from './app/rendererEntry';
-import { focusExistingWindow } from './app/singleInstance';
+import { handleSecondInstance } from './app/singleInstance';
 import { installWebContentsHardening } from './app/security';
 import { registerIpcHandlers } from './ipc/register';
 import { createBackupService } from './backup/backupService';
@@ -35,6 +35,8 @@ import { loadOAuthClientConfig } from './google/oauthClientConfig';
 import { createSheetsTransport } from './google/sheetsTransport';
 import { createCrashEvidenceService } from './diagnostics/crashEvidence';
 import { installCrashEvidenceHandlers } from './diagnostics/crashLifecycle';
+import { installPowerLifecycleHandlers } from './diagnostics/powerLifecycle';
+import { createClockWatcher } from './diagnostics/clockWatcher';
 
 /**
  * Electron main-process entry point (ARCHITECTURE.md Sections 5, 7, 38, 39, 42.4).
@@ -78,6 +80,9 @@ const crashEvidence = createCrashEvidenceService({
   logger,
   getSchemaVersion: () => productionDatabase?.schemaVersion ?? null,
 });
+
+/** Significant wall-clock-jump detection (`SUPPORT_DIAGNOSTICS.md §33`). Rebaselined on resume so elapsed sleep is never mistaken for a clock jump. */
+const clockWatcher = createClockWatcher({ logger });
 
 /**
  * The one maintenance coordinator (`ARCHITECTURE.md §42.3`). Created before the
@@ -138,8 +143,7 @@ if (!app.requestSingleInstanceLock()) {
   crashEvidence.startSession();
 
   app.on('second-instance', () => {
-    logger.info('application', 'application.single-instance.focus-existing');
-    focusExistingWindow(mainWindow);
+    handleSecondInstance(mainWindow, logger);
   });
 
   app.on('window-all-closed', () => {
@@ -164,6 +168,7 @@ if (!app.requestSingleInstanceLock()) {
     googleConfigService?.cancelPendingAuthorization();
     googleExportWorker?.stopSync();
     backupScheduler?.stopSync();
+    clockWatcher.stopSync();
     productionDatabase?.close();
     crashEvidence.markCleanShutdown();
   });
@@ -242,6 +247,31 @@ if (!app.requestSingleInstanceLock()) {
     .whenReady()
     .then(async () => {
       installWebContentsHardening(rendererEntry);
+
+      clockWatcher.start();
+      installPowerLifecycleHandlers(powerMonitor, {
+        logger,
+        getDatabase: () => productionDatabase?.connection ?? null,
+        getMaintenanceState: () => maintenanceCoordinator.status(),
+        onResumeSafetyCheck: (safety) => {
+          // Reuse the EXISTING critical-safe status surface (`ARCHITECTURE.md`
+          // Decision 32) — this never opens/closes/reassigns the database
+          // connection itself, only reports what is already true.
+          if (!safety.databaseOpen || !safety.schemaValid) {
+            setDatabaseStatus({
+              state: 'unavailable',
+              schemaVersion: null,
+              failureCode: !safety.databaseOpen
+                ? 'DATABASE_UNAVAILABLE'
+                : 'MIGRATION_HISTORY_INVALID',
+            });
+          }
+        },
+        // Reuse the existing stale-`EXPORTING`-job recovery (already run at
+        // startup and at the top of every drain pass) — no new worker logic.
+        onResumeExportRecovery: () => googleExportWorker?.recoverStale(),
+        onResumeClockRebaseline: () => clockWatcher.resetBaseline(),
+      });
 
       restoreService = createRestoreService({
         logger,
