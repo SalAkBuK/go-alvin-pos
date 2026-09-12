@@ -9,6 +9,7 @@ import { BusinessConfigSection } from './BusinessConfigSection';
 import { GoogleSheetsSection } from './GoogleSheetsSection';
 import { PrinterSettingsSection } from './PrinterSettingsSection';
 import { ReconciliationQueueSection } from './ReconciliationQueueSection';
+import { SupportDiagnosticsSection } from './SupportDiagnosticsSection';
 import { formatBpsAsPercent, parsePercentToBps, validateTaxRatePercent } from './taxRate';
 
 /**
@@ -17,7 +18,7 @@ import { formatBpsAsPercent, parsePercentToBps, validateTaxRatePercent } from '.
  * The minimum needed to make a real sale possible on a fresh install: a
  * configured sales-tax rate and the business/receipt values a completed sale
  * freezes into its snapshots, plus the printer, Google Sheets, and Backup &
- * Restore sections. Support & Diagnostics is its own later slice.
+ * Restore sections, plus the owner-facing Support & Diagnostics snapshot.
  *
  * All persistence goes through `window.pos.settings.*` — the narrow typed
  * surface. The renderer never sees SQLite and cannot write an arbitrary
@@ -202,6 +203,7 @@ export function SettingsPage() {
       <OffDeviceSection />
       <RestoreSection />
       <ReconciliationQueueSection />
+      <SupportDiagnosticsSection />
     </>
   );
 }

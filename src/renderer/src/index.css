@@ -571,3 +571,219 @@ td {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
+
+/* Support & Diagnostics (Phase 2M-C). Status color is always paired with text. */
+.support-diagnostics > .field-hint {
+  max-width: 44rem;
+  margin-bottom: 0.85rem;
+}
+
+.diagnostics-overall {
+  border: 1px solid rgba(127, 127, 127, 0.35);
+  border-left-width: 0.35rem;
+  border-radius: 0.4rem;
+  padding: 0.85rem 1rem;
+}
+
+.diagnostics-overall h4,
+.diagnostics-card h4,
+.diagnostics-subsection > h4 {
+  margin: 0;
+}
+
+.diagnostics-overall .diagnostics-eyebrow {
+  font-size: 0.75rem;
+  opacity: 0.7;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.diagnostics-overall-healthy {
+  border-left-color: #1a7f37;
+}
+
+.diagnostics-overall-warning {
+  border-left-color: #9a6700;
+  background: rgba(255, 244, 206, 0.35);
+}
+
+.diagnostics-overall-critical {
+  border-left-color: #b3261e;
+  background: rgba(253, 231, 233, 0.45);
+}
+
+.diagnostics-overall-critical h4,
+.diagnostics-critical-copy {
+  color: #b3261e;
+}
+
+.diagnostics-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.85rem 0;
+}
+
+.diagnostics-toolbar span {
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+
+.diagnostics-action-error {
+  margin: 0.5rem 0;
+}
+
+.diagnostics-subsection {
+  margin-top: 1.25rem;
+}
+
+.diagnostics-system-info,
+.diagnostics-details {
+  margin: 0.6rem 0 0;
+}
+
+.diagnostics-system-info {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 0.6rem 1rem;
+}
+
+.diagnostics-system-info div,
+.diagnostics-details div {
+  min-width: 0;
+}
+
+.diagnostics-system-info dt,
+.diagnostics-details dt {
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+
+.diagnostics-system-info dd,
+.diagnostics-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.diagnostics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.6rem;
+}
+
+.diagnostics-card {
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  border-top-width: 0.25rem;
+  border-radius: 0.4rem;
+  padding: 0.75rem;
+}
+
+.diagnostics-card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+
+.diagnostics-card-healthy {
+  border-top-color: #1a7f37;
+}
+
+.diagnostics-card-warning {
+  border-top-color: #9a6700;
+}
+
+.diagnostics-card-critical {
+  border-top-color: #b3261e;
+}
+
+.diagnostics-badge {
+  border-radius: 1rem;
+  padding: 0.08rem 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.diagnostics-badge-healthy {
+  color: #116329;
+  background: #dafbe1;
+}
+
+.diagnostics-badge-warning {
+  color: #6a4b00;
+  background: #fff4ce;
+}
+
+.diagnostics-badge-critical {
+  color: #8a1c1c;
+  background: #fde7e9;
+}
+
+.diagnostics-value {
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.diagnostics-warning-copy,
+.diagnostics-reconciliation-warning {
+  margin-top: 0.5rem !important;
+  color: #6a4b00;
+  font-weight: 600;
+}
+
+.diagnostics-reconciliation-warning {
+  border: 1px solid rgba(154, 103, 0, 0.45);
+  border-radius: 0.3rem;
+  padding: 0.55rem;
+}
+
+.diagnostics-secondary-copy {
+  margin-top: 0.5rem !important;
+  font-size: 0.8125rem;
+}
+
+.diagnostics-critical-copy {
+  margin-top: 0.6rem;
+}
+
+.diagnostics-critical-copy ul {
+  margin: 0.4rem 0 0;
+  padding-left: 1.2rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  .diagnostics-overall-warning,
+  .diagnostics-overall-critical {
+    background: transparent;
+  }
+
+  .diagnostics-badge-healthy {
+    color: #aff5b4;
+    background: rgba(26, 127, 55, 0.35);
+  }
+
+  .diagnostics-badge-warning {
+    color: #f8d66d;
+    background: rgba(154, 103, 0, 0.35);
+  }
+
+  .diagnostics-badge-critical {
+    color: #ffb3ad;
+    background: rgba(179, 38, 30, 0.35);
+  }
+
+  .diagnostics-warning-copy,
+  .diagnostics-reconciliation-warning {
+    color: #f8d66d;
+  }
+
+  .diagnostics-overall-critical h4,
+  .diagnostics-critical-copy {
+    color: #ffb3ad;
+  }
+}
