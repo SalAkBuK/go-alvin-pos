@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { app, ipcMain } from 'electron';
 import { IPC } from '../../shared/ipc';
 import type { AppInfo, DatabaseStatus, NativeSqliteCheckResult } from '../../shared/ipc';
@@ -15,7 +16,7 @@ import { registerBackupIpcHandlers } from './backupIpc';
 import { registerMaintenanceIpcHandlers } from './maintenanceIpc';
 import { registerCheckoutIpcHandlers } from './checkoutIpc';
 import { registerCustomerIpcHandlers } from './customerIpc';
-import { registerDiagnosticsIpcHandlers } from './diagnosticsIpc';
+import { createIpcDiagnosticsService, registerDiagnosticsIpcHandlers } from './diagnosticsIpc';
 import { registerGoogleIpcHandlers } from './googleIpc';
 import { registerPrintingIpcHandlers } from './printingIpc';
 import { registerProductIpcHandlers } from './productIpc';
@@ -23,6 +24,7 @@ import { registerReconciliationIpcHandlers } from './reconciliationIpc';
 import { registerReportsIpcHandlers } from './reportsIpc';
 import { registerSalesHistoryIpcHandlers } from './salesHistoryIpc';
 import { registerSettingsIpcHandlers } from './settingsIpc';
+import { registerSupportIpcHandlers } from './supportIpc';
 
 /**
  * Registers the foundation IPC handlers (ARCHITECTURE.md Sections 9-10).
@@ -50,6 +52,8 @@ export interface IpcContext {
   readonly showOffDeviceDirectoryDialog?: () => Promise<string | null>;
   /** Phase 2L-C native file dialog for "Browse for a backup file…"; `null` = cancelled. */
   readonly showBackupFileDialog?: () => Promise<string | null>;
+  /** Main-owned support-bundle Save dialog. The selected path never crosses IPC. */
+  readonly showSupportBundleSaveDialog: (suggestedFileName: string) => Promise<string | null>;
   /** The one maintenance coordinator (`ARCHITECTURE.md §42.3`). */
   readonly maintenanceCoordinator: MaintenanceCoordinator;
   /**
@@ -103,6 +107,27 @@ export function registerIpcHandlers(context: IpcContext): void {
     getDatabaseStatus,
     getBackupService: context.getBackupService,
     getGoogleConfigService: context.google.getService,
+  });
+
+  const supportDiagnostics = createIpcDiagnosticsService({
+    logger: context.logger,
+    appVersion: context.appVersion,
+    installationId: context.installationId,
+    storagePath: context.paths.userData,
+    getDatabase: context.getDatabase,
+    getDatabaseStatus,
+    getBackupService: context.getBackupService,
+    getGoogleConfigService: context.google.getService,
+  });
+  registerSupportIpcHandlers({
+    logger: context.logger,
+    appVersion: context.appVersion,
+    installationId: context.installationId,
+    reportsRoot: join(context.paths.diagnostics, 'problem-reports'),
+    logsRoot: context.paths.logs,
+    getDatabase: context.getDatabase,
+    getDiagnostics: () => supportDiagnostics.getSummary(),
+    showSaveDialog: context.showSupportBundleSaveDialog,
   });
 
   registerProductIpcHandlers({

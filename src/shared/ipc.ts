@@ -15,6 +15,12 @@
 
 import type { BackupHealth, ManualBackupResult, OffDeviceBackupConfiguration } from './backup';
 import type { DiagnosticSnapshot } from './diagnostics';
+import type {
+  CreateProblemReportInput,
+  ExportSupportBundleInput,
+  ExportSupportBundleResult,
+  ProblemReport,
+} from './support';
 import type { CheckoutActivityInput, MaintenanceState } from './maintenance';
 import type {
   RestoreCandidate,
@@ -95,6 +101,12 @@ export const IPC = {
   diagnosticsGetSummary: 'diagnostics:get-summary',
   /** Owner-initiated sanitized snapshot including the safe read-only quick_check. */
   diagnosticsRun: 'diagnostics:run',
+
+  // ── Phase 2M-D1: local problem reports + sanitized support bundle export ──
+  // Data-only problem fields and an optional opaque report ID. The main process
+  // owns report storage, log discovery, bundle inputs, and the native Save dialog.
+  supportCreateReport: 'support:create-report',
+  supportExportBundle: 'support:export-bundle',
 
   // ── Phase 2B: Products + Inventory ──────────────────────────────────────────
   productsCreate: 'products:create',
@@ -293,6 +305,10 @@ export interface PosApi {
     databaseStatus(): Promise<DatabaseStatus>;
     getSummary(): Promise<IpcResult<DiagnosticSnapshot>>;
     run(): Promise<IpcResult<DiagnosticSnapshot>>;
+  };
+  readonly support: {
+    createReport(input: CreateProblemReportInput): Promise<IpcResult<ProblemReport>>;
+    exportBundle(input?: ExportSupportBundleInput): Promise<IpcResult<ExportSupportBundleResult>>;
   };
   readonly products: {
     create(input: CreateProductInput): Promise<IpcResult<ProductRecord>>;

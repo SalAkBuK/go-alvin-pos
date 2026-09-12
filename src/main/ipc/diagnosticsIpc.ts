@@ -30,9 +30,9 @@ export interface DiagnosticsIpcContext {
 }
 
 /** Two narrow, pathless, read-only diagnostic capabilities for the next UI slice. */
-export function registerDiagnosticsIpcHandlers(context: DiagnosticsIpcContext): void {
+export function createIpcDiagnosticsService(context: DiagnosticsIpcContext) {
   const printerAdapter = context.printerAdapter ?? createElectronPrintAdapter();
-  const service = createDiagnosticsService({
+  return createDiagnosticsService({
     appVersion: context.appVersion,
     installationId: context.installationId,
     storagePath: context.storagePath,
@@ -69,6 +69,10 @@ export function registerDiagnosticsIpcHandlers(context: DiagnosticsIpcContext): 
       ? { connectivityInspector: context.connectivityInspector }
       : {}),
   });
+}
+
+export function registerDiagnosticsIpcHandlers(context: DiagnosticsIpcContext): void {
+  const service = createIpcDiagnosticsService(context);
   const trusted = {
     logger: context.logger,
     ...(context.rendererEntry ? { rendererEntry: context.rendererEntry } : {}),

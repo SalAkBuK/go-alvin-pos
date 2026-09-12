@@ -10,6 +10,8 @@ describe('IPC contract', () => {
         'databaseStatus',
         'diagnosticsGetSummary',
         'diagnosticsRun',
+        'supportCreateReport',
+        'supportExportBundle',
         'inventoryAdjust',
         'inventoryMovements',
         'nativeSqliteCheck',
@@ -86,6 +88,7 @@ describe('IPC contract', () => {
       'google',
       'backup',
       'maintenance',
+      'support',
     ];
     for (const name of Object.values(IPC)) {
       const namespace = name.split(':')[0];
@@ -118,6 +121,7 @@ describe('IPC contract', () => {
     const surface: Record<keyof PosApi, readonly string[]> = {
       app: ['getInfo'],
       diagnostics: ['checkNativeSqlite', 'databaseStatus', 'getSummary', 'run'],
+      support: ['createReport', 'exportBundle'],
       products: ['create', 'update', 'archive', 'list', 'search', 'findByBarcode'],
       inventory: ['adjust', 'movements'],
       customers: ['create', 'update', 'list', 'search', 'get', 'purchaseHistory'],
@@ -176,6 +180,7 @@ describe('IPC contract', () => {
       'reports',
       'salesHistory',
       'settings',
+      'support',
     ]);
     for (const methods of Object.values(surface)) {
       for (const method of methods) {

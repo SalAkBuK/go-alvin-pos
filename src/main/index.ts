@@ -17,6 +17,7 @@ import { createRestoreService } from './backup/restoreService';
 import type { RestoreService } from './backup/restoreService';
 import { createBackupFileDialogOpener } from './app/backupFileDialog';
 import { createOffDeviceDirectoryDialogOpener } from './app/offDeviceDirectoryDialog';
+import { createSupportBundleSaveDialogOpener } from './app/supportBundleSaveDialog';
 import { recoverInterruptedRestore } from './app/startupRestoreRecovery';
 import { createMaintenanceCoordinator } from './maintenance/maintenanceCoordinator';
 import type { MaintenanceCoordinator } from './maintenance/maintenanceCoordinator';
@@ -286,6 +287,7 @@ if (!app.requestSingleInstanceLock()) {
         // Phase 2L-C.1: the native off-device destination directory dialog is
         // main-owned the same way.
         showOffDeviceDirectoryDialog: createOffDeviceDirectoryDialogOpener(() => mainWindow),
+        showSupportBundleSaveDialog: createSupportBundleSaveDialogOpener(() => mainWindow),
         google: {
           getService: () => googleConfigService,
           createService: buildGoogleConfigService,

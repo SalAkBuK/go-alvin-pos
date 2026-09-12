@@ -46,6 +46,19 @@ describe('preload backup bridge', () => {
     expect(electron.ipcRenderer.invoke).toHaveBeenLastCalledWith(IPC.diagnosticsRun);
   });
 
+  it('exposes only data-shaped support report and export methods', async () => {
+    const { IPC } = await import('../../src/shared/ipc');
+    const api = await loadExposedApi();
+    expect(Object.keys(api.support).sort()).toEqual(['createReport', 'exportBundle']);
+    const input = { description: 'Issue', category: 'OTHER' as const };
+    await api.support.createReport(input);
+    expect(electron.ipcRenderer.invoke).toHaveBeenLastCalledWith(IPC.supportCreateReport, input);
+    await api.support.exportBundle({ supportReportId: null });
+    expect(electron.ipcRenderer.invoke).toHaveBeenLastCalledWith(IPC.supportExportBundle, {
+      supportReportId: null,
+    });
+  });
+
   it('exposes exactly the declared backup methods — no more, no fewer', async () => {
     const api = await loadExposedApi();
     expect(Object.keys(api.backup).sort()).toEqual(

@@ -23,6 +23,10 @@ const api: PosApi = {
     getSummary: () => ipcRenderer.invoke(IPC.diagnosticsGetSummary),
     run: () => ipcRenderer.invoke(IPC.diagnosticsRun),
   },
+  support: {
+    createReport: (input) => ipcRenderer.invoke(IPC.supportCreateReport, input),
+    exportBundle: (input) => ipcRenderer.invoke(IPC.supportExportBundle, input),
+  },
   products: {
     create: (input) => ipcRenderer.invoke(IPC.productsCreate, input),
     update: (id, input) => ipcRenderer.invoke(IPC.productsUpdate, id, input),
