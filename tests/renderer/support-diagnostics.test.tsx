@@ -135,12 +135,13 @@ function markup(value: DiagnosticSnapshot, running = false, error: string | null
 }
 
 describe('Settings Support & Diagnostics location and overall state', () => {
-  it('renders the section in Settings without later-phase support actions', () => {
+  it('renders the D2 support actions in Settings without later-phase activity or crash UI', () => {
     const html = renderToStaticMarkup(<SettingsPage />);
     expect(html).toContain('Support &amp; Diagnostics');
-    expect(html).not.toContain('Export Support Bundle');
-    expect(html).not.toContain('Report a Problem');
+    expect(html).toContain('Export Support Bundle');
+    expect(html).toContain('Report a Problem');
     expect(html).not.toContain('Activity Log');
+    expect(html).not.toContain('Crash history');
   });
 
   it('has an honest loading first render', () => {

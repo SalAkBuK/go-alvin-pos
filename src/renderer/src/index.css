@@ -756,6 +756,36 @@ td {
   padding-left: 1.2rem;
 }
 
+.support-actions {
+  max-width: 44rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(127, 127, 127, 0.25);
+}
+
+.support-report-form {
+  margin-top: 0.75rem;
+}
+
+.support-report-form select,
+.support-report-form input {
+  padding: 0.35rem 0.5rem;
+  font: inherit;
+}
+
+.support-report-form .product-form-error {
+  margin: -0.3rem 0 0;
+}
+
+.support-export-action {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(127, 127, 127, 0.25);
+}
+
+.support-export-action > h4 {
+  margin: 0;
+}
+
 @media (prefers-color-scheme: dark) {
   .diagnostics-overall-warning,
   .diagnostics-overall-critical {
